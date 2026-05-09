@@ -22,7 +22,7 @@ import type {
 import type { AttachResult, IpcResult } from '../shared/ipc.js';
 
 let session: Session | null = null;
-let activeTrainer: StarlightTrainer | null = null;
+let activeTrainer_: StarlightTrainer | null = null;
 const freezeHandles = new Map<string, FreezeHandle>();
 /** Last value chosen by the user per value-cheat (for setValue without freeze). */
 const lastValues = new Map<string, number>();
@@ -31,8 +31,16 @@ type DetachedListener = (reason: 'process-exit' | 'manual') => void;
 let detachedListener: DetachedListener | null = null;
 export function onDetached(listener: DetachedListener): void { detachedListener = listener; }
 
+type AttachStateListener = (attached: boolean) => void;
+let attachListener: AttachStateListener | null = null;
+export function onAttachStateChange(listener: AttachStateListener): void { attachListener = listener; }
+
 export function currentSession(): Session | null { return session; }
-export function setActiveTrainer(t: StarlightTrainer): void { activeTrainer = t; }
+export function setActiveTrainer(t: StarlightTrainer): void { activeTrainer_ = t; }
+export function getActiveTrainer(): StarlightTrainer | null { return activeTrainer_; }
+export function updateProcessName(names: string[]): void {
+  if (activeTrainer_) activeTrainer_.game = { ...activeTrainer_.game, processName: names };
+}
 
 export async function cancelAllFreezes(): Promise<void> {
   for (const [, h] of freezeHandles) { try { await h.cancel(); } catch { /* ignore */ } }
@@ -52,7 +60,9 @@ export async function attach(pid: number): Promise<AttachResult> {
       freezeHandles.clear();
       session = null;
       if (!wasManual && detachedListener) detachedListener('process-exit');
+      attachListener?.(false);
     });
+    attachListener?.(true);
     return { ok: true };
   } catch (err) {
     if (err instanceof PermissionError) return { ok: false, code: 'permission', message: err.message };
@@ -69,13 +79,14 @@ export async function detach(): Promise<void> {
   catch { /* swallow */ }
   session = null;
   if (detachedListener) detachedListener('manual');
+  attachListener?.(false);
 }
 
 export function isAttached(): boolean { return session !== null && session.attached; }
 
 function findCheat(cheatId: string): StarlightSupportedCheat | undefined {
-  if (!activeTrainer) return undefined;
-  for (const c of activeTrainer.categories) {
+  if (!activeTrainer_) return undefined;
+  for (const c of activeTrainer_.categories) {
     for (const x of c.cheats) {
       if (x.id === cheatId && !('unsupported' in x && x.unsupported)) return x as StarlightSupportedCheat;
     }

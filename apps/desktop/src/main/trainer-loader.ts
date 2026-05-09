@@ -5,6 +5,7 @@ import { importCt } from '@starlight/ct-importer';
 import type { LoadTrainerResult } from '../shared/ipc.js';
 import { setActiveTrainer, cancelAllFreezes } from './engine-host.js';
 import { registerForTrainer } from './hotkey-host.js';
+import { processHost } from './process-host-singleton.js';
 
 export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTrainerResult> {
   const parent = parentWindow ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
@@ -39,6 +40,7 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
     await cancelAllFreezes();
     setActiveTrainer(out.trainer);
     registerForTrainer(out.trainer);
+    processHost.setTrainerProcessNames(out.trainer.game.processName);
     return { ok: true, trainer: out.trainer, stats: out.stats };
   } catch (err) {
     return { ok: false, error: `failed to import ${path}: ${err instanceof Error ? err.message : String(err)}` };

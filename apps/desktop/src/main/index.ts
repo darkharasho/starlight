@@ -4,6 +4,7 @@ import { loadTrainer } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
+import { processHost } from './process-host-singleton.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -26,6 +27,11 @@ function createWindow(): void {
 
   win.once('ready-to-show', () => win.show());
 
+  win.on('hide',     () => processHost.pause());
+  win.on('minimize', () => processHost.pause());
+  win.on('show',     () => processHost.resume());
+  win.on('restore',  () => processHost.resume());
+
   const sendState = (): void => {
     win.webContents.send(CHANNELS.windowState, { maximized: win.isMaximized() });
   };
@@ -44,6 +50,11 @@ engineHost.onDetached((reason) => {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(CHANNELS.event, { type: 'session:detached', reason });
   }
+});
+
+engineHost.onAttachStateChange((attached) => {
+  if (attached) processHost.pause();
+  else          processHost.resume();
 });
 
 app.whenReady().then(() => {
@@ -71,10 +82,15 @@ app.whenReady().then(() => {
     }
     return { games };
   });
-  // TODO(phase-4.5 task 6): placeholder — replaced by process-host in task 6
-  ipcMain.handle(CHANNELS.listProcesses,  async () => ({ processes: [] }));
-  // TODO(phase-4.5 task 7): placeholder — replaced by process-host in task 7
-  ipcMain.handle(CHANNELS.setProcessName, async () => undefined);
+  ipcMain.handle(CHANNELS.listProcesses, async () => {
+    const processes = await processHost.listOnce();
+    return { processes };
+  });
+
+  ipcMain.handle(CHANNELS.setProcessName, async (_evt, req: { names: string[] }) => {
+    processHost.setTrainerProcessNames(req.names);
+    if (engineHost.getActiveTrainer()) engineHost.updateProcessName(req.names);
+  });
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
@@ -84,6 +100,7 @@ app.whenReady().then(() => {
   });
   ipcMain.on(CHANNELS.windowClose, (evt) => BrowserWindow.fromWebContents(evt.sender)?.close());
 
+  processHost.start();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -95,6 +112,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  processHost.pause();
   unregisterHotkeys();
   await engineHost.detach();
 });
