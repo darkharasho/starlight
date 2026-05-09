@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { CHANNELS, type AttachResult, type LoadTrainerResult } from '../shared/ipc.js';
+import { loadTrainer } from './trainer-loader.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -30,7 +31,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
-    ({ ok: false, error: 'loadTrainer not implemented (Phase 4 Task 2)' }));
+    loadTrainer(BrowserWindow.getFocusedWindow() ?? undefined));
 
   ipcMain.handle(CHANNELS.attach, async (): Promise<AttachResult> =>
     ({ ok: false, code: 'unknown', message: 'attach not implemented (Phase 4 Task 3)' }));

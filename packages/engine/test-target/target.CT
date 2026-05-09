@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="42">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Player"</Description>
+      <Options moHideChildren="1"/>
+      <GroupHeader>1</GroupHeader>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>2</ID>
+          <Description>"Health"</Description>
+          <VariableType>4 Bytes</VariableType>
+          <Address>"target"+403030</Address>
+          <Hotkeys>
+            <Hotkey><Action>Toggle Activation</Action><Keys><Key>112</Key></Keys><ID>0</ID></Hotkey>
+          </Hotkeys>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>3</ID>
+          <Description>"Speed"</Description>
+          <VariableType>Float</VariableType>
+          <Address>"target"+403034</Address>
+          <Hotkeys>
+            <Hotkey><Action>Toggle Activation</Action><Keys><Key>113</Key></Keys><ID>0</ID></Hotkey>
+          </Hotkeys>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>4</ID>
+          <Description>"Souls"</Description>
+          <VariableType>8 Bytes</VariableType>
+          <Address>"target"+403040</Address>
+          <Hotkeys>
+            <Hotkey><Action>Toggle Activation</Action><Keys><Key>114</Key></Keys><ID>0</ID></Hotkey>
+          </Hotkeys>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
