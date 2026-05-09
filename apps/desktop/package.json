@@ -2,6 +2,7 @@
   "name": "@starlight/desktop",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

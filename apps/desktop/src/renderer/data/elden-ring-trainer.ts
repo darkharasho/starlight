@@ -1,8 +1,10 @@
 /* Hand-crafted Starlight Trainer JSON for Phase 3 demo purposes.
  * Phase 4 will replace this with real importer output via IPC.
  *
- * The shape mirrors what @starlight/ct-importer emits — keep the field
- * names in sync with packages/ct-importer/src/starlight-format.ts. */
+ * Most fields mirror @starlight/ct-importer's StarlightTrainer shape.
+ * EXCEPTION: `game.coverUrl` is added here for Phase 3 convenience but is
+ * NOT in the canonical schema — cover art is catalog metadata. Phase 4
+ * will source coverUrl from the catalog, not the trainer JSON. */
 
 export interface MockAddress {
   kind: 'absolute' | 'module' | 'pointer' | 'aob';

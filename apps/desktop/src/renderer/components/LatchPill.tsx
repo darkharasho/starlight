@@ -1,4 +1,4 @@
-type LatchState = 'idle' | 'waiting' | 'detected' | 'latched';
+import type { LatchState } from '../stores/latch-store.js';
 
 interface Props { state: LatchState }
 
@@ -24,5 +24,3 @@ export function LatchPill({ state }: Props): JSX.Element {
     </div>
   );
 }
-
-export type { LatchState };

@@ -68,6 +68,7 @@ function TrainerView({ state, game, onLatch, onDetach }: TrainerViewProps): JSX.
         />
         <div>
           <div className="text-[13px] font-semibold">{game.name}</div>
+          {/* TODO Phase 4: replace hardcoded PID with the real attached process pid via IPC. */}
           <div className="text-[10px] text-muted">PID 24081 · trainer by {trainer.metadata.author ?? 'unknown'}</div>
         </div>
         <div className="ml-auto flex items-center gap-2">
