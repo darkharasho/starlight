@@ -20,6 +20,7 @@ import type {
   StarlightAddress,
 } from '@starlight/ct-importer';
 import type { AttachResult, IpcResult } from '../shared/ipc.js';
+import { CHANNELS } from '../shared/ipc.js';
 
 let session: Session | null = null;
 let activeTrainer_: StarlightTrainer | null = null;
@@ -188,18 +189,40 @@ export async function setCheatValue(cheatId: string, value: number): Promise<Ipc
       await write(session, address, valueType,
         valueType === 'int64' || valueType === 'uint64' ? BigInt(value) : value);
     }
+    // Notify renderer (hotkey-driven inc/dec relies on this)
+    for (const win of (await import('electron')).BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event,
+        { type: 'cheat:value-changed', cheatId, value, cause: 'hotkey' });
+    }
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-export async function incCheat(_cheatId: string): Promise<IpcResult> {
-  return { ok: false, error: 'incCheat not yet implemented' };
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
 }
-export async function decCheat(_cheatId: string): Promise<IpcResult> {
-  return { ok: false, error: 'decCheat not yet implemented' };
+
+async function stepCheat(cheatId: string, dir: 1 | -1): Promise<IpcResult> {
+  if (!session) return { ok: false, error: 'not attached' };
+  const cheat = findCheat(cheatId);
+  if (!cheat) return { ok: false, error: `unknown cheat ${cheatId}` };
+  if (cheat.type !== 'set') return { ok: false, error: 'not a value cheat' };
+  if (!freezeHandles.has(cheatId)) return { ok: false, error: 'cheat not active' };
+
+  const step = (cheat.step ?? 1) * dir;
+  const min = cheat.min ?? Number.NEGATIVE_INFINITY;
+  const max = cheat.max ?? Number.POSITIVE_INFINITY;
+  const cur = lastValues.get(cheatId) ?? cheat.value ?? cheat.default ?? 0;
+  const curN: number = typeof cur === 'string' ? Number(cur) : cur;
+  const next = clamp(curN + step, min, max);
+  if (next === curN) return { ok: true };
+  return setCheatValue(cheatId, next);
 }
+
+export async function incCheat(cheatId: string): Promise<IpcResult> { return stepCheat(cheatId, 1); }
+export async function decCheat(cheatId: string): Promise<IpcResult> { return stepCheat(cheatId, -1); }
 
 // Re-export `read` for callers that want to inspect current memory (Phase 5+)
 export { read, ReadError, WriteError };
