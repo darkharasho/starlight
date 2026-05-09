@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="42">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Auto-Block (Lua)"</Description>
+      <LastState Activated="0" RealAddress="0"/>
+      <LuaScript>
+        function blockLoop() while true do print("blocking"); sleep(100) end end
+        return blockLoop
+      </LuaScript>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

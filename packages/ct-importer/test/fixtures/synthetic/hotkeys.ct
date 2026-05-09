@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="42">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Infinite HP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"target"+0040303C</Address>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Toggle Activation</Action>
+          <Keys><Key>112</Key></Keys>
+          <ID>0</ID>
+        </Hotkey>
+      </Hotkeys>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"Speed Multiplier"</Description>
+      <VariableType>Float</VariableType>
+      <Address>"target"+00403040</Address>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Toggle Activation</Action>
+          <Keys><Key>115</Key></Keys>
+          <ID>0</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Increase Value</Action>
+          <Keys><Key>33</Key></Keys>
+          <Value>0.1</Value>
+          <ID>1</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Decrease Value</Action>
+          <Keys><Key>34</Key></Keys>
+          <Value>0.1</Value>
+          <ID>2</ID>
+        </Hotkey>
+      </Hotkeys>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="42">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"After AOB Marker"</Description>
+      <VariableType>Float</VariableType>
+      <Address>aobscanmodule(SIG, target, DE AD BE EF CA FE BA BE 12 34 56 78)+0C</Address>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
