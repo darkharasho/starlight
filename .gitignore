@@ -16,3 +16,7 @@ packages/*/test-target/build
 
 # ct-importer real-table fixtures (uncommitted, ad-hoc only)
 packages/ct-importer/test/fixtures/real/
+
+# desktop app build output
+apps/*/out
+apps/*/dist
