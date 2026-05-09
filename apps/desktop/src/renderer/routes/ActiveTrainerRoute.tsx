@@ -28,7 +28,7 @@ function ErrorBanner({ message }: { message: string }): JSX.Element {
 }
 
 export function ActiveTrainerRoute(): JSX.Element {
-  useEffect(() => { try { attachProcessEvents(); } catch { /* no-op in test/preload-less env */ } }, []);
+  useEffect(() => { attachProcessEvents(); }, []);
 
   const trainer = useTrainerStore((s) => s.trainer);
   const activeCheats = useTrainerStore((s) => s.activeCheats);
