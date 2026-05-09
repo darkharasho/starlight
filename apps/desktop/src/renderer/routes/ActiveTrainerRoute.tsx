@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLatchState } from '../stores/latch-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
+import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer } from '../../shared/ipc.js';
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
 import { ValueCheatCard } from '../components/cheat-cards/ValueCheatCard.js';
@@ -27,12 +28,15 @@ function ErrorBanner({ message }: { message: string }): JSX.Element {
 }
 
 export function ActiveTrainerRoute(): JSX.Element {
+  useEffect(() => { try { attachProcessEvents(); } catch { /* no-op in test/preload-less env */ } }, []);
+
   const trainer = useTrainerStore((s) => s.trainer);
   const activeCheats = useTrainerStore((s) => s.activeCheats);
   const values = useTrainerStore((s) => s.values);
   const trainerError = useTrainerStore((s) => s.error);
   const toggleCheat = useTrainerStore((s) => s.toggleCheat);
   const setCheatValue = useTrainerStore((s) => s.setCheatValue);
+  const setProcessName = useTrainerStore((s) => s.setProcessName);
 
   const latchState = useLatchState((s) => s.state);
   const latchError = useLatchState((s) => s.error);
@@ -40,6 +44,9 @@ export function ActiveTrainerRoute(): JSX.Element {
   const setPidInput = useLatchState((s) => s.setPidInput);
   const latch = useLatchState((s) => s.latch);
   const detach = useLatchState((s) => s.detach);
+
+  const processes = useProcessStore((s) => s.processes);
+  const matchedPid = useProcessStore((s) => s.matchedPid);
 
   if (!trainer) {
     return (
@@ -58,12 +65,15 @@ export function ActiveTrainerRoute(): JSX.Element {
       trainerError={trainerError}
       toggleCheat={toggleCheat}
       setCheatValue={setCheatValue}
+      setProcessName={setProcessName}
       latchState={latchState}
       latchError={latchError}
       pidInput={pidInput}
       setPidInput={setPidInput}
       latch={latch}
       detach={detach}
+      processes={processes}
+      matchedPid={matchedPid}
     />
   );
 }
@@ -75,12 +85,15 @@ interface TrainerViewProps {
   trainerError: string | null;
   toggleCheat: (cheatId: string, on: boolean) => Promise<void>;
   setCheatValue: (cheatId: string, value: number) => Promise<void>;
+  setProcessName: (names: string[]) => Promise<void>;
   latchState: string;
   latchError: string | null;
   pidInput: string;
   setPidInput: (s: string) => void;
   latch: () => Promise<void>;
   detach: () => Promise<void>;
+  processes: { pid: number; name: string }[];
+  matchedPid: number | null;
 }
 
 function TrainerView({
@@ -90,12 +103,15 @@ function TrainerView({
   trainerError,
   toggleCheat,
   setCheatValue,
+  setProcessName,
   latchState,
   latchError,
   pidInput,
   setPidInput,
   latch,
   detach,
+  processes,
+  matchedPid,
 }: TrainerViewProps): JSX.Element {
   const [activeCategory, setActiveCategory] = useState<string>(trainer.categories[0]!.name);
   const category = trainer.categories.find((c) => c.name === activeCategory) ?? trainer.categories[0]!;
@@ -114,12 +130,18 @@ function TrainerView({
         <div className="ml-auto flex items-center gap-2">
           {latchState !== 'latched' && (
             <>
-              <input
-                value={pidInput}
-                onChange={(e) => setPidInput(e.target.value)}
-                placeholder="PID"
-                className="w-20 px-2 py-1.5 text-xs rounded-sm bg-panel border border-line text-ink"
+              <ProcessPicker
+                processes={processes}
+                matchedPid={matchedPid}
+                pidInput={pidInput}
+                setPidInput={setPidInput}
               />
+              <button
+                type="button"
+                onClick={() => void useProcessStore.getState().refresh()}
+                title="Refresh process list"
+                className="px-2 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan"
+              >↻</button>
               <button
                 type="button"
                 onClick={() => void latch()}
@@ -142,6 +164,8 @@ function TrainerView({
       </div>
 
       {(latchError || trainerError) && <ErrorBanner message={latchError ?? trainerError ?? ''} />}
+
+      <TrainerInfoDisclosure trainer={trainer} setProcessName={setProcessName} />
 
       <aside className="flex flex-col gap-1">
         <div className="text-[9px] tracking-wider uppercase text-muted px-2 pb-1">Categories</div>
@@ -216,6 +240,79 @@ function TrainerView({
           );
         })}
       </section>
+    </div>
+  );
+}
+
+function ProcessPicker({
+  processes, matchedPid, pidInput, setPidInput,
+}: {
+  processes: { pid: number; name: string }[];
+  matchedPid: number | null;
+  pidInput: string;
+  setPidInput: (s: string) => void;
+}): JSX.Element {
+  const sorted = useMemo(() => [...processes].sort((a, b) => a.name.localeCompare(b.name)), [processes]);
+  const userTouched = pidInput !== '';
+  const effectivePid = userTouched ? pidInput : (matchedPid != null ? String(matchedPid) : '');
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <label className="sr-only" htmlFor="process-picker">Process</label>
+      <select
+        id="process-picker"
+        value={effectivePid}
+        onChange={(e) => setPidInput(e.target.value)}
+        className="w-44 px-2 py-1.5 text-xs rounded-sm bg-panel border border-line text-ink"
+      >
+        <option value="">— pick a process —</option>
+        {sorted.map((p) => (
+          <option key={p.pid} value={String(p.pid)}>{p.name} ({p.pid})</option>
+        ))}
+        {userTouched && !sorted.find(p => String(p.pid) === pidInput) && pidInput !== '' && (
+          <option value={pidInput}>PID {pidInput} (manual)</option>
+        )}
+      </select>
+      <input
+        value={pidInput}
+        onChange={(e) => setPidInput(e.target.value)}
+        placeholder="or PID"
+        className="w-16 px-2 py-1.5 text-xs rounded-sm bg-panel border border-line text-ink"
+        aria-label="Manual PID"
+      />
+    </div>
+  );
+}
+
+function TrainerInfoDisclosure({
+  trainer, setProcessName,
+}: {
+  trainer: StarlightTrainer;
+  setProcessName: (names: string[]) => Promise<void>;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(trainer.game.processName.join(', '));
+  return (
+    <div className="col-span-2 mt-2">
+      <button type="button" onClick={() => setOpen(o => !o)}
+              className="text-[10px] tracking-wider uppercase text-muted hover:text-ink">
+        Trainer Info {open ? '▲' : '▼'}
+      </button>
+      {open && (
+        <div className="mt-2 flex items-center gap-2">
+          <label htmlFor="process-name-input" className="text-[10px] text-muted">Process name</label>
+          <input
+            id="process-name-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => {
+              const names = draft.split(',').map(s => s.trim()).filter(Boolean);
+              if (names.length > 0) void setProcessName(names);
+            }}
+            className="flex-1 px-2 py-1 text-xs rounded-sm bg-panel border border-line text-ink"
+          />
+        </div>
+      )}
     </div>
   );
 }
