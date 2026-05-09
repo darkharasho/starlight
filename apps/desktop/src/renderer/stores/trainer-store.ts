@@ -10,11 +10,12 @@ interface TrainerStore {
   values: Record<string, number>;
   error: string | null;
 
-  loadTrainer:   () => Promise<void>;
-  toggleCheat:   (cheatId: string, on: boolean) => Promise<void>;
-  setCheatValue: (cheatId: string, value: number) => Promise<void>;
-  applyEvent:    (e: StarlightEvent) => void;
-  clear:         () => void;
+  loadTrainer:    () => Promise<void>;
+  toggleCheat:    (cheatId: string, on: boolean) => Promise<void>;
+  setCheatValue:  (cheatId: string, value: number) => Promise<void>;
+  setProcessName: (names: string[]) => Promise<void>;
+  applyEvent:     (e: StarlightEvent) => void;
+  clear:          () => void;
 }
 
 function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
@@ -87,6 +88,13 @@ export const useTrainerStore = create<TrainerStore>((set, get) => ({
       return;
     }
     set((prev) => ({ values: { ...prev.values, [cheatId]: clamped } }));
+  },
+
+  async setProcessName(names) {
+    await window.starlight.setProcessName({ names });
+    set((s) => s.trainer
+      ? { trainer: { ...s.trainer, game: { ...s.trainer.game, processName: names } } }
+      : s);
   },
 
   applyEvent(e) {
