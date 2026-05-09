@@ -4,6 +4,7 @@ import { basename } from 'node:path';
 import { importCt } from '@starlight/ct-importer';
 import type { LoadTrainerResult } from '../shared/ipc.js';
 import { setActiveTrainer } from './engine-host.js';
+import { registerForTrainer } from './hotkey-host.js';
 
 export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTrainerResult> {
   const result = await dialog.showOpenDialog(parentWindow ?? BrowserWindow.getFocusedWindow() ?? new BrowserWindow({ show: false }), {
@@ -28,6 +29,7 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
       platform: ['linux'],
     });
     setActiveTrainer(out.trainer);
+    registerForTrainer(out.trainer);
     return { ok: true, trainer: out.trainer, stats: out.stats };
   } catch (err) {
     return { ok: false, error: `failed to import ${path}: ${err instanceof Error ? err.message : String(err)}` };

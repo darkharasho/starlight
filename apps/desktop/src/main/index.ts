@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, globalShortcut } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
+import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-host.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -39,7 +40,11 @@ app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.detach, async () => engineHost.detach());
   ipcMain.handle(CHANNELS.toggleCheat,
-    async (_evt, req: ToggleCheatRequest): Promise<IpcResult> => engineHost.toggleCheat(req.cheatId, req.on));
+    async (_evt, req: ToggleCheatRequest): Promise<IpcResult> => {
+      const r = await engineHost.toggleCheat(req.cheatId, req.on);
+      if (r.ok) syncCheatState(req.cheatId, req.on);
+      return r;
+    });
 
   ipcMain.handle(CHANNELS.setCheatValue,
     async (_evt, req: SetValueRequest): Promise<IpcResult> => engineHost.setCheatValue(req.cheatId, req.value));
@@ -55,5 +60,8 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  unregisterHotkeys();
   await engineHost.detach();
 });
+
+app.on('will-quit', () => globalShortcut.unregisterAll());
