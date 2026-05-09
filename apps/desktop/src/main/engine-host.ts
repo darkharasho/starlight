@@ -114,7 +114,8 @@ export async function toggleCheat(cheatId: string, on: boolean): Promise<IpcResu
     if (prior) { try { await prior.cancel(); } catch { /* ignore */ } }
 
     const address = await resolveAddress(session, cheat.address);
-    const value = lastValues.get(cheatId) ?? cheat.value ?? cheat.default ?? 0;
+    const rawValue = lastValues.get(cheatId) ?? cheat.value ?? cheat.default ?? 0;
+    const value: number = typeof rawValue === 'string' ? Number(rawValue) : rawValue;
     const valueType = cheat.valueType as Exclude<ValueType, 'string'>;
 
     const handle = await freeze(session, {
