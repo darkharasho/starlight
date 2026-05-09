@@ -23,5 +23,5 @@ export interface PointerChainSpec {
 export interface AobScanSpec {
   module: string;
   pattern: string;         // e.g. "DE AD BE EF ?? ?? CA FE"
-  resultOffset?: number;   // bytes added to first match
+  resultOffset?: number;   // bytes added to every match
 }

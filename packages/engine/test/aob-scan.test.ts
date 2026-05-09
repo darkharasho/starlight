@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { attach, type Session } from '../src/session.js';
-import { read } from '../src/memory.js';
 import { aobScan } from '../src/aob-scan.js';
 import { spawnTarget, type SpawnedTarget } from './helpers/spawn-target.js';
 
@@ -47,6 +46,5 @@ describe('aobScan', () => {
     const first = parseInt(matches[0]!, 16);
     const expected = parseInt(target.addresses.g_after_aob!, 16);
     expect(Math.abs(first - expected)).toBeLessThanOrEqual(8);
-    void read;  // suppress unused
   });
 });

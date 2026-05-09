@@ -72,10 +72,9 @@ async function readString(session: Session, address: string, spec: StringSpec): 
 export async function write(
   session: Session,
   address: string,
-  type: ValueType,
+  type: Exclude<ValueType, 'string'>,
   value: number | bigint,
 ): Promise<void> {
-  if (type === 'string') throw new WriteError('use writeString for strings');
   const buf = Buffer.alloc(SIZE_OF[type]);
   switch (type) {
     case 'int8':   buf.writeInt8(value as number, 0); break;
