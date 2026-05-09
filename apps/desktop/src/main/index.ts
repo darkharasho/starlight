@@ -4,7 +4,7 @@ import { loadTrainer } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
-import { processHost } from './process-host-singleton.js';
+import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -27,10 +27,10 @@ function createWindow(): void {
 
   win.once('ready-to-show', () => win.show());
 
-  win.on('hide',     () => processHost.pause());
-  win.on('minimize', () => processHost.pause());
-  win.on('show',     () => processHost.resume());
-  win.on('restore',  () => processHost.resume());
+  win.on('hide',     () => setWindowVisible(false));
+  win.on('minimize', () => setWindowVisible(false));
+  win.on('show',     () => setWindowVisible(true));
+  win.on('restore',  () => setWindowVisible(true));
 
   const sendState = (): void => {
     win.webContents.send(CHANNELS.windowState, { maximized: win.isMaximized() });
@@ -52,10 +52,7 @@ engineHost.onDetached((reason) => {
   }
 });
 
-engineHost.onAttachStateChange((attached) => {
-  if (attached) processHost.pause();
-  else          processHost.resume();
-});
+engineHost.onAttachStateChange((attached) => setEngineAttached(attached));
 
 app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>

@@ -15,3 +15,14 @@ export const processHost = new ProcessHost({
   isAttached: () => isAttached(),
   psList: async () => (await psList()).map(p => ({ pid: p.pid, name: p.name })),
 });
+
+let windowVisible = true;
+let engineAttached = false;
+
+function reconcile(): void {
+  if (windowVisible && !engineAttached) processHost.resume();
+  else                                  processHost.pause();
+}
+
+export function setWindowVisible(v: boolean): void { windowVisible = v; reconcile(); }
+export function setEngineAttached(a: boolean): void { engineAttached = a; reconcile(); }

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { LibraryRoute } from '../../src/renderer/routes/LibraryRoute.js';
 import { useLibraryStore } from '../../src/renderer/stores/library-store.js';
+import { useProcessStore } from '../../src/renderer/stores/process-store.js';
 import { setStarlightApi, clearStarlightApi } from '../../src/renderer/ipc-client.js';
 
 const TWO_GAMES = [
@@ -26,6 +27,7 @@ function makeScanApi(games: typeof TWO_GAMES) {
 
 beforeEach(() => {
   useLibraryStore.setState({ games: [], loading: false, error: null });
+  useProcessStore.setState({ processes: [], matchedPid: null });
   setStarlightApi(makeScanApi(TWO_GAMES));
 });
 
@@ -55,5 +57,12 @@ describe('LibraryRoute', () => {
     setStarlightApi(freshApi);
     await userEvent.click(screen.getByRole('button', { name: /refresh/i }));
     await waitFor(() => expect(freshApi.scanLibrary).toHaveBeenCalled());
+  });
+
+  it('shows Running badge on tile when process name matches installDir basename', async () => {
+    useProcessStore.setState({ processes: [{ pid: 1, name: 'team fortress 2' }], matchedPid: null });
+    render(<LibraryRoute />);
+    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    expect(screen.getByText('Running')).toBeInTheDocument();
   });
 });
