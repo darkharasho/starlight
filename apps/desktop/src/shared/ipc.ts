@@ -42,3 +42,5 @@ export interface StarlightApi {
 declare global {
   interface Window { starlight: StarlightApi }
 }
+
+export type { StarlightTrainer, StarlightCheat, StarlightSupportedCheat, ImportStats } from '@starlight/ct-importer';
