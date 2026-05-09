@@ -14,24 +14,32 @@ export interface SpawnedTarget {
 }
 
 export async function spawnTarget(): Promise<SpawnedTarget> {
-  const child: ChildProcess = spawn(TARGET_BINARY, [], { stdio: ['ignore', 'pipe', 'inherit'] });
-  if (!child.stdout) throw new Error('failed to spawn target: no stdout stream');
+  // Spawn the target as a grandchild via shell backgrounding so that libuv's
+  // child-process watcher does not race with frida's ptrace SIGSTOP injection.
+  // The shell is the direct child; the actual target binary is the grandchild.
+  const shell: ChildProcess = spawn(
+    '/bin/sh',
+    ['-c', `${TARGET_BINARY} & PID=$!; echo "TARGET_PID:$PID"; wait`],
+    { stdio: ['ignore', 'pipe', 'inherit'] },
+  );
+  if (!shell.stdout) throw new Error('failed to spawn shell wrapper: no stdout stream');
 
   const addresses: Record<string, string> = {};
   const offsets: Record<string, number> = {};
+  let targetPid = 0;
 
   await new Promise<void>((resolveReady, rejectReady) => {
     let buf = '';
 
     const timer = setTimeout(() => {
-      child.stdout!.off('data', onData);
-      child.off('error', onErr);
+      shell.stdout!.off('data', onData);
+      shell.off('error', onErr);
       rejectReady(new Error('spawnTarget: timed out after 5 s waiting for hp_in_stats from target binary'));
     }, 5000);
 
     const onErr = (e: NodeJS.ErrnoException) => {
       clearTimeout(timer);
-      child.stdout!.off('data', onData);
+      shell.stdout!.off('data', onData);
       if (e.code === 'ENOENT') {
         rejectReady(new Error(
           `spawnTarget: binary not found at ${TARGET_BINARY} — rebuild with: make -C packages/engine/test-target`,
@@ -48,6 +56,8 @@ export async function spawnTarget(): Promise<SpawnedTarget> {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (line === 'READY') continue;
+        const pidMatch = line.match(/^TARGET_PID:(\d+)$/);
+        if (pidMatch) { targetPid = parseInt(pidMatch[1]!); continue; }
         const a = line.match(/^addr (\w+)=(0x[0-9a-fA-F]+)$/);
         if (a) { addresses[a[1]!] = a[2]!.toLowerCase(); continue; }
         const o = line.match(/^offset (\w+)=(\d+)$/);
@@ -55,8 +65,8 @@ export async function spawnTarget(): Promise<SpawnedTarget> {
           offsets[o[1]!] = Number(o[2]);
           if (o[1] === 'hp_in_stats') {
             clearTimeout(timer);
-            child.stdout!.off('data', onData);
-            child.off('error', onErr);
+            shell.stdout!.off('data', onData);
+            shell.off('error', onErr);
             resolveReady();
             return;
           }
@@ -64,21 +74,22 @@ export async function spawnTarget(): Promise<SpawnedTarget> {
       }
     };
 
-    child.once('error', onErr);
-    child.stdout!.setEncoding('utf8');
-    child.stdout!.on('data', onData);
+    shell.once('error', onErr);
+    shell.stdout!.setEncoding('utf8');
+    shell.stdout!.on('data', onData);
   });
 
-  if (!child.pid) throw new Error('failed to spawn target');
+  if (!targetPid) throw new Error('failed to get target pid from shell wrapper');
 
   return {
-    pid: child.pid,
+    pid: targetPid,
     addresses,
     offsets,
     kill: () => new Promise((r) => {
-      if (child.exitCode !== null) return r();
-      child.once('exit', () => r());
-      child.kill('SIGTERM');
+      try { process.kill(targetPid, 'SIGTERM'); } catch (_) { /* already gone */ }
+      if (shell.exitCode !== null) return r();
+      shell.once('exit', () => r());
+      shell.kill('SIGTERM');
     }),
   };
 }
