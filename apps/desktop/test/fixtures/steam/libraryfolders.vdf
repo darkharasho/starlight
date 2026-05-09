@@ -1,0 +1,22 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"FIXTURE_ROOT"
+		"label"		""
+		"apps"
+		{
+			"440"		"100000000"
+			"730"		"200000000"
+		}
+	}
+	"1"
+	{
+		"path"		"FIXTURE_ROOT/library2"
+		"label"		""
+		"apps"
+		{
+			"570"		"300000000"
+		}
+	}
+}
