@@ -20,3 +20,4 @@ packages/ct-importer/test/fixtures/real/
 # desktop app build output
 apps/*/out
 apps/*/dist
+package-lock.json

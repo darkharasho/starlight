@@ -21,3 +21,33 @@ body {
   .glow-pink  { box-shadow: 0 0 12px rgba(255,0,180,0.30); }
   .glow-green { box-shadow: 0 0 12px rgba(0,255,122,0.30); }
 }
+
+/* Neon Arcade scrollbars (Chromium / Electron) */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: theme('colors.bg');
+}
+*::-webkit-scrollbar-thumb {
+  background: theme('colors.line');
+  border: 2px solid theme('colors.bg');
+  border-radius: 5px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 200, 0.45);
+  box-shadow: 0 0 6px rgba(0, 255, 200, 0.4);
+}
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(0, 255, 200, 0.7);
+}
+*::-webkit-scrollbar-corner {
+  background: theme('colors.bg');
+}
+
+/* Firefox fallback (Electron uses Chromium so the above takes priority) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.line') theme('colors.bg');
+}

@@ -9,7 +9,17 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
-    build: { outDir: 'out/preload', lib: { entry: resolve(__dirname, 'src/preload/index.ts') } },
+    build: {
+      outDir: 'out/preload',
+      lib: {
+        entry: resolve(__dirname, 'src/preload/index.ts'),
+        // Sandboxed preload scripts must be CJS — Electron's sandbox bundle
+        // does not support ES modules. Emit a single index.cjs.
+        formats: ['cjs'],
+        fileName: () => 'index.cjs',
+      },
+      rollupOptions: { output: { format: 'cjs' } },
+    },
   },
   renderer: {
     root: '.',

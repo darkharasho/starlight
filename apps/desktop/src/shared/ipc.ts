@@ -7,6 +7,11 @@ export const CHANNELS = {
   toggleCheat:   'starlight:toggleCheat',
   setCheatValue: 'starlight:setCheatValue',
   event:         'starlight:event',
+  // Window controls
+  windowMinimize:       'starlight:window:minimize',
+  windowToggleMaximize: 'starlight:window:toggleMaximize',
+  windowClose:          'starlight:window:close',
+  windowState:          'starlight:window:state',  // event channel: { maximized: boolean }
 } as const;
 
 export interface AttachRequest { pid: number }
@@ -30,6 +35,8 @@ export type StarlightEvent =
   | { type: 'cheat:value-changed';  cheatId: string; value: number; cause: 'hotkey' }
   | { type: 'session:detached';     reason: 'process-exit' | 'manual' };
 
+export interface WindowState { maximized: boolean }
+
 export interface StarlightApi {
   loadTrainer():     Promise<LoadTrainerResult>;
   attach(req: AttachRequest): Promise<AttachResult>;
@@ -37,6 +44,11 @@ export interface StarlightApi {
   toggleCheat(req: ToggleCheatRequest):     Promise<IpcResult>;
   setCheatValue(req: SetValueRequest):      Promise<IpcResult>;
   onEvent(listener: (e: StarlightEvent) => void): () => void;
+  // Window controls
+  windowMinimize():       void;
+  windowToggleMaximize(): void;
+  windowClose():          void;
+  onWindowState(listener: (state: WindowState) => void): () => void;
 }
 
 declare global {

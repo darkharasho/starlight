@@ -13,9 +13,10 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: '#07070b',
     show: false,
+    frame: false,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, '../preload/index.cjs'),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -23,6 +24,12 @@ function createWindow(): void {
   });
 
   win.once('ready-to-show', () => win.show());
+
+  const sendState = (): void => {
+    win.webContents.send(CHANNELS.windowState, { maximized: win.isMaximized() });
+  };
+  win.on('maximize',   sendState);
+  win.on('unmaximize', sendState);
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL']);
@@ -55,6 +62,14 @@ app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.setCheatValue,
     async (_evt, req: SetValueRequest): Promise<IpcResult> => engineHost.setCheatValue(req.cheatId, req.value));
+
+  ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
+  ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
+    const w = BrowserWindow.fromWebContents(evt.sender);
+    if (!w) return;
+    if (w.isMaximized()) w.unmaximize(); else w.maximize();
+  });
+  ipcMain.on(CHANNELS.windowClose, (evt) => BrowserWindow.fromWebContents(evt.sender)?.close());
 
   createWindow();
   app.on('activate', () => {

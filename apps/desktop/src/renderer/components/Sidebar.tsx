@@ -11,10 +11,6 @@ const NAV = [
 export function Sidebar(): JSX.Element {
   return (
     <aside className="w-[220px] shrink-0 border-r border-line bg-panel px-2.5 py-4 flex flex-col gap-1">
-      <div className="px-3 pb-4 pt-1 font-bold text-sm text-neon-cyan tracking-widest"
-           style={{ textShadow: '0 0 8px rgba(0,255,200,0.5)' }}>
-        ★ STARLIGHT
-      </div>
       <nav className="flex flex-col gap-0.5 flex-1">
         {NAV.map((n) => (
           <NavLink

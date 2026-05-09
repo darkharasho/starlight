@@ -4,9 +4,11 @@
   "private": true,
   "engines": { "node": ">=20" },
   "scripts": {
+    "dev": "pnpm --filter @starlight/desktop dev",
     "test": "pnpm -r test",
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "build:test-target": "make -C packages/engine/test-target"
   },
   "packageManager": "pnpm@9.12.0"
 }
