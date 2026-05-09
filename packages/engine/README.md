@@ -19,3 +19,16 @@ integration tests. Build it before running tests:
 make -C test-target
 pnpm test
 ```
+
+## Linux: ptrace troubleshooting
+
+If `attach()` throws `PermissionError`, your kernel is restricting ptrace.
+Tests work at the default `kernel.yama.ptrace_scope=1` because they spawn
+the target as a child process. To attach to arbitrary running processes
+(real games), lower the scope:
+
+```bash
+sudo sysctl kernel.yama.ptrace_scope=0
+```
+
+Or grant cap_sys_ptrace to the Node binary (more targeted, more setup).
