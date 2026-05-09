@@ -91,7 +91,7 @@ export const useTrainerStore = create<TrainerStore>((set, get) => ({
   },
 
   async setProcessName(names) {
-    await window.starlight.setProcessName({ names });
+    await starlight().setProcessName({ names });
     set((s) => s.trainer
       ? { trainer: { ...s.trainer, game: { ...s.trainer.game, processName: names } } }
       : s);

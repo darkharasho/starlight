@@ -71,6 +71,15 @@ describe('trainer-store', () => {
     await useTrainerStore.getState().setCheatValue('c', 99);
     expect(useTrainerStore.getState().values.c).toBe(5); // clamped
   });
+
+  it('setProcessName calls IPC and updates processName in trainer', async () => {
+    const setProcessNameMock = vi.fn().mockResolvedValue(undefined);
+    setStarlightApi(fakeApi({ setProcessName: setProcessNameMock }));
+    useTrainerStore.setState({ trainer: minimalTrainer });
+    await useTrainerStore.getState().setProcessName(['target', 'target.exe']);
+    expect(setProcessNameMock).toHaveBeenCalledWith({ names: ['target', 'target.exe'] });
+    expect(useTrainerStore.getState().trainer?.game.processName).toEqual(['target', 'target.exe']);
+  });
 });
 
 describe('trainer-store applyEvent', () => {
