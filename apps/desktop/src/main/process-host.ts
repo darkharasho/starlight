@@ -48,7 +48,6 @@ export class ProcessHost {
   }
 
   private async tick(): Promise<void> {
-    await Promise.resolve(); // yield to let any synchronous updates (e.g. procs variable) settle
     if (this.opts.isAttached()) return;
     let procs: { pid: number; name: string }[];
     try { procs = await this.opts.psList(); }

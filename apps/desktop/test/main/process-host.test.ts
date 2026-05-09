@@ -61,15 +61,13 @@ describe('ProcessHost', () => {
   });
 
   it('emits process:matched on transition only', async () => {
-    let procs: { pid: number; name: string }[] = [];
+    let procs: { pid: number; name: string }[] = [{ pid: 100, name: 'target' }];
     const { host, events } = makeHost({ psList: async () => procs });
     host.setTrainerProcessNames(['target', 'target.exe']);
     host.start();
-    procs = [{ pid: 100, name: 'target' }];
     await vi.advanceTimersByTimeAsync(0);
-    procs = [{ pid: 100, name: 'target' }];
+    // procs unchanged — re-emit should not fire
     await vi.advanceTimersByTimeAsync(1000);
-    procs = [{ pid: 100, name: 'target' }];
     await vi.advanceTimersByTimeAsync(1000);
     const matched = events.filter(e => e.type === 'process:matched');
     expect(matched).toHaveLength(1);
@@ -78,11 +76,11 @@ describe('ProcessHost', () => {
   });
 
   it('matches case-insensitively, with .exe stripping', async () => {
-    let procs: { pid: number; name: string }[] = [];
-    const { host, events } = makeHost({ psList: async () => procs });
+    const { host, events } = makeHost({
+      psList: async () => [{ pid: 200, name: 'TARGET.EXE' }],
+    });
     host.setTrainerProcessNames(['target']);
     host.start();
-    procs = [{ pid: 200, name: 'TARGET.EXE' }];
     await vi.advanceTimersByTimeAsync(0);
     expect(events.find(e => e.type === 'process:matched')).toMatchObject({ pid: 200 });
     host.pause();
