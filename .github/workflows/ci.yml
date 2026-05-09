@@ -21,6 +21,14 @@ jobs:
         with:
           version: 9
 
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
       - name: Lower ptrace scope (so tests can attach)
         run: |
           echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
