@@ -63,6 +63,10 @@ app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.setCheatValue,
     async (_evt, req: SetValueRequest): Promise<IpcResult> => engineHost.setCheatValue(req.cheatId, req.value));
 
+  ipcMain.handle(CHANNELS.scanLibrary,    async () => ({ games: [] }));
+  ipcMain.handle(CHANNELS.listProcesses,  async () => ({ processes: [] }));
+  ipcMain.handle(CHANNELS.setProcessName, async () => undefined);
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);

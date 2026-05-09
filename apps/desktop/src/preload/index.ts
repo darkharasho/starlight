@@ -7,6 +7,9 @@ const api: StarlightApi = {
   detach:        ()    => ipcRenderer.invoke(CHANNELS.detach),
   toggleCheat:   (req) => ipcRenderer.invoke(CHANNELS.toggleCheat, req),
   setCheatValue: (req) => ipcRenderer.invoke(CHANNELS.setCheatValue, req),
+  scanLibrary:    ()    => ipcRenderer.invoke(CHANNELS.scanLibrary),
+  listProcesses:  ()    => ipcRenderer.invoke(CHANNELS.listProcesses),
+  setProcessName: (req) => ipcRenderer.invoke(CHANNELS.setProcessName, req),
   onEvent: (listener) => {
     const handler = (_evt: unknown, e: StarlightEvent): void => listener(e);
     ipcRenderer.on(CHANNELS.event, handler);
