@@ -13,3 +13,6 @@ packages/*/test-target/build
 
 # pnpm
 .pnpm-store
+
+# ct-importer real-table fixtures (uncommitted, ad-hoc only)
+packages/ct-importer/test/fixtures/real/
