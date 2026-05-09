@@ -1,4 +1,5 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
+import { CHANNELS, type AttachResult, type LoadTrainerResult } from '../shared/ipc.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -28,6 +29,16 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
+    ({ ok: false, error: 'loadTrainer not implemented (Phase 4 Task 2)' }));
+
+  ipcMain.handle(CHANNELS.attach, async (): Promise<AttachResult> =>
+    ({ ok: false, code: 'unknown', message: 'attach not implemented (Phase 4 Task 3)' }));
+
+  ipcMain.handle(CHANNELS.detach,        async () => undefined);
+  ipcMain.handle(CHANNELS.toggleCheat,   async () => ({ ok: false, error: 'not implemented (Phase 4 Task 4)' }));
+  ipcMain.handle(CHANNELS.setCheatValue, async () => ({ ok: false, error: 'not implemented (Phase 4 Task 4)' }));
+
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

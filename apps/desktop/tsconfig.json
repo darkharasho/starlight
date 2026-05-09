@@ -8,6 +8,6 @@
     "noEmit": true,
     "rootDir": "./src"
   },
-  "include": ["src/**/*"],
+  "include": ["src/main/**/*", "src/preload/**/*", "src/renderer/**/*", "src/shared/**/*"],
   "exclude": ["test", "out", "dist"]
 }
