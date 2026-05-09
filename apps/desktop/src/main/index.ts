@@ -3,6 +3,7 @@ import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult
 import { loadTrainer } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-host.js';
+import { scanAll as scanLibrary } from './library-host.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -63,8 +64,13 @@ app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.setCheatValue,
     async (_evt, req: SetValueRequest): Promise<IpcResult> => engineHost.setCheatValue(req.cheatId, req.value));
 
-  // TODO(phase-4.5 task 3): placeholder — replaced by library-host in task 3
-  ipcMain.handle(CHANNELS.scanLibrary,    async () => ({ games: [] }));
+  ipcMain.handle(CHANNELS.scanLibrary, async () => {
+    const games = await scanLibrary();
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event, { type: 'library:scanned', games });
+    }
+    return { games };
+  });
   // TODO(phase-4.5 task 6): placeholder — replaced by process-host in task 6
   ipcMain.handle(CHANNELS.listProcesses,  async () => ({ processes: [] }));
   // TODO(phase-4.5 task 7): placeholder — replaced by process-host in task 7
