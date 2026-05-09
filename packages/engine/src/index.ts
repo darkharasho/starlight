@@ -6,3 +6,4 @@ export {
   ReadError, WriteError, ScanError,
 } from './errors.js';
 export { resolvePointerChain } from './pointer-chain.js';
+export { aobScan } from './aob-scan.js';
