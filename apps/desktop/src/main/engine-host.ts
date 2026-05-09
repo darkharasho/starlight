@@ -1,3 +1,4 @@
+import { BrowserWindow } from 'electron';
 import {
   attach as engineAttach,
   read,
@@ -189,11 +190,6 @@ export async function setCheatValue(cheatId: string, value: number): Promise<Ipc
       await write(session, address, valueType,
         valueType === 'int64' || valueType === 'uint64' ? BigInt(value) : value);
     }
-    // Notify renderer (hotkey-driven inc/dec relies on this)
-    for (const win of (await import('electron')).BrowserWindow.getAllWindows()) {
-      win.webContents.send(CHANNELS.event,
-        { type: 'cheat:value-changed', cheatId, value, cause: 'hotkey' });
-    }
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -218,7 +214,15 @@ async function stepCheat(cheatId: string, dir: 1 | -1): Promise<IpcResult> {
   const curN: number = typeof cur === 'string' ? Number(cur) : cur;
   const next = clamp(curN + step, min, max);
   if (next === curN) return { ok: true };
-  return setCheatValue(cheatId, next);
+  const result = await setCheatValue(cheatId, next);
+  if (result.ok) {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event, {
+        type: 'cheat:value-changed', cheatId, value: next, cause: 'hotkey',
+      });
+    }
+  }
+  return result;
 }
 
 export async function incCheat(cheatId: string): Promise<IpcResult> { return stepCheat(cheatId, 1); }
