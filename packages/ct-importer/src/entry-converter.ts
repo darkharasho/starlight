@@ -33,8 +33,8 @@ export function convertEntry(entry: CtEntry): ConvertedEntry {
   }
 
   const script = classifyScript({
-    luaScript: entry.LuaScript,
-    assemblerScript: entry.AssemblerScript,
+    ...(entry.LuaScript !== undefined ? { luaScript: entry.LuaScript } : {}),
+    ...(entry.AssemblerScript !== undefined ? { assemblerScript: entry.AssemblerScript } : {}),
   });
   if (!script.supported) {
     return {

@@ -56,8 +56,10 @@ export function parseAddress(addr: string, offsets?: number[]): ParsedAddress | 
     return aobMatch;
   }
 
+  if (!base) return null; // unreachable in practice but satisfies TS
+
   if (offsets && offsets.length > 0) {
-    if (base!.kind === 'module') {
+    if (base.kind === 'module') {
       return {
         kind: 'pointer',
         module: base.module,
@@ -67,10 +69,10 @@ export function parseAddress(addr: string, offsets?: number[]): ParsedAddress | 
     }
     return {
       kind: 'pointer',
-      baseOffset: base!.address,
+      baseOffset: base.address,
       offsets: offsets.map(toHex),
     };
   }
 
-  return base!;
+  return base;
 }
