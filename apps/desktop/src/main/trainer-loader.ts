@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { importCt } from '@starlight/ct-importer';
 import type { LoadTrainerResult } from '../shared/ipc.js';
+import { setActiveTrainer } from './engine-host.js';
 
 export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTrainerResult> {
   const result = await dialog.showOpenDialog(parentWindow ?? BrowserWindow.getFocusedWindow() ?? new BrowserWindow({ show: false }), {
@@ -26,6 +27,7 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
       processName: ['unknown'],   // user supplies real process name later
       platform: ['linux'],
     });
+    setActiveTrainer(out.trainer);
     return { ok: true, trainer: out.trainer, stats: out.stats };
   } catch (err) {
     return { ok: false, error: `failed to import ${path}: ${err instanceof Error ? err.message : String(err)}` };

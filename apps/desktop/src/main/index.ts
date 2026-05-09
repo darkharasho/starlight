@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
-import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult } from '../shared/ipc.js';
+import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
 import { join } from 'node:path';
@@ -38,8 +38,11 @@ app.whenReady().then(() => {
     async (_evt, req: AttachRequest): Promise<AttachResult> => engineHost.attach(req.pid));
 
   ipcMain.handle(CHANNELS.detach, async () => engineHost.detach());
-  ipcMain.handle(CHANNELS.toggleCheat,   async () => ({ ok: false, error: 'not implemented (Phase 4 Task 4)' }));
-  ipcMain.handle(CHANNELS.setCheatValue, async () => ({ ok: false, error: 'not implemented (Phase 4 Task 4)' }));
+  ipcMain.handle(CHANNELS.toggleCheat,
+    async (_evt, req: ToggleCheatRequest): Promise<IpcResult> => engineHost.toggleCheat(req.cheatId, req.on));
+
+  ipcMain.handle(CHANNELS.setCheatValue,
+    async (_evt, req: SetValueRequest): Promise<IpcResult> => engineHost.setCheatValue(req.cheatId, req.value));
 
   createWindow();
   app.on('activate', () => {
