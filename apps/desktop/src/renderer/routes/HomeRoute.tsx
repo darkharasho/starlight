@@ -3,10 +3,13 @@ import { CATALOG, type CatalogGame } from '../data/catalog.js';
 import { BoxartGrid } from '../components/BoxartGrid.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useLatchState } from '../stores/latch-store.js';
+import { useTrainerStore } from '../stores/trainer-store.js';
 
 export function HomeRoute(): JSX.Element {
   const navigate = useNavigate();
   const detect = useLatchState((s) => s.detect);
+  const loadTrainer = useTrainerStore((s) => s.loadTrainer);
+  const trainerLoaded = useTrainerStore((s) => s.trainer);
 
   const installed = CATALOG.filter((g) => g.installed);
   const featured = CATALOG.filter((g) => g.hasTrainer);
@@ -30,6 +33,16 @@ export function HomeRoute(): JSX.Element {
           </span>
         }
       />
+      <div className="mb-5 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={async () => { await loadTrainer(); navigate('/active'); }}
+          className="px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]"
+        >
+          Load Trainer (.CT)
+        </button>
+        {trainerLoaded && <span className="text-[11px] text-muted">Loaded: {trainerLoaded.game.name}</span>}
+      </div>
       <Section label="Recently Played" games={installed} onSelect={selectGame} />
       <Section label="Featured Trainers" games={featured} onSelect={selectGame} />
     </>

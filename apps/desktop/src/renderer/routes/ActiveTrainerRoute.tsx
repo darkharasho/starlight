@@ -1,90 +1,122 @@
 import { useState } from 'react';
 import { useLatchState } from '../stores/latch-store.js';
-import { ELDEN_RING_TRAINER, type MockCheat, type MockSupportedCheat } from '../data/elden-ring-trainer.js';
+import { useTrainerStore } from '../stores/trainer-store.js';
+import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer } from '../../shared/ipc.js';
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
 import { ValueCheatCard } from '../components/cheat-cards/ValueCheatCard.js';
 import { UnsupportedCheatCard } from '../components/cheat-cards/UnsupportedCheatCard.js';
 
-function isSupported(c: MockCheat): c is MockSupportedCheat {
+function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
   return !('unsupported' in c) || c.unsupported !== true;
 }
 
-function isValueCheat(c: MockSupportedCheat): boolean {
-  return c.type === 'set';
-}
-
 export function ActiveTrainerRoute(): JSX.Element {
-  const { state, detectedGame, latch, detach } = useLatchState();
+  const trainer = useTrainerStore((s) => s.trainer);
+  const activeCheats = useTrainerStore((s) => s.activeCheats);
+  const values = useTrainerStore((s) => s.values);
+  const trainerError = useTrainerStore((s) => s.error);
+  const toggleCheat = useTrainerStore((s) => s.toggleCheat);
+  const setCheatValue = useTrainerStore((s) => s.setCheatValue);
 
-  if (!detectedGame) {
+  const latchState = useLatchState((s) => s.state);
+  const latchError = useLatchState((s) => s.error);
+  const pidInput = useLatchState((s) => s.pidInput);
+  const setPidInput = useLatchState((s) => s.setPidInput);
+  const latch = useLatchState((s) => s.latch);
+  const detach = useLatchState((s) => s.detach);
+
+  if (!trainer) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted">
-        <p className="text-sm">No game latched.</p>
-        <p className="text-xs mt-2">Open a game and click its tile from Home or Library.</p>
+        <p className="text-sm">No trainer loaded.</p>
+        <p className="text-xs mt-2">Go to Home and click "Load Trainer (.CT)".</p>
       </div>
     );
   }
 
-  return <TrainerView state={state} game={detectedGame} onLatch={latch} onDetach={detach} />;
+  return (
+    <TrainerView
+      trainer={trainer}
+      activeCheats={activeCheats}
+      values={values}
+      trainerError={trainerError}
+      toggleCheat={toggleCheat}
+      setCheatValue={setCheatValue}
+      latchState={latchState}
+      latchError={latchError}
+      pidInput={pidInput}
+      setPidInput={setPidInput}
+      latch={latch}
+      detach={detach}
+    />
+  );
 }
 
 interface TrainerViewProps {
-  state: ReturnType<typeof useLatchState.getState>['state'];
-  game: NonNullable<ReturnType<typeof useLatchState.getState>['detectedGame']>;
-  onLatch: () => void;
-  onDetach: () => void;
+  trainer: StarlightTrainer;
+  activeCheats: Record<string, boolean>;
+  values: Record<string, number>;
+  trainerError: string | null;
+  toggleCheat: (cheatId: string, on: boolean) => Promise<void>;
+  setCheatValue: (cheatId: string, value: number) => Promise<void>;
+  latchState: string;
+  latchError: string | null;
+  pidInput: string;
+  setPidInput: (s: string) => void;
+  latch: () => Promise<void>;
+  detach: () => Promise<void>;
 }
 
-function TrainerView({ state, game, onLatch, onDetach }: TrainerViewProps): JSX.Element {
-  const trainer = ELDEN_RING_TRAINER;
+function TrainerView({
+  trainer,
+  activeCheats,
+  values,
+  trainerError,
+  toggleCheat,
+  setCheatValue,
+  latchState,
+  latchError,
+  pidInput,
+  setPidInput,
+  latch,
+  detach,
+}: TrainerViewProps): JSX.Element {
   const [activeCategory, setActiveCategory] = useState<string>(trainer.categories[0]!.name);
-
-  // Per-cheat state: active + current value (for value cheats)
-  const [active, setActive] = useState<Record<string, boolean>>({});
-  const [values, setValues] = useState<Record<string, number>>(() => {
-    const init: Record<string, number> = {};
-    for (const cat of trainer.categories) {
-      for (const c of cat.cheats) {
-        if (isSupported(c) && isValueCheat(c) && c.default !== undefined) init[c.id] = c.default;
-      }
-    }
-    return init;
-  });
-
-  const category = trainer.categories.find((c) => c.name === activeCategory)!;
-  const activeCount = category.cheats.filter((c) => active[c.id]).length;
+  const category = trainer.categories.find((c) => c.name === activeCategory) ?? trainer.categories[0]!;
+  const activeCount = category.cheats.filter((c) => activeCheats[c.id]).length;
   const totalCheats = trainer.categories.reduce((acc, c) => acc + c.cheats.length, 0);
   const supportedCount = trainer.categories.reduce(
-    (acc, c) => acc + c.cheats.filter((x) => isSupported(x)).length, 0,
-  );
+    (acc, c) => acc + c.cheats.filter((x) => isSupported(x)).length, 0);
 
   return (
     <div className="grid grid-cols-[200px_1fr] gap-4 h-full">
-      {/* Header band spans both columns */}
       <div className="col-span-2 flex items-center gap-3 -mt-2 mb-2">
-        <div
-          className="w-7 h-[42px] bg-cover bg-center rounded-sm border border-line"
-          style={{ backgroundImage: `url(${game.coverUrl})` }}
-        />
         <div>
-          <div className="text-[13px] font-semibold">{game.name}</div>
-          {/* TODO Phase 4: replace hardcoded PID with the real attached process pid via IPC. */}
-          <div className="text-[10px] text-muted">PID 24081 · trainer by {trainer.metadata.author ?? 'unknown'}</div>
+          <div className="text-[13px] font-semibold">{trainer.game.name}</div>
+          <div className="text-[10px] text-muted">trainer by {trainer.metadata.author ?? 'unknown'}</div>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          {state === 'detected' && (
-            <button
-              type="button"
-              onClick={onLatch}
-              className="px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]"
-            >
-              Latch
-            </button>
+          {latchState !== 'latched' && (
+            <>
+              <input
+                value={pidInput}
+                onChange={(e) => setPidInput(e.target.value)}
+                placeholder="PID"
+                className="w-20 px-2 py-1.5 text-xs rounded-sm bg-panel border border-line text-ink"
+              />
+              <button
+                type="button"
+                onClick={() => void latch()}
+                className="px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]"
+              >
+                Latch
+              </button>
+            </>
           )}
-          {state === 'latched' && (
+          {latchState === 'latched' && (
             <button
               type="button"
-              onClick={onDetach}
+              onClick={() => void detach()}
               className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-pink hover:text-neon-pink"
             >
               Detach
@@ -93,7 +125,12 @@ function TrainerView({ state, game, onLatch, onDetach }: TrainerViewProps): JSX.
         </div>
       </div>
 
-      {/* Categories sidebar */}
+      {(latchError || trainerError) && (
+        <div className="col-span-2 text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-2">
+          {latchError ?? trainerError}
+        </div>
+      )}
+
       <aside className="flex flex-col gap-1">
         <div className="text-[9px] tracking-wider uppercase text-muted px-2 pb-1">Categories</div>
         {trainer.categories.map((c) => {
@@ -112,42 +149,45 @@ function TrainerView({ state, game, onLatch, onDetach }: TrainerViewProps): JSX.
         })}
         <div className="mt-auto pt-2.5 px-2 text-[10px] text-muted border-t border-line leading-relaxed">
           {supportedCount} of {totalCheats} entries supported<br />
-          {totalCheats - supportedCount} unsupported (Lua scripts)
+          {totalCheats - supportedCount} unsupported
         </div>
       </aside>
 
-      {/* Cheats list */}
       <section className="flex flex-col gap-2 overflow-y-auto">
         <div className="flex items-baseline justify-between mb-1">
           <span className="text-[11px] text-muted">{category.cheats.length} cheats · {activeCount} active</span>
         </div>
         {category.cheats.map((c) => {
           if (!isSupported(c)) {
-            return (
-              <UnsupportedCheatCard
-                key={c.id}
-                id={c.id}
-                name={c.name}
-                reason={c.unsupportedReason}
-                {...(c.description !== undefined ? { description: c.description } : {})}
-              />
-            );
+            return <UnsupportedCheatCard
+              key={c.id}
+              id={c.id}
+              name={c.name}
+              reason={c.unsupportedReason}
+              {...(c.description !== undefined ? { description: c.description } : {})}
+            />;
           }
-          if (isValueCheat(c)) {
+          if (c.type === 'set') {
             return (
               <ValueCheatCard
                 key={c.id}
                 id={c.id}
                 name={c.name}
                 {...(c.description !== undefined ? { description: c.description } : {})}
-                active={!!active[c.id]}
+                active={!!activeCheats[c.id]}
                 value={values[c.id] ?? c.default ?? 0}
                 step={c.step ?? 1}
                 {...(c.min !== undefined ? { min: c.min } : {})}
                 {...(c.max !== undefined ? { max: c.max } : {})}
-                {...(c.hotkeys ? { hotkeys: c.hotkeys } : {})}
-                onToggle={(id, next) => setActive((p) => ({ ...p, [id]: next }))}
-                onValueChange={(id, v) => setValues((p) => ({ ...p, [id]: v }))}
+                {...(c.hotkeys ? {
+                  hotkeys: {
+                    ...(c.hotkeys.toggle !== undefined ? { toggle: c.hotkeys.toggle } : {}),
+                    ...(c.hotkeys.inc !== undefined ? { inc: c.hotkeys.inc } : {}),
+                    ...(c.hotkeys.dec !== undefined ? { dec: c.hotkeys.dec } : {}),
+                  },
+                } : {})}
+                onToggle={(id, next) => void toggleCheat(id, next)}
+                onValueChange={(id, v) => void setCheatValue(id, v)}
               />
             );
           }
@@ -157,9 +197,9 @@ function TrainerView({ state, game, onLatch, onDetach }: TrainerViewProps): JSX.
               id={c.id}
               name={c.name}
               {...(c.description !== undefined ? { description: c.description } : {})}
-              active={!!active[c.id]}
+              active={!!activeCheats[c.id]}
               {...(c.hotkeys?.toggle ? { hotkey: c.hotkeys.toggle } : {})}
-              onToggle={(id, next) => setActive((p) => ({ ...p, [id]: next }))}
+              onToggle={(id, next) => void toggleCheat(id, next)}
             />
           );
         })}
