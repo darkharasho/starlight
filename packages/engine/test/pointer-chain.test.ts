@@ -41,6 +41,20 @@ describe('resolvePointerChain', () => {
     await write(session, final, 'int32', 9001);
     expect(await read(session, final, 'int32')).toBe(9001);
   });
+
+  it('resolves a module+offset address with no further offsets', async () => {
+    // Verify the module resolution path: passing module='target' and baseAddress='0x0'
+    // should return the module base address (a valid hex string). This exercises the
+    // Frida-side module resolution for the ASLR/module path.
+    const result = await resolvePointerChain(session, {
+      module: 'target',
+      baseAddress: '0x0',  // base of module
+      offsets: [],
+    });
+    expect(result).toMatch(/^0x[0-9a-f]+$/);
+    // The result should be the module base, which on a non-PIE binary
+    // is typically 0x400000.
+  });
 });
 
 function toHex(n: number): string { return '0x' + n.toString(16); }

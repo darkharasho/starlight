@@ -14,13 +14,23 @@ export async function resolvePointerChain(
   spec: PointerChainSpec,
 ): Promise<string> {
   const offsets = spec.offsets;
-  if (offsets.length === 0) return spec.baseAddress;
 
   const script = await session.fridaSession.createScript(`
     rpc.exports = {
-      walk: function(baseHex, offsetHexes) {
+      walk: function(baseHex, moduleName, offsetHexes) {
         try {
-          let p = ptr(baseHex).readPointer();
+          let base;
+          if (moduleName) {
+            const mod = Process.findModuleByName(moduleName);
+            if (!mod) return { error: 'module not found: ' + moduleName };
+            base = mod.base.add(ptr(baseHex));
+          } else {
+            base = ptr(baseHex);
+          }
+          if (offsetHexes.length === 0) {
+            return base.toString();
+          }
+          let p = base.readPointer();
           for (let i = 0; i < offsetHexes.length - 1; i++) {
             p = p.add(ptr(offsetHexes[i])).readPointer();
           }
@@ -34,8 +44,8 @@ export async function resolvePointerChain(
   `);
   await script.load();
   try {
-    const exp = script.exports as { walk: (b: string, o: string[]) => Promise<string | { error: string }> };
-    const result = await exp.walk(spec.baseAddress, offsets);
+    const exp = script.exports as { walk: (b: string, m: string | null, o: string[]) => Promise<string | { error: string }> };
+    const result = await exp.walk(spec.baseAddress, spec.module ?? null, offsets);
     if (typeof result === 'object' && 'error' in result) {
       throw new ReadError(`pointer chain failed: ${result.error}`);
     }

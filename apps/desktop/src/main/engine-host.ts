@@ -34,6 +34,12 @@ export function onDetached(listener: DetachedListener): void { detachedListener 
 export function currentSession(): Session | null { return session; }
 export function setActiveTrainer(t: StarlightTrainer): void { activeTrainer = t; }
 
+export async function cancelAllFreezes(): Promise<void> {
+  for (const [, h] of freezeHandles) { try { await h.cancel(); } catch { /* ignore */ } }
+  freezeHandles.clear();
+  lastValues.clear();
+}
+
 export async function attach(pid: number): Promise<AttachResult> {
   if (session) await detach();
   try {

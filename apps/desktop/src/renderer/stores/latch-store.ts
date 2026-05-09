@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
 
-export type LatchState = 'idle' | 'waiting' | 'detected' | 'latched';
+export type LatchState = 'waiting' | 'detected' | 'latched';
 
 interface LatchStore {
   state: LatchState;

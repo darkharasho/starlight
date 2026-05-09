@@ -3,7 +3,6 @@ import type { LatchState } from '../stores/latch-store.js';
 interface Props { state: LatchState }
 
 const LABELS: Record<LatchState, string> = {
-  idle:      'Idle',
   waiting:   'Waiting for game',
   detected:  'Game detected — click to Latch',
   latched:   'LATCHED',
