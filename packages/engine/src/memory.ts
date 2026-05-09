@@ -1,6 +1,6 @@
 import type { Session } from './session.js';
 import type { ReadSpec, ValueType, StringSpec } from './types.js';
-import { ReadError } from './errors.js';
+import { ReadError, WriteError } from './errors.js';
 
 export type PrimitiveValue = number | bigint | string;
 
@@ -67,4 +67,45 @@ async function readString(session: Session, address: string, spec: StringSpec): 
     if (buf.readUInt16LE(i) === 0) return buf.subarray(0, i).toString('utf16le');
   }
   return buf.toString('utf16le');
+}
+
+export async function write(
+  session: Session,
+  address: string,
+  type: ValueType,
+  value: number | bigint,
+): Promise<void> {
+  if (type === 'string') throw new WriteError('use writeString for strings');
+  const buf = Buffer.alloc(SIZE_OF[type]);
+  switch (type) {
+    case 'int8':   buf.writeInt8(value as number, 0); break;
+    case 'uint8':  buf.writeUInt8(value as number, 0); break;
+    case 'int16':  buf.writeInt16LE(value as number, 0); break;
+    case 'uint16': buf.writeUInt16LE(value as number, 0); break;
+    case 'int32':  buf.writeInt32LE(value as number, 0); break;
+    case 'uint32': buf.writeUInt32LE(value as number, 0); break;
+    case 'int64':  buf.writeBigInt64LE(typeof value === 'bigint' ? value : BigInt(value), 0); break;
+    case 'uint64': buf.writeBigUInt64LE(typeof value === 'bigint' ? value : BigInt(value), 0); break;
+    case 'float':  buf.writeFloatLE(value as number, 0); break;
+    case 'double': buf.writeDoubleLE(value as number, 0); break;
+    default: throw new WriteError(`unsupported type ${String(type)}`);
+  }
+  await writeBytes(session, address, buf);
+}
+
+async function writeBytes(session: Session, address: string, data: Buffer): Promise<void> {
+  const script = await session.fridaSession.createScript(`
+    rpc.exports = {
+      write: function(addrHex, bytes) {
+        ptr(addrHex).writeByteArray(bytes);
+      }
+    };
+  `);
+  await script.load();
+  try {
+    const exp = script.exports as { write: (a: string, b: number[]) => Promise<void> };
+    await exp.write(address, Array.from(data));
+  } finally {
+    await script.unload();
+  }
 }
