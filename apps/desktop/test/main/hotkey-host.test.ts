@@ -29,7 +29,7 @@ describe('hotkey-host', () => {
     const { registerForTrainer, unregisterAll } = await import('../../src/main/hotkey-host.js');
     registerForTrainer({
       categories: [{ name: 'X', cheats: [{
-        id: 'speed', name: 'Speed', type: 'set', kind: 'value',
+        id: 'speed', name: 'Speed', type: 'set',
         valueType: 'float', address: { kind: 'absolute', address: '0x0' },
         min: 0, max: 10, step: 0.5, default: 1,
         hotkeys: { toggle: 'F4', inc: 'F4+Up', dec: 'F4+Down' },
@@ -55,7 +55,7 @@ describe('hotkey-host', () => {
     const { registerForTrainer, unregisterAll } = await import('../../src/main/hotkey-host.js');
     registerForTrainer({
       categories: [{ name: 'X', cheats: [{
-        id: 'godmode', name: 'God', type: 'toggle', kind: 'toggle',
+        id: 'godmode', name: 'God', type: 'toggle',
         valueType: 'uint32', address: { kind: 'absolute', address: '0x0' },
         hotkeys: { toggle: 'BAD' },
       }] }],

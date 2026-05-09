@@ -36,13 +36,13 @@ function registerCheat(cheat: StarlightSupportedCheat): void {
       broadcast({ type: 'cheat:toggled', cheatId: cheat.id, on: next, cause: 'hotkey' });
     });
   }
-  if (cheat.kind === 'value' && hk.inc) {
+  if (cheat.type === 'set' && hk.inc) {
     tryRegister(hk.inc, async () => {
       const r = await engineHost.incCheat(cheat.id);
       if (r.ok) broadcast({ type: 'hotkey:inc', cheatId: cheat.id });
     });
   }
-  if (cheat.kind === 'value' && hk.dec) {
+  if (cheat.type === 'set' && hk.dec) {
     tryRegister(hk.dec, async () => {
       const r = await engineHost.decCheat(cheat.id);
       if (r.ok) broadcast({ type: 'hotkey:dec', cheatId: cheat.id });
