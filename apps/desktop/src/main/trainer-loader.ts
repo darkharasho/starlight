@@ -30,9 +30,10 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
     return { ok: false, error: `failed to read ${path}: ${err instanceof Error ? err.message : String(err)}` };
   }
   try {
+    const base = basename(path).replace(/\.(ct|CT)$/, '');
     const out = importCt(xml, {
-      gameName: basename(path).replace(/\.(ct|CT)$/, ''),
-      processName: ['unknown'],   // user supplies real process name later
+      gameName: base,
+      processName: [base, `${base}.exe`],
       platform: ['linux'],
     });
     await cancelAllFreezes();
