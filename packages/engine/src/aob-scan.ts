@@ -15,7 +15,7 @@ export async function aobScan(session: Session, spec: AobScanSpec): Promise<stri
   `);
   await script.load();
   try {
-    const exp = script.exports as { scan: (m: string, p: string) => string[] | { error: string } };
+    const exp = script.exports as unknown as { scan: (m: string, p: string) => string[] | { error: string } };
     const result = await exp.scan(spec.module, spec.pattern);
     if (!Array.isArray(result)) throw new ScanError(result.error);
     if (spec.resultOffset && result.length > 0) {

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Lower ptrace scope (so tests can attach)
+        run: |
+          echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build C test target
+        run: make -C packages/engine/test-target
+
+      - name: Lint
+        run: pnpm -r lint
+
+      - name: Test
+        run: pnpm -r test
