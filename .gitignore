@@ -6,3 +6,10 @@ dist
 build
 *.log
 .superpowers
+
+# build output
+packages/*/dist
+packages/*/test-target/build
+
+# pnpm
+.pnpm-store
