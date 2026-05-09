@@ -10,6 +10,22 @@ function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
   return !('unsupported' in c) || c.unsupported !== true;
 }
 
+function ErrorBanner({ message }: { message: string }): JSX.Element {
+  const isPermission = /ptrace|permission|EPERM/i.test(message);
+  return (
+    <div className="col-span-2 text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-2">
+      <div className="font-semibold mb-1">{isPermission ? 'Permission denied' : 'Error'}</div>
+      <div>{message}</div>
+      {isPermission && (
+        <div className="mt-2 text-muted">
+          On Linux, lower the ptrace scope:{' '}
+          <code className="text-neon-cyan font-mono">sudo sysctl kernel.yama.ptrace_scope=0</code>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ActiveTrainerRoute(): JSX.Element {
   const trainer = useTrainerStore((s) => s.trainer);
   const activeCheats = useTrainerStore((s) => s.activeCheats);
@@ -125,11 +141,7 @@ function TrainerView({
         </div>
       </div>
 
-      {(latchError || trainerError) && (
-        <div className="col-span-2 text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-2">
-          {latchError ?? trainerError}
-        </div>
-      )}
+      {(latchError || trainerError) && <ErrorBanner message={latchError ?? trainerError ?? ''} />}
 
       <aside className="flex flex-col gap-1">
         <div className="text-[9px] tracking-wider uppercase text-muted px-2 pb-1">Categories</div>
