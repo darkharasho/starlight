@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
-import { CHANNELS, type AttachResult, type LoadTrainerResult } from '../shared/ipc.js';
+import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult } from '../shared/ipc.js';
 import { loadTrainer } from './trainer-loader.js';
+import * as engineHost from './engine-host.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -33,10 +34,10 @@ app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
     loadTrainer(BrowserWindow.getFocusedWindow() ?? undefined));
 
-  ipcMain.handle(CHANNELS.attach, async (): Promise<AttachResult> =>
-    ({ ok: false, code: 'unknown', message: 'attach not implemented (Phase 4 Task 3)' }));
+  ipcMain.handle(CHANNELS.attach,
+    async (_evt, req: AttachRequest): Promise<AttachResult> => engineHost.attach(req.pid));
 
-  ipcMain.handle(CHANNELS.detach,        async () => undefined);
+  ipcMain.handle(CHANNELS.detach, async () => engineHost.detach());
   ipcMain.handle(CHANNELS.toggleCheat,   async () => ({ ok: false, error: 'not implemented (Phase 4 Task 4)' }));
   ipcMain.handle(CHANNELS.setCheatValue, async () => ({ ok: false, error: 'not implemented (Phase 4 Task 4)' }));
 
@@ -48,4 +49,8 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', async () => {
+  await engineHost.detach();
 });
