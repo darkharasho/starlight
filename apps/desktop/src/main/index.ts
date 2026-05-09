@@ -31,6 +31,13 @@ function createWindow(): void {
   }
 }
 
+engineHost.onDetached((reason) => {
+  unregisterHotkeys();
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(CHANNELS.event, { type: 'session:detached', reason });
+  }
+});
+
 app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
     loadTrainer(BrowserWindow.getFocusedWindow() ?? undefined));

@@ -27,6 +27,10 @@ const freezeHandles = new Map<string, FreezeHandle>();
 /** Last value chosen by the user per value-cheat (for setValue without freeze). */
 const lastValues = new Map<string, number>();
 
+type DetachedListener = (reason: 'process-exit' | 'manual') => void;
+let detachedListener: DetachedListener | null = null;
+export function onDetached(listener: DetachedListener): void { detachedListener = listener; }
+
 export function currentSession(): Session | null { return session; }
 export function setActiveTrainer(t: StarlightTrainer): void { activeTrainer = t; }
 
@@ -34,6 +38,15 @@ export async function attach(pid: number): Promise<AttachResult> {
   if (session) await detach();
   try {
     session = await engineAttach(pid);
+    session.fridaSession.detached.connect(() => {
+      // Frida fired detached — process exited or session was lost.
+      // Clean up our state and notify.
+      const wasManual = session === null;  // detach() sets session=null first
+      for (const [, h] of freezeHandles) { h.cancel().catch(() => {}); }
+      freezeHandles.clear();
+      session = null;
+      if (!wasManual && detachedListener) detachedListener('process-exit');
+    });
     return { ok: true };
   } catch (err) {
     if (err instanceof PermissionError) return { ok: false, code: 'permission', message: err.message };
@@ -49,6 +62,7 @@ export async function detach(): Promise<void> {
   try { await session.detach(); }
   catch { /* swallow */ }
   session = null;
+  if (detachedListener) detachedListener('manual');
 }
 
 export function isAttached(): boolean { return session !== null && session.attached; }
