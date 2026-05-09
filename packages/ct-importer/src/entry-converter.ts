@@ -64,7 +64,9 @@ export function convertEntry(entry: CtEntry): ConvertedEntry {
     };
   }
 
-  const offsets = asArray(entry.Offsets?.Offset).map((n) => Number(n));
+  const offsets = asArray(entry.Offsets?.Offset).map((n) =>
+    typeof n === 'number' ? n : parseInt(String(n), 16),
+  );
   const address = parseAddress(entry.Address, offsets.length > 0 ? offsets : undefined);
 
   if (!address) {

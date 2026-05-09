@@ -14,7 +14,6 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@starlight/engine": "workspace:*",
     "commander": "^12.1.0",
     "fast-xml-parser": "^4.4.0",
     "zod": "^3.23.0"

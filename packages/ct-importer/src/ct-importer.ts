@@ -32,22 +32,36 @@ function slugify(s: string): string {
 
 export function importCt(xml: string, opts: ImportOptions): ImportResult {
   const root = parseCt(xml);
-  const top = asArray(root.CheatTable.CheatEntries.CheatEntry);
+  const top = asArray(root.CheatTable.CheatEntries?.CheatEntry);
   const stats = emptyStats();
   const categories: StarlightCategory[] = [];
   const generalCheats: StarlightCheat[] = [];
+
+  const seenIds = new Set<string>();
+
+  function uniqueId(base: string): string {
+    if (!seenIds.has(base)) { seenIds.add(base); return base; }
+    let i = 2;
+    while (seenIds.has(`${base}-${i}`)) i += 1;
+    const id = `${base}-${i}`;
+    seenIds.add(id);
+    return id;
+  }
 
   function walkAt(entry: CtEntry, intoCheats: StarlightCheat[]): void {
     const r = convertEntry(entry);
     if (r.kind === 'category') {
       const childCheats: StarlightCheat[] = [];
       for (const c of r.children) walkAt(c, childCheats);
-      categories.push({ name: r.name, cheats: childCheats });
-      stats.categories += 1;
+      if (childCheats.length > 0) {
+        categories.push({ name: r.name, cheats: childCheats });
+        stats.categories += 1;
+      }
     } else {
-      intoCheats.push(r.cheat);
+      const uniqueCheat: StarlightCheat = { ...r.cheat, id: uniqueId(r.cheat.id) };
+      intoCheats.push(uniqueCheat);
       stats.total += 1;
-      if ('unsupported' in r.cheat && r.cheat.unsupported) stats.unsupported += 1;
+      if ('unsupported' in uniqueCheat && uniqueCheat.unsupported) stats.unsupported += 1;
       else stats.supported += 1;
     }
   }

@@ -10,9 +10,6 @@ importers:
 
   packages/ct-importer:
     dependencies:
-      '@starlight/engine':
-        specifier: workspace:*
-        version: link:../engine
       commander:
         specifier: ^12.1.0
         version: 12.1.0

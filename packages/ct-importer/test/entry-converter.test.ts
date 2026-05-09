@@ -126,4 +126,20 @@ describe('convertEntry', () => {
     if (r.kind !== 'cheat' || r.cheat.unsupported) throw new Error('expected supported');
     expect(r.cheat.name).toBe('Quoted');
   });
+
+  it('parses hex-string offsets correctly (regression: was producing 0xNaN)', () => {
+    const entry: CtEntry = {
+      ID: 99,
+      Description: '"Hex Offsets"',
+      VariableType: '4 Bytes',
+      Address: '"target"+00403090',
+      Offsets: { Offset: ['10', 'FFFFFFFC' as unknown as number, 0] },
+    };
+    const r = convertEntry(entry);
+    if (r.kind !== 'cheat' || r.cheat.unsupported) throw new Error('expected supported');
+    expect(r.cheat.address).toMatchObject({
+      kind: 'pointer',
+      offsets: ['0x10', '0xfffffffc', '0x0'],
+    });
+  });
 });

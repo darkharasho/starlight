@@ -63,4 +63,62 @@ describe('importCt', () => {
     expect(result.trainer.categories).toHaveLength(1);
     expect(result.trainer.categories[0]!.name).toBe('General');
   });
+
+  it('handles a CheatTable with no CheatEntries (empty result, no crash)', () => {
+    const xml = '<?xml version="1.0" encoding="utf-8"?><CheatTable CheatEngineTableVersion="42"></CheatTable>';
+    const result = importCt(xml, { gameName: 'Empty', processName: ['x'] });
+    expect(result.stats).toEqual({ total: 0, supported: 0, unsupported: 0, categories: 0 });
+    expect(result.trainer.categories).toEqual([]);
+  });
+
+  it('does not emit empty parent categories for nested groups', () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="42">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>10</ID>
+      <Description>"Outer"</Description>
+      <Options moHideChildren="1"/>
+      <GroupHeader>1</GroupHeader>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>20</ID>
+          <Description>"Inner"</Description>
+          <Options moHideChildren="1"/>
+          <GroupHeader>1</GroupHeader>
+          <CheatEntries>
+            <CheatEntry>
+              <ID>21</ID>
+              <Description>"Health"</Description>
+              <VariableType>4 Bytes</VariableType>
+              <Address>"target"+0040303C</Address>
+            </CheatEntry>
+          </CheatEntries>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>`;
+    const result = importCt(xml, { gameName: 'X', processName: ['x'] });
+    // Outer is empty (only contains Inner, which is itself a group with no direct cheats... wait, Inner has Health).
+    // Inner has 1 cheat. So Inner should appear with 1 cheat. Outer should NOT appear (it has no direct cheats).
+    expect(result.trainer.categories).toHaveLength(1);
+    expect(result.trainer.categories[0]!.name).toBe('Inner');
+    expect(result.trainer.categories[0]!.cheats).toHaveLength(1);
+    expect(result.stats).toEqual({ total: 1, supported: 1, unsupported: 0, categories: 1 });
+  });
+
+  it('de-duplicates cheat IDs when CE entries share the same numeric ID', () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="42">
+  <CheatEntries>
+    <CheatEntry><ID>1</ID><Description>"A"</Description><VariableType>4 Bytes</VariableType><Address>"target"+00001000</Address></CheatEntry>
+    <CheatEntry><ID>1</ID><Description>"B"</Description><VariableType>4 Bytes</VariableType><Address>"target"+00002000</Address></CheatEntry>
+    <CheatEntry><ID>1</ID><Description>"C"</Description><VariableType>4 Bytes</VariableType><Address>"target"+00003000</Address></CheatEntry>
+  </CheatEntries>
+</CheatTable>`;
+    const result = importCt(xml, { gameName: 'X', processName: ['x'] });
+    const ids = result.trainer.categories[0]!.cheats.map((c) => c.id);
+    expect(ids).toEqual(['cheat-1', 'cheat-1-2', 'cheat-1-3']);
+  });
 });
