@@ -194,5 +194,12 @@ export async function setCheatValue(cheatId: string, value: number): Promise<Ipc
   }
 }
 
+export async function incCheat(_cheatId: string): Promise<IpcResult> {
+  return { ok: false, error: 'incCheat not yet implemented' };
+}
+export async function decCheat(_cheatId: string): Promise<IpcResult> {
+  return { ok: false, error: 'decCheat not yet implemented' };
+}
+
 // Re-export `read` for callers that want to inspect current memory (Phase 5+)
 export { read, ReadError, WriteError };
