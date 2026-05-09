@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdir, copyFile, readFile, writeFile, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,7 @@ async function prepareSteamRoot(): Promise<string> {
 describe('SteamScanner', () => {
   let root: string;
   beforeAll(async () => { root = await prepareSteamRoot(); });
+  afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 
   it('returns all installed games across libraries', async () => {
     const s = new SteamScanner({ rootResolver: async () => root });
@@ -47,6 +48,7 @@ describe('SteamScanner', () => {
     expect(games).toHaveLength(3);
     const byId = Object.fromEntries(games.map(g => [g.appId, g]));
     expect(byId['440']!.name).toBe('Team Fortress 2');
+    expect(byId['730']!.name).toBe('Counter-Strike 2');
     expect(byId['440']!.installDir).toBe(join(root, 'steamapps', 'common', 'Team Fortress 2'));
     expect(byId['730']!.installDir).toBe(join(root, 'steamapps', 'common', 'Counter-Strike Global Offensive'));
     expect(byId['570']!.installDir).toBe(join(root, 'library2', 'steamapps', 'common', 'dota 2 beta'));

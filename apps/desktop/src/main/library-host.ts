@@ -38,13 +38,18 @@ async function defaultSteamRoot(): Promise<string | null> {
     case 'win32': {
       const pf86 = process.env['ProgramFiles(x86)'];
       if (pf86) candidates.push(join(pf86, 'Steam'));
-      // Registry fallback: HKLM\Software\Valve\Steam\InstallPath
-      try {
-        const { stdout } = await execFileAsync('reg.exe',
-          ['query', 'HKLM\\Software\\Valve\\Steam', '/v', 'InstallPath']);
-        const m = stdout.match(/InstallPath\s+REG_SZ\s+(.+)\s*$/m);
-        if (m && m[1]) candidates.push(m[1].trim());
-      } catch { /* registry miss is fine */ }
+      // Registry fallback: query HKCU first, then HKLM
+      const queries: Array<[string, string]> = [
+        ['HKCU\\Software\\Valve\\Steam', 'SteamPath'],
+        ['HKLM\\Software\\Valve\\Steam', 'InstallPath'],
+      ];
+      for (const [key, value] of queries) {
+        try {
+          const { stdout } = await execFileAsync('reg.exe', ['query', key, '/v', value]);
+          const m = stdout.match(/(?:SteamPath|InstallPath)\s+REG_SZ\s+(.+)\s*$/m);
+          if (m?.[1]) { candidates.push(m[1].trim()); break; }
+        } catch { /* registry miss is fine */ }
+      }
       break;
     }
   }
