@@ -7,3 +7,4 @@ export {
 } from './errors.js';
 export { resolvePointerChain } from './pointer-chain.js';
 export { aobScan } from './aob-scan.js';
+export { freeze, type FreezeSpec, type FreezeHandle } from './freeze.js';
