@@ -12,7 +12,7 @@ export function BoxartGrid({ games, onSelect, cols = 'grid-cols-8' }: Props): JS
   return (
     <div className={`grid ${cols} gap-3`}>
       {games.map((g) => (
-        <GameTile key={g.steamAppId} game={g} onClick={onSelect} />
+        <GameTile key={g.steamAppId} game={g} {...(onSelect ? { onClick: onSelect } : {})} />
       ))}
     </div>
   );
