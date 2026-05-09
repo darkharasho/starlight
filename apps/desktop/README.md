@@ -57,8 +57,20 @@ Phase 4 connects the renderer to the real engine. To run the full demo against t
 
 7. **Test process-exit:** in the terminal, `kill <pid>` the test target. The desktop app should clear active state and show "Process exited."
 
+## Phase 4.5 demo additions
+
+Phase 4.5 adds Library auto-detection, process-picker auto-fill, and Inc/Dec hotkeys. Run through the Phase 4 demo first (test target latched), then continue:
+
+3. **Library tab:** Click "Library" in the sidebar. If Steam is installed, the grid shows boxart tiles for each detected game. If Steam is absent (or no games are installed), the empty-state message is shown instead.
+
+4. **Process picker auto-fill:** Click "Home" → "Load Trainer (.CT)" → pick `packages/engine/test-target/target.CT`. Navigate to Active Trainer. Because the trainer's `processName` list is `['target', 'target.exe']`, the process picker should automatically highlight the running `target` PID. Select it and click Latch.
+
+5. **Inc/Dec hotkeys:** With the trainer latched and the "Speed" cheat toggled on, press the Inc hotkey (default `F4+Up` as specified in the .CT accelerators) and confirm the displayed value increases by one `step`. Press the Dec hotkey (`F4+Down`) and confirm it decreases. The test-target binary prints ticking values to stdout — the stepped delta should be visible there.
+
+6. **Detach:** Click Detach. The process-poll loop resumes. Minimise the window and confirm CPU drops; restore and confirm the UI updates.
+
 ## Phase 4.5 / 5 deferred items
-- Library auto-detection (Steam/Epic/Heroic/Lutris) — Phase 4.5
-- Process auto-detection — Phase 4.5
-- Inc/Dec hotkeys for value cheats — Phase 4.5
+- Library auto-detection (Steam) — DONE — Phase 4.5
+- Process auto-detection — DONE — Phase 4.5
+- Inc/Dec hotkeys for value cheats — DONE — Phase 4.5
 - Catalog repo + community trainer index — Phase 5
