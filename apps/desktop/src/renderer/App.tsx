@@ -1,7 +1,31 @@
+import { Routes, Route } from 'react-router-dom';
+import { Sidebar } from './components/Sidebar.js';
+import { TopBar } from './components/TopBar.js';
+import { useLatchState } from './stores/latch-store.js';
+
+import { HomeRoute } from './routes/HomeRoute.js';
+import { LibraryRoute } from './routes/LibraryRoute.js';
+import { BrowseRoute } from './routes/BrowseRoute.js';
+import { SearchRoute } from './routes/SearchRoute.js';
+import { ActiveTrainerRoute } from './routes/ActiveTrainerRoute.js';
+
 export default function App(): JSX.Element {
+  const latchState = useLatchState((s) => s.state);
   return (
-    <div className="flex h-screen items-center justify-center text-neon-cyan">
-      <h1 className="text-2xl font-bold tracking-widest">★ STARLIGHT</h1>
+    <div className="flex h-screen">
+      <Sidebar />
+      <div className="flex flex-col flex-1 min-w-0">
+        <TopBar latchState={latchState} />
+        <main className="flex-1 overflow-y-auto p-5">
+          <Routes>
+            <Route path="/"        element={<HomeRoute />} />
+            <Route path="/library" element={<LibraryRoute />} />
+            <Route path="/browse"  element={<BrowseRoute />} />
+            <Route path="/search"  element={<SearchRoute />} />
+            <Route path="/active"  element={<ActiveTrainerRoute />} />
+          </Routes>
+        </main>
+      </div>
     </div>
   );
 }
