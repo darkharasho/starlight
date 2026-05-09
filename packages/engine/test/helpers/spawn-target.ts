@@ -15,17 +15,33 @@ export interface SpawnedTarget {
 
 export async function spawnTarget(): Promise<SpawnedTarget> {
   const child: ChildProcess = spawn(TARGET_BINARY, [], { stdio: ['ignore', 'pipe', 'inherit'] });
-  if (!child.pid || !child.stdout) throw new Error('failed to spawn target');
+  if (!child.stdout) throw new Error('failed to spawn target: no stdout stream');
 
   const addresses: Record<string, string> = {};
   const offsets: Record<string, number> = {};
 
   await new Promise<void>((resolveReady, rejectReady) => {
     let buf = '';
-    const onErr = (e: Error) => rejectReady(e);
-    child.once('error', onErr);
-    child.stdout!.setEncoding('utf8');
-    child.stdout!.on('data', (chunk: string) => {
+
+    const timer = setTimeout(() => {
+      child.stdout!.off('data', onData);
+      child.off('error', onErr);
+      rejectReady(new Error('spawnTarget: timed out after 5 s waiting for hp_in_stats from target binary'));
+    }, 5000);
+
+    const onErr = (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      child.stdout!.off('data', onData);
+      if (e.code === 'ENOENT') {
+        rejectReady(new Error(
+          `spawnTarget: binary not found at ${TARGET_BINARY} — rebuild with: make -C packages/engine/test-target`,
+        ));
+      } else {
+        rejectReady(e);
+      }
+    };
+
+    const onData = (chunk: string) => {
       buf += chunk;
       let nl: number;
       while ((nl = buf.indexOf('\n')) !== -1) {
@@ -38,14 +54,22 @@ export async function spawnTarget(): Promise<SpawnedTarget> {
         if (o) {
           offsets[o[1]!] = Number(o[2]);
           if (o[1] === 'hp_in_stats') {
+            clearTimeout(timer);
+            child.stdout!.off('data', onData);
             child.off('error', onErr);
             resolveReady();
             return;
           }
         }
       }
-    });
+    };
+
+    child.once('error', onErr);
+    child.stdout!.setEncoding('utf8');
+    child.stdout!.on('data', onData);
   });
+
+  if (!child.pid) throw new Error('failed to spawn target');
 
   return {
     pid: child.pid,
