@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { StarlightTrainer, StarlightCheat, StarlightSupportedCheat } from '../../shared/ipc.js';
+import type { StarlightTrainer, StarlightCheat, StarlightSupportedCheat, StarlightEvent } from '../../shared/ipc.js';
 import { starlight } from '../ipc-client.js';
 
 interface TrainerStore {
@@ -13,6 +13,7 @@ interface TrainerStore {
   loadTrainer:   () => Promise<void>;
   toggleCheat:   (cheatId: string, on: boolean) => Promise<void>;
   setCheatValue: (cheatId: string, value: number) => Promise<void>;
+  applyEvent:    (e: StarlightEvent) => void;
   clear:         () => void;
 }
 
@@ -86,6 +87,16 @@ export const useTrainerStore = create<TrainerStore>((set, get) => ({
       return;
     }
     set((prev) => ({ values: { ...prev.values, [cheatId]: clamped } }));
+  },
+
+  applyEvent(e) {
+    if (e.type === 'cheat:toggled') {
+      set((prev) => ({ activeCheats: { ...prev.activeCheats, [e.cheatId]: e.on } }));
+    } else if (e.type === 'cheat:value-changed') {
+      set((prev) => ({ values: { ...prev.values, [e.cheatId]: e.value } }));
+    } else if (e.type === 'session:detached') {
+      set({ activeCheats: {}, error: e.reason === 'process-exit' ? 'Process exited.' : null });
+    }
   },
 
   clear() { set({ trainer: null, activeCheats: {}, values: {}, error: null }); },

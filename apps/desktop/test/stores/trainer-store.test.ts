@@ -72,3 +72,27 @@ describe('trainer-store', () => {
     expect(useTrainerStore.getState().values.c).toBe(5); // clamped
   });
 });
+
+describe('trainer-store applyEvent', () => {
+  beforeEach(() => {
+    setStarlightApi(fakeApi());
+    useTrainerStore.setState({ trainer: minimalTrainer, activeCheats: {}, values: {}, error: null });
+  });
+
+  it('updates activeCheats on cheat:toggled', () => {
+    useTrainerStore.getState().applyEvent({ type: 'cheat:toggled', cheatId: 'a', on: true, cause: 'hotkey' });
+    expect(useTrainerStore.getState().activeCheats.a).toBe(true);
+  });
+
+  it('updates values on cheat:value-changed', () => {
+    useTrainerStore.getState().applyEvent({ type: 'cheat:value-changed', cheatId: 'b', value: 2.5, cause: 'hotkey' });
+    expect(useTrainerStore.getState().values.b).toBe(2.5);
+  });
+
+  it('clears active state and surfaces an error on session:detached due to process-exit', () => {
+    useTrainerStore.setState({ activeCheats: { a: true } });
+    useTrainerStore.getState().applyEvent({ type: 'session:detached', reason: 'process-exit' });
+    expect(useTrainerStore.getState().activeCheats).toEqual({});
+    expect(useTrainerStore.getState().error).toMatch(/process exited/i);
+  });
+});
