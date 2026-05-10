@@ -94,6 +94,14 @@ export const useTrainerStore = create<TrainerStore>((set, get) => ({
 
   async setProcessName(names) {
     await starlight().setProcessName({ names });
+    const t = get().trainer;
+    if (t) {
+      try {
+        await starlight().updateConfig({
+          patch: { processNameOverrides: { [t.id]: names } },
+        });
+      } catch { /* swallow — UI override still applied to in-memory trainer */ }
+    }
     set((s) => s.trainer
       ? { trainer: { ...s.trainer, game: { ...s.trainer.game, processName: names } } }
       : s);

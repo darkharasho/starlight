@@ -80,6 +80,17 @@ describe('trainer-store', () => {
     expect(setProcessNameMock).toHaveBeenCalledWith({ names: ['target', 'target.exe'] });
     expect(useTrainerStore.getState().trainer?.game.processName).toEqual(['target', 'target.exe']);
   });
+
+  it('setProcessName persists to config processNameOverrides', async () => {
+    let received: unknown;
+    setStarlightApi(fakeApi({
+      setProcessName: vi.fn().mockResolvedValue(undefined),
+      updateConfig: vi.fn().mockImplementation(async (req) => { received = req.patch; return { pollIntervalMs: 500, processNameOverrides: {} } as any; }),
+    }));
+    useTrainerStore.setState({ trainer: minimalTrainer });
+    await useTrainerStore.getState().setProcessName(['game.exe']);
+    expect(received).toEqual({ processNameOverrides: { 't': ['game.exe'] } });
+  });
 });
 
 describe('trainer-store applyEvent', () => {
