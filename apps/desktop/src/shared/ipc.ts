@@ -113,7 +113,8 @@ export type StarlightEvent =
   | { type: 'hotkey:inc';           cheatId: string }
   | { type: 'hotkey:dec';           cheatId: string }
   | { type: 'config:changed';       config: UserConfig }
-  | { type: 'config:corrupted';     backupPath: string };
+  | { type: 'config:corrupted';     backupPath: string }
+  | { type: 'hotkeys:unavailable';  message: string };
 
 export interface WindowState { maximized: boolean }
 

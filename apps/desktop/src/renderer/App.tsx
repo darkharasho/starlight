@@ -34,6 +34,15 @@ export default function App(): JSX.Element {
         window.alert(
           `Your Starlight config was unreadable and has been backed up to:\n\n${e.backupPath}\n\nDefault settings have been restored.`,
         );
+      } else if (e.type === 'hotkeys:unavailable') {
+        window.alert(
+          `Hotkeys are unavailable on this system.\n\n` +
+          `Reason: ${e.message}\n\n` +
+          `On Linux, ensure your user is in the 'input' group:\n` +
+          `  sudo usermod -a -G input $USER\n` +
+          `Then log out and back in.\n\n` +
+          `On macOS, grant Accessibility permission to this app in System Settings → Privacy & Security → Accessibility.`,
+        );
       }
     });
     return unsub;

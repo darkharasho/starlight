@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, globalShortcut, dialog } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
-import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer } from './hotkey-host.js';
+import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
@@ -61,6 +61,12 @@ app.whenReady().then(async () => {
   setOnCorrupt((backupPath) => {
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.event, { type: 'config:corrupted', backupPath });
+    }
+  });
+
+  setHotkeysInitFailureHandler((message) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event, { type: 'hotkeys:unavailable', message });
     }
   });
 
