@@ -12,6 +12,7 @@ import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { detectCeRuntime } from './ce-runtime-detect.js';
 import { installCeRuntime } from './ce-runtime-install.js';
+import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, getActiveSession as ceGetActiveSession } from './ce-session.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -226,6 +227,23 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { ctPath: string }) => {
+    try {
+      const r = await ceStartSession({ ctPath: req.ctPath, runtimeRoot: CE_RUNTIME_ROOT });
+      return { ok: true as const, sessionId: r.sessionId, records: r.records };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const reason = /not installed/i.test(msg) ? 'runtime-missing' as const :
+                     /spawn|timed out/i.test(msg) ? 'spawn-failed' as const :
+                     'unknown' as const;
+      return { ok: false as const, error: msg, reason };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.ceSessionEnd, async (_evt, req: { sessionId: string }) => ceEndSession(req));
+  ipcMain.handle(CHANNELS.ceSessionSetActive, async (_evt, req: { sessionId: string; recordId: number; active: boolean }) =>
+    ceSetActive(req));
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);
@@ -250,4 +268,6 @@ app.on('before-quit', async () => {
   shutdownHotkeys();
   unregisterHotkeys();
   await engineHost.detach();
+  const s = ceGetActiveSession();
+  if (s) await ceEndSession({ sessionId: s.sessionId }).catch(() => {});
 });

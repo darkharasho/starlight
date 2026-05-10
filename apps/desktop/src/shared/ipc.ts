@@ -29,6 +29,10 @@ export const CHANNELS = {
   ceRuntimeStatus:   'starlight:ceRuntime:status',
   ceRuntimeInstall:  'starlight:ceRuntime:install',
   ceRuntimeProgress: 'starlight:ceRuntime:progress',
+  // CE session
+  ceSessionStart:     'starlight:ceSession:start',
+  ceSessionEnd:       'starlight:ceSession:end',
+  ceSessionSetActive: 'starlight:ceSession:setActive',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -151,6 +155,17 @@ export interface CeRuntimeProgressEvent {
   total?: number;
 }
 
+export interface CeSessionRecord {
+  id: number;
+  name: string;
+  isActive: boolean;
+  isGroupHeader: boolean;
+}
+
+export type CeSessionStartResult =
+  | { ok: true; sessionId: string; records: CeSessionRecord[] }
+  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'unknown' };
+
 export interface StarlightApi {
   loadTrainer():     Promise<LoadTrainerResult>;
   attach(req: AttachRequest): Promise<AttachResult>;
@@ -179,6 +194,10 @@ export interface StarlightApi {
   ceRuntimeStatus(): Promise<CeRuntimeStatus>;
   ceRuntimeInstall(): Promise<{ ok: true } | { ok: false; error: string }>;
   onCeRuntimeProgress(cb: (e: CeRuntimeProgressEvent) => void): () => void;
+  // CE session
+  ceSessionStart(req: { ctPath: string }): Promise<CeSessionStartResult>;
+  ceSessionEnd(req: { sessionId: string }): Promise<{ ok: boolean }>;
+  ceSessionSetActive(req: { sessionId: string; recordId: number; active: boolean }): Promise<{ ok: boolean; error?: string }>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;
