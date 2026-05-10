@@ -111,6 +111,15 @@ app.whenReady().then(() => {
     }
   });
 
+  // TODO(phase-5.1 task 3): placeholder — replaced by user-config in task 3
+  ipcMain.handle(CHANNELS.getConfig, async () => {
+    throw new Error('user-config not yet wired');
+  });
+  // TODO(phase-5.1 task 3): placeholder — replaced by user-config in task 3
+  ipcMain.handle(CHANNELS.updateConfig, async () => {
+    throw new Error('user-config not yet wired');
+  });
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);

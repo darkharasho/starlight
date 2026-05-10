@@ -16,6 +16,9 @@ export const CHANNELS = {
   setProcessName: 'starlight:setProcessName',
   // Phase 5.0 Task 11
   setTrainerFromCatalog: 'starlight:setTrainerFromCatalog',
+  // Phase 5.1
+  getConfig:    'starlight:getConfig',
+  updateConfig: 'starlight:updateConfig',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -69,7 +72,9 @@ export type StarlightEvent =
   | { type: 'process:matched';      pid: number; name: string }
   | { type: 'library:scanned';      games: DetectedGame[] }
   | { type: 'hotkey:inc';           cheatId: string }
-  | { type: 'hotkey:dec';           cheatId: string };
+  | { type: 'hotkey:dec';           cheatId: string }
+  | { type: 'config:changed';       config: UserConfig }
+  | { type: 'config:corrupted';     backupPath: string };
 
 export interface WindowState { maximized: boolean }
 
@@ -88,12 +93,58 @@ export interface StarlightApi {
   fetchTrainer(req: FetchTrainerRequest): Promise<TrainerResult>;
   setTrainerFromCatalog(req: { trainer: import('@starlight/catalog/schema').StarlightTrainer }): Promise<IpcResult>;
   onEvent(listener: (e: StarlightEvent) => void): () => void;
+  // Phase 5.1
+  getConfig():    Promise<UserConfig>;
+  updateConfig(req: UpdateConfigRequest): Promise<UserConfig>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;
   windowClose():          void;
   onWindowState(listener: (state: WindowState) => void): () => void;
 }
+
+// Phase 5.1 — User config types (canonical Zod schema in main/user-config.ts)
+export interface RecentTrainer {
+  id: string;
+  name: string;
+  openedAt: string;                    // ISO timestamp
+  source: 'catalog' | 'file';
+}
+
+export interface AppPreferences {
+  theme: 'dark';
+  pollIntervalMs: number;              // 500–30000; ProcessHost interval
+  catalogRefreshOnLaunch: boolean;
+}
+
+export interface ManualGame {
+  id: string;
+  name: string;
+  exePath: string;
+  addedAt: string;
+}
+
+export interface CheatHotkeyOverride {
+  toggle?: string | null;
+  inc?: string | null;
+  dec?: string | null;
+}
+
+export interface UserConfig {
+  schemaVersion: 1;
+  processNameOverrides: Record<string, string[]>;
+  recents: RecentTrainer[];
+  preferences: AppPreferences;
+  manualGames: ManualGame[];
+  hotkeyOverrides: Record<string, Record<string, CheatHotkeyOverride>>;
+}
+
+// DeepPartial type used by updateConfig patches.
+export type DeepPartial<T> = T extends object
+  ? { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
+
+export interface UpdateConfigRequest { patch: DeepPartial<UserConfig> }
 
 declare global {
   interface Window { starlight: StarlightApi }
