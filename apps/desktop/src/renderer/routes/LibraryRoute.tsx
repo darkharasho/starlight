@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import type { DetectedGame } from '../../shared/ipc.js';
+import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 
 function boxartUrl(g: DetectedGame): string {
   return `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appId}/library_600x900.jpg`;
@@ -38,6 +39,8 @@ export function LibraryRoute(): JSX.Element {
   const loading = useLibraryStore((s) => s.loading);
   const error = useLibraryStore((s) => s.error);
   const scan = useLibraryStore((s) => s.scan);
+  const addManual = useLibraryStore((s) => s.addManual);
+  const [showAddDialog, setShowAddDialog] = useState(false);
   const processes = useProcessStore((s) => s.processes);
 
   useEffect(() => { void scan(); }, [scan]);
@@ -60,13 +63,22 @@ export function LibraryRoute(): JSX.Element {
     <div className="flex flex-col gap-4 h-full">
       <div className="flex items-baseline justify-between">
         <h1 className="text-lg font-semibold">Library</h1>
-        <button
-          type="button"
-          onClick={() => void scan()}
-          className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowAddDialog(true)}
+            className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan"
+          >
+            Add manually
+          </button>
+          <button
+            type="button"
+            onClick={() => void scan()}
+            className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -103,6 +115,15 @@ export function LibraryRoute(): JSX.Element {
             );
           })}
         </div>
+      )}
+      {showAddDialog && (
+        <AddManualGameDialog
+          onCancel={() => setShowAddDialog(false)}
+          onConfirm={async ({ name, exePath }) => {
+            await addManual(name, exePath);
+            setShowAddDialog(false);
+          }}
+        />
       )}
     </div>
   );
