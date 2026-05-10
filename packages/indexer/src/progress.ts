@@ -33,8 +33,46 @@ export interface ProgressOpts {
   lineEvery?: number;
   /** Stream to write user-visible progress to. Default `process.stderr`. */
   stream?: NodeJS.WritableStream & { isTTY?: boolean };
+  /** Force colors on/off. Defaults to TTY && !NO_COLOR. */
+  color?: boolean;
   /** Clock injection for tests. */
   now?: () => number;
+}
+
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const BAR_WIDTH = 24;
+const BAR_FILLED = '█';
+const BAR_EMPTY = '░';
+
+interface Style {
+  reset: string;
+  bold: (s: string) => string;
+  dim: (s: string) => string;
+  cyan: (s: string) => string;
+  green: (s: string) => string;
+  yellow: (s: string) => string;
+  red: (s: string) => string;
+  magenta: (s: string) => string;
+  gray: (s: string) => string;
+}
+
+function makeStyle(enabled: boolean): Style {
+  if (!enabled) {
+    const id = (s: string): string => s;
+    return { reset: '', bold: id, dim: id, cyan: id, green: id, yellow: id, red: id, magenta: id, gray: id };
+  }
+  const wrap = (code: string) => (s: string): string => `\x1b[${code}m${s}\x1b[0m`;
+  return {
+    reset: '\x1b[0m',
+    bold: wrap('1'),
+    dim: wrap('2'),
+    cyan: wrap('36'),
+    green: wrap('32'),
+    yellow: wrap('33'),
+    red: wrap('31'),
+    magenta: wrap('35'),
+    gray: wrap('90'),
+  };
 }
 
 export class Progress {
@@ -52,7 +90,8 @@ export class Progress {
   private readonly tty: boolean;
   private readonly lineEvery: number;
   private readonly nowFn: () => number;
-  private lastDrawnLength = 0;
+  private readonly style: Style;
+  private lastDrawnVisibleWidth = 0;
   private finished = false;
 
   constructor(opts: ProgressOpts) {
@@ -64,6 +103,8 @@ export class Progress {
     this.lineEvery = opts.lineEvery ?? 10;
     this.nowFn = opts.now ?? Date.now;
     this.startMs = this.nowFn();
+    const colorOn = opts.color ?? (this.tty && !process.env.NO_COLOR);
+    this.style = makeStyle(colorOn);
   }
 
   setTotal(total: number | null): void {
@@ -93,7 +134,11 @@ export class Progress {
     this.finished = true;
     if (label !== undefined) this.label = label;
     await this.flush(true);
-    if (this.tty) this.stream.write('\n');
+    if (this.tty) {
+      // Clear the live line, then print a multi-line summary.
+      this.stream.write('\r' + ' '.repeat(this.lastDrawnVisibleWidth) + '\r');
+      this.stream.write(this.formatSummary(this.snapshot()) + '\n');
+    }
   }
 
   snapshot(): ProgressSnapshot {
@@ -127,18 +172,103 @@ export class Progress {
 
   private render(snap: ProgressSnapshot, force: boolean): void {
     if (this.tty) {
-      const line = formatLine(snap);
-      const padded = line.padEnd(this.lastDrawnLength, ' ');
-      this.stream.write(`\r${padded}`);
-      this.lastDrawnLength = line.length;
+      const { line, visibleWidth } = this.formatLiveLine(snap);
+      const pad = Math.max(0, this.lastDrawnVisibleWidth - visibleWidth);
+      this.stream.write('\r' + line + ' '.repeat(pad));
+      this.lastDrawnVisibleWidth = visibleWidth;
       return;
     }
     if (!force && snap.current > 0 && snap.current % this.lineEvery !== 0) return;
-    this.stream.write(`${formatLine(snap)}\n`);
+    this.stream.write(`${formatPlainLine(snap)}\n`);
+  }
+
+  /** TTY live line: spinner · phase · bar · counts · timing · label. */
+  private formatLiveLine(s: ProgressSnapshot): { line: string; visibleWidth: number } {
+    const c = this.style;
+    const parts: { vis: string; col: string }[] = [];
+
+    const glyph = s.done
+      ? (s.counters.failed > 0 ? '✗' : '✓')
+      : SPINNER[Math.floor(this.nowFn() / 80) % SPINNER.length]!;
+    const glyphColor = s.done
+      ? (s.counters.failed > 0 ? c.red(glyph) : c.green(glyph))
+      : c.cyan(glyph);
+    parts.push({ vis: glyph, col: glyphColor });
+
+    parts.push({ vis: this.phase, col: c.bold(this.phase) });
+
+    if (s.total !== null && s.total > 0) {
+      const pct = Math.min(1, s.current / s.total);
+      const filled = Math.round(BAR_WIDTH * pct);
+      const bar = BAR_FILLED.repeat(filled) + BAR_EMPTY.repeat(BAR_WIDTH - filled);
+      const barCol = c.cyan(BAR_FILLED.repeat(filled)) + c.dim(BAR_EMPTY.repeat(BAR_WIDTH - filled));
+      const pctText = ` ${(pct * 100).toFixed(0).padStart(3)}%`;
+      parts.push({ vis: bar + pctText, col: barCol + c.dim(pctText) });
+    }
+
+    const ratio = s.total !== null ? `${s.current}/${s.total}` : `${s.current}`;
+    parts.push({ vis: ratio, col: c.bold(ratio) });
+
+    const counterStr = formatCounters(s.counters, c);
+    if (counterStr.vis.length > 0) parts.push(counterStr);
+
+    const elapsed = formatDuration(s.elapsedMs);
+    parts.push({ vis: elapsed, col: c.dim(elapsed) });
+    if (s.etaMs !== null) {
+      const eta = `ETA ${formatDuration(s.etaMs)}`;
+      parts.push({ vis: eta, col: c.dim(eta) });
+    }
+
+    if (s.label) {
+      const truncated = s.label.length > 60 ? s.label.slice(0, 57) + '…' : s.label;
+      parts.push({ vis: truncated, col: c.gray(truncated) });
+    }
+
+    const sep = '  ';
+    const line = parts.map(p => p.col).join(sep);
+    const visibleWidth = parts.map(p => p.vis).join(sep).length;
+    return { line, visibleWidth };
+  }
+
+  /** Multi-line completion summary on TTY. */
+  private formatSummary(s: ProgressSnapshot): string {
+    const c = this.style;
+    const ok = s.counters.failed === 0;
+    const head = ok
+      ? `${c.green('✓')}  ${c.bold(this.phase + ' complete')}`
+      : `${c.red('✗')}  ${c.bold(this.phase + ' finished with errors')}`;
+
+    const lines: string[] = [head];
+    const total = s.total !== null ? `${s.current}/${s.total}` : `${s.current}`;
+    const counterText = formatCounters(s.counters, c).col || c.dim('no items');
+    lines.push(c.dim('   ') + total + '  ' + counterText);
+    const timing: string[] = [`elapsed ${formatDuration(s.elapsedMs)}`];
+    if (s.label) timing.push(s.label);
+    lines.push(c.dim('   ') + c.dim(timing.join('  ')));
+    if (s.lastError) {
+      lines.push(c.dim('   ') + c.red('last error: ') + c.dim(truncate(s.lastError, 100)));
+    }
+    return lines.join('\n');
   }
 }
 
-function formatLine(s: ProgressSnapshot): string {
+function formatCounters(c: ProgressCounters, st: Style): { vis: string; col: string } {
+  const items: { vis: string; col: string }[] = [];
+  if (c.added)     items.push({ vis: `+${c.added} added`,         col: st.green(`+${c.added} added`) });
+  if (c.updated)   items.push({ vis: `~${c.updated} updated`,     col: st.yellow(`~${c.updated} updated`) });
+  if (c.unchanged) items.push({ vis: `=${c.unchanged} unchanged`, col: st.dim(`=${c.unchanged} unchanged`) });
+  if (c.skipped)   items.push({ vis: `·${c.skipped} skipped`,     col: st.dim(`·${c.skipped} skipped`) });
+  if (c.failed)    items.push({ vis: `!${c.failed} failed`,       col: st.red(`!${c.failed} failed`) });
+  const sep = '  ';
+  return { vis: items.map(i => i.vis).join(sep), col: items.map(i => i.col).join(sep) };
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+/** Plain text format used for non-TTY (CI / piped) output. */
+function formatPlainLine(s: ProgressSnapshot): string {
   const parts: string[] = [];
   parts.push(`[${s.phase}]`);
   parts.push(s.total !== null ? `${s.current}/${s.total}` : `${s.current}`);
