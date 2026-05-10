@@ -48,8 +48,8 @@ afterEach(() => {
 describe('LibraryRoute', () => {
   it('triggers scan on mount and renders detected games', async () => {
     render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
-    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
-    expect(screen.getByText('Counter-Strike 2')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
+    expect(screen.getAllByText('Counter-Strike 2')[0]!).toBeInTheDocument();
   });
 
   it('shows empty state when no games detected', async () => {
@@ -62,7 +62,7 @@ describe('LibraryRoute', () => {
 
   it('Refresh button re-scans', async () => {
     render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
-    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
     const freshApi = makeScanApi([]);
     setStarlightApi(freshApi);
     await userEvent.click(screen.getByRole('button', { name: /refresh/i }));
@@ -72,13 +72,13 @@ describe('LibraryRoute', () => {
   it('shows Running badge on tile when process name matches installDir basename', async () => {
     useProcessStore.setState({ processes: [{ pid: 1, name: 'team fortress 2' }], matchedPid: null });
     render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
-    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
     expect(screen.getByText('Running')).toBeInTheDocument();
   });
 
   it('shows Trainer badge only on tiles whose Steam ID is in the catalog', async () => {
     render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
-    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
     // TF2 (appId 440) is in the catalog stub — badge should appear
     expect(screen.getByText('Trainer')).toBeInTheDocument();
     // CS2 (appId 730) is NOT in the catalog stub — only one Trainer badge total
@@ -98,7 +98,7 @@ describe('LibraryRoute', () => {
       loading: false, error: null,
     } as never);
     render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
-    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
     expect(screen.getAllByText('Trainer').length).toBeGreaterThan(0);
   });
 
@@ -133,7 +133,7 @@ describe('LibraryRoute', () => {
     useTrainerStore.setState({ setActiveTrainerFromCatalog: setActive } as never);
 
     render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
-    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
     await userEvent.click(screen.getByTitle('Open Team Fortress 2 trainer'));
     await waitFor(() => expect(requestedPath).toBe('trainers/by-id.json'));
   });

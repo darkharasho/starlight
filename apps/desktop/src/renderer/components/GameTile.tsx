@@ -32,7 +32,8 @@ export function GameTile({ game, onClick }: Props): JSX.Element {
     if (r.url && r.url !== upfrontCover) setResolvedCover(r.url);
   }
 
-  const cover = resolvedCover ?? (errored ? null : upfrontCover);
+  // After an error AND a fallback attempt, give up — keep the name backdrop only.
+  const cover = errored ? resolvedCover : (resolvedCover ?? upfrontCover);
 
   return (
     <button

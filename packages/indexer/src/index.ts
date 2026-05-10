@@ -9,6 +9,7 @@ import { writeIndex } from './write.js';
 import { discover } from './discover.js';
 import { loadSteamAppList } from './steam.js';
 import { Progress } from './progress.js';
+import { cleanTitle } from './title.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -55,11 +56,14 @@ async function main(): Promise<number> {
   const generatedAt = new Date().toISOString();
   const indexEntries: CatalogIndexEntry[] = [];
   for (const seed of seeds) {
-    const id = allocateId(seed.name, taken);
+    // Re-apply cleanTitle from rawTitle when present, so changes to the cleaner
+    // propagate without needing a fresh discover run.
+    const name = seed.rawTitle ? cleanTitle(seed.rawTitle) : seed.name;
+    const id = allocateId(name, taken);
     taken.add(id);
     indexEntries.push({
       id,
-      name: seed.name,
+      name,
       steamAppId: seed.steamAppId,
       processName: seed.processName,
       platform: seed.platform,

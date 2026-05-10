@@ -8,12 +8,11 @@ interface Props {
   onSelect?: (game: CatalogGame) => void;
   /** Approximate tile width in px; used to pick a column count. */
   tileWidth?: number;
-  /** Tile aspect 2:3 plus name+badges → ~1.5:1 inner ratio. */
-  tileHeight?: number;
 }
 
 const DEFAULT_TILE_W = 160;
-const DEFAULT_TILE_H = 270;
+/** Padding around each tile inside its grid cell. */
+const CELL_PADDING = 6;
 
 interface CellProps {
   games: CatalogGame[];
@@ -22,19 +21,18 @@ interface CellProps {
   onSelect?: (g: CatalogGame) => void;
 }
 
-function Cell({ rowIndex, columnIndex, style, games, cols, cellW, onSelect }: CellComponentProps<CellProps>): JSX.Element | null {
+function Cell({ rowIndex, columnIndex, style, games, cols, onSelect }: CellComponentProps<CellProps>): JSX.Element | null {
   const idx = rowIndex * cols + columnIndex;
   const game = games[idx];
   if (!game) return null;
-  const padded: React.CSSProperties = { ...style, padding: 6, width: cellW };
   return (
-    <div style={padded}>
+    <div style={style} className="p-1.5">
       <GameTile game={game} {...(onSelect ? { onClick: onSelect } : {})} />
     </div>
   );
 }
 
-export function BoxartGrid({ games, onSelect, tileWidth = DEFAULT_TILE_W, tileHeight = DEFAULT_TILE_H }: Props): JSX.Element {
+export function BoxartGrid({ games, onSelect, tileWidth = DEFAULT_TILE_W }: Props): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 1200, height: 800 });
 
@@ -52,6 +50,10 @@ export function BoxartGrid({ games, onSelect, tileWidth = DEFAULT_TILE_W, tileHe
 
   const cols = Math.max(1, Math.floor(size.width / tileWidth));
   const cellW = Math.floor(size.width / cols);
+  // Tile inside has aspect-[2/3]; account for cell padding above/below/around.
+  const innerW = cellW - CELL_PADDING * 2;
+  const innerH = Math.round(innerW * 1.5);
+  const rowH = innerH + CELL_PADDING * 2;
   const rowCount = Math.ceil(games.length / cols);
 
   // Stable cellProps reference — Grid re-renders cells when this object changes.
@@ -66,7 +68,7 @@ export function BoxartGrid({ games, onSelect, tileWidth = DEFAULT_TILE_W, tileHe
           columnCount={cols}
           columnWidth={cellW}
           rowCount={rowCount}
-          rowHeight={tileHeight}
+          rowHeight={rowH}
           defaultWidth={size.width}
           defaultHeight={size.height}
           overscanCount={4}

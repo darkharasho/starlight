@@ -50,7 +50,7 @@ function GameTile({
     if (r.url && r.url !== upfrontCover) setResolvedCover(r.url);
   }
 
-  const cover = resolvedCover ?? (errored ? null : upfrontCover);
+  const cover = errored ? resolvedCover : (resolvedCover ?? upfrontCover);
   const clickable = !!onClick && hasTrainer;
   const tileTitle = clickable
     ? `Open ${game.name} trainer`
@@ -64,17 +64,16 @@ function GameTile({
 
   const InnerImage = (
     <>
-      {cover ? (
+      <div className="absolute inset-0 flex items-center justify-center text-[10px] text-muted px-2 text-center pointer-events-none">
+        {game.name}
+      </div>
+      {cover && (
         <img
           src={cover}
-          alt={game.name}
-          className="w-full h-full object-cover"
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover"
           onError={() => void handleImgError()}
         />
-      ) : (
-        <div className="w-full h-full flex items-center justify-center text-[10px] text-muted px-2 text-center">
-          {game.name}
-        </div>
       )}
     </>
   );

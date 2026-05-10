@@ -49,4 +49,9 @@ describe('cleanTitle', () => {
     expect(cleanTitle('Some Game — Cheat Table')).toBe('Some Game');
     expect(cleanTitle('Some Game – Cheat Table')).toBe('Some Game');
   });
+
+  it('decodes numeric HTML entities and strips emoji decoration', () => {
+    expect(cleanTitle('&#128640; Jump Space &#128640;')).toBe('Jump Space');
+    expect(cleanTitle('&#x1F525; Hot Game &#x1F525;')).toBe('Hot Game');
+  });
 });
