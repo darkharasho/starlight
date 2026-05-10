@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
+import { useTrainerStore } from '../stores/trainer-store.js';
 import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 import { starlight } from '../ipc-client.js';
@@ -13,11 +15,12 @@ function boxartUrl(g: DetectedGame): string | null {
 }
 
 function GameTile({
-  game, running, hasTrainer, onRemove,
+  game, running, hasTrainer, onClick, onRemove,
 }: {
   game: DetectedGame;
   running: boolean;
   hasTrainer: boolean;
+  onClick?: () => void;
   onRemove?: () => void;
 }): JSX.Element {
   const upfrontCover = boxartUrl(game);
@@ -48,35 +51,70 @@ function GameTile({
   }
 
   const cover = resolvedCover ?? (errored ? null : upfrontCover);
+  const clickable = !!onClick && hasTrainer;
+  const tileTitle = clickable
+    ? `Open ${game.name} trainer`
+    : hasTrainer
+      ? game.name
+      : `${game.name} — no trainer in catalog yet`;
+
+  const tileClass = `aspect-[2/3] rounded-sm border bg-panel overflow-hidden relative transition-colors ${
+    clickable ? 'border-line hover:border-neon-cyan cursor-pointer' : 'border-line cursor-default'
+  } ${hasTrainer ? '' : 'opacity-70'}`;
+
+  const InnerImage = (
+    <>
+      {cover ? (
+        <img
+          src={cover}
+          alt={game.name}
+          className="w-full h-full object-cover"
+          onError={() => void handleImgError()}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center text-[10px] text-muted px-2 text-center">
+          {game.name}
+        </div>
+      )}
+    </>
+  );
 
   return (
-    <div className="flex flex-col gap-1.5 group relative">
-      <div className="aspect-[2/3] rounded-sm border border-line bg-panel overflow-hidden">
-        {cover ? (
-          <img
-            src={cover}
-            alt={game.name}
-            className="w-full h-full object-cover"
-            onError={() => void handleImgError()}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-[10px] text-muted px-2 text-center">
-            {game.name}
-          </div>
-        )}
-        {onRemove && (
-          <button
-            type="button"
-            aria-label={`Remove ${game.name}`}
-            onClick={() => {
-              if (window.confirm(`Remove "${game.name}" from your library?`)) onRemove();
-            }}
-            className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center text-[10px] rounded-sm border border-line bg-bg/80 text-muted opacity-0 group-hover:opacity-100 hover:border-neon-pink hover:text-neon-pink"
-          >
-            ×
-          </button>
-        )}
-      </div>
+    <div className="flex flex-col gap-1.5 group">
+      {clickable ? (
+        <button type="button" onClick={onClick} title={tileTitle} className={tileClass}>
+          {InnerImage}
+          {onRemove && (
+            <span
+              role="button"
+              aria-label={`Remove ${game.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (window.confirm(`Remove "${game.name}" from your library?`)) onRemove();
+              }}
+              className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center text-[10px] rounded-sm border border-line bg-bg/80 text-muted opacity-0 group-hover:opacity-100 hover:border-neon-pink hover:text-neon-pink"
+            >
+              ×
+            </span>
+          )}
+        </button>
+      ) : (
+        <div title={tileTitle} className={tileClass}>
+          {InnerImage}
+          {onRemove && (
+            <button
+              type="button"
+              aria-label={`Remove ${game.name}`}
+              onClick={() => {
+                if (window.confirm(`Remove "${game.name}" from your library?`)) onRemove();
+              }}
+              className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center text-[10px] rounded-sm border border-line bg-bg/80 text-muted opacity-0 group-hover:opacity-100 hover:border-neon-pink hover:text-neon-pink"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
       <div className="flex items-center gap-1.5 flex-wrap">
         <div className="text-[11px] font-semibold truncate">{game.name}</div>
         {running && (
@@ -100,13 +138,28 @@ export function LibraryRoute(): JSX.Element {
   const removeManual = useLibraryStore((s) => s.removeManual);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const processes = useProcessStore((s) => s.processes);
+  const navigate = useNavigate();
 
   useEffect(() => { void scan(); }, [scan]);
   useEffect(() => { attachProcessEvents(); }, []);
 
   const catalogIndex = useCatalogStore((s) => s.index);
   const loadCatalog = useCatalogStore((s) => s.load);
+  const fetchTrainer = useCatalogStore((s) => s.trainer);
+  const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
   useEffect(() => { if (!catalogIndex) void loadCatalog(); }, [catalogIndex, loadCatalog]);
+
+  async function openTrainerForGame(g: DetectedGame): Promise<void> {
+    if (!catalogIndex) return;
+    const steamId = g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : NaN);
+    if (Number.isNaN(steamId)) return;
+    const entry = catalogIndex.games.find((e) => e.steamAppId === steamId);
+    if (!entry) return;
+    const trainer = await fetchTrainer(entry.trainerPath);
+    if (!trainer) return;
+    await setActiveTrainerFromCatalog(trainer);
+    navigate('/active');
+  }
 
   const runningSet = useMemo(() => {
     return new Set(processes.map((p) => p.name.toLowerCase().replace(/\.exe$/i, '')));
@@ -170,6 +223,7 @@ export function LibraryRoute(): JSX.Element {
                 game={g}
                 running={runningSet.has(dirName)}
                 hasTrainer={!Number.isNaN(isCatalogMatch) && catalogSteamIds.has(isCatalogMatch as number)}
+                onClick={() => void openTrainerForGame(g)}
                 {...(g.source === 'manual' ? { onRemove: () => void removeManual(g.appId) } : {})}
               />
             );

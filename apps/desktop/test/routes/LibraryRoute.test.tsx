@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { LibraryRoute } from '../../src/renderer/routes/LibraryRoute.js';
 import { useLibraryStore } from '../../src/renderer/stores/library-store.js';
 import { useProcessStore } from '../../src/renderer/stores/process-store.js';
@@ -46,21 +47,21 @@ afterEach(() => {
 
 describe('LibraryRoute', () => {
   it('triggers scan on mount and renders detected games', async () => {
-    render(<LibraryRoute />);
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
     expect(screen.getByText('Counter-Strike 2')).toBeInTheDocument();
   });
 
   it('shows empty state when no games detected', async () => {
     setStarlightApi(makeScanApi([]));
-    render(<LibraryRoute />);
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
     await waitFor(() =>
       expect(screen.getByText(/no installed games detected/i)).toBeInTheDocument(),
     );
   });
 
   it('Refresh button re-scans', async () => {
-    render(<LibraryRoute />);
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
     const freshApi = makeScanApi([]);
     setStarlightApi(freshApi);
@@ -70,13 +71,13 @@ describe('LibraryRoute', () => {
 
   it('shows Running badge on tile when process name matches installDir basename', async () => {
     useProcessStore.setState({ processes: [{ pid: 1, name: 'team fortress 2' }], matchedPid: null });
-    render(<LibraryRoute />);
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
     expect(screen.getByText('Running')).toBeInTheDocument();
   });
 
   it('shows Trainer badge only on tiles whose Steam ID is in the catalog', async () => {
-    render(<LibraryRoute />);
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
     // TF2 (appId 440) is in the catalog stub — badge should appear
     expect(screen.getByText('Trainer')).toBeInTheDocument();
