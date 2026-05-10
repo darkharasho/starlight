@@ -25,6 +25,10 @@ export const CHANNELS = {
   rebindHotkey: 'starlight:rebindHotkey',
   // Phase 5.5
   resolveBoxart: 'starlight:resolveBoxart',
+  // CE runtime
+  ceRuntimeStatus:   'starlight:ceRuntime:status',
+  ceRuntimeInstall:  'starlight:ceRuntime:install',
+  ceRuntimeProgress: 'starlight:ceRuntime:progress',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -136,6 +140,17 @@ export type StarlightEvent =
 
 export interface WindowState { maximized: boolean }
 
+export type CeRuntimeStatus =
+  | { status: 'ready'; installDir: string; binary: string }
+  | { status: 'not-installed' }
+  | { status: 'installing'; phase: string; current?: number; total?: number };
+
+export interface CeRuntimeProgressEvent {
+  phase: 'downloading' | 'verifying' | 'extracting' | 'done';
+  current?: number;
+  total?: number;
+}
+
 export interface StarlightApi {
   loadTrainer():     Promise<LoadTrainerResult>;
   attach(req: AttachRequest): Promise<AttachResult>;
@@ -160,6 +175,10 @@ export interface StarlightApi {
   rebindHotkey(req: RebindHotkeyRequest): Promise<RebindHotkeyResult>;
   // Phase 5.5
   resolveBoxart(req: ResolveBoxartRequest): Promise<ResolveBoxartResult>;
+  // CE runtime
+  ceRuntimeStatus(): Promise<CeRuntimeStatus>;
+  ceRuntimeInstall(): Promise<{ ok: true } | { ok: false; error: string }>;
+  onCeRuntimeProgress(cb: (e: CeRuntimeProgressEvent) => void): () => void;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;

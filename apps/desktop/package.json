@@ -16,6 +16,7 @@
     "@starlight/ct-importer": "workspace:*",
     "@starlight/engine": "workspace:*",
     "@types/react-window": "^2.0.0",
+    "@types/yazl": "^2.4.5",
     "better-sqlite3": "^11.3.0",
     "ps-list": "^8.1.1",
     "react": "^18.3.0",
@@ -24,6 +25,7 @@
     "react-window": "^2.2.7",
     "uiohook-napi": "^1.5.4",
     "yauzl": "^3.1.3",
+    "yazl": "^2.5.1",
     "zod": "^3.23.0",
     "zustand": "^4.5.0"
   },

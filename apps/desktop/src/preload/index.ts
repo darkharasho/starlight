@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { CHANNELS, type StarlightApi, type StarlightEvent, type WindowState } from '../shared/ipc.js';
+import { CHANNELS, type StarlightApi, type StarlightEvent, type WindowState, type CeRuntimeProgressEvent } from '../shared/ipc.js';
 
 const api: StarlightApi = {
   loadTrainer:   ()    => ipcRenderer.invoke(CHANNELS.loadTrainer),
@@ -18,6 +18,13 @@ const api: StarlightApi = {
   pickExecutable: () => ipcRenderer.invoke(CHANNELS.pickExecutable),
   rebindHotkey: (req) => ipcRenderer.invoke(CHANNELS.rebindHotkey, req),
   resolveBoxart: (req) => ipcRenderer.invoke(CHANNELS.resolveBoxart, req),
+  ceRuntimeStatus:   () => ipcRenderer.invoke(CHANNELS.ceRuntimeStatus),
+  ceRuntimeInstall:  () => ipcRenderer.invoke(CHANNELS.ceRuntimeInstall),
+  onCeRuntimeProgress: (cb: (e: CeRuntimeProgressEvent) => void) => {
+    const handler = (_e: unknown, payload: CeRuntimeProgressEvent) => cb(payload);
+    ipcRenderer.on(CHANNELS.ceRuntimeProgress, handler);
+    return () => { ipcRenderer.removeListener(CHANNELS.ceRuntimeProgress, handler); };
+  },
   onEvent: (listener) => {
     const handler = (_evt: unknown, e: StarlightEvent): void => listener(e);
     ipcRenderer.on(CHANNELS.event, handler);

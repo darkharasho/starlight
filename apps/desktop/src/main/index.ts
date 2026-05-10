@@ -10,6 +10,8 @@ import { fetchTrainerLive } from './trainer-live-fetch.js';
 import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
+import { detectCeRuntime } from './ce-runtime-detect.js';
+import { installCeRuntime } from './ce-runtime-install.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -49,6 +51,9 @@ function createWindow(): void {
     win.loadFile(join(__dirname, '../renderer/index.html'));
   }
 }
+
+const CE_RUNTIME_ROOT = join(app.getPath('userData'), 'runtime');
+const CE_MANIFEST_URL = 'https://raw.githubusercontent.com/darkharasho/starlight-runtimes/main/manifest.json';
 
 engineHost.onDetached((reason) => {
   unregisterHotkeys();
@@ -199,6 +204,27 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(CHANNELS.resolveBoxart, async (_evt, req: import('../shared/ipc.js').ResolveBoxartRequest):
     Promise<import('../shared/ipc.js').ResolveBoxartResult> => resolveBoxart(req));
+
+  ipcMain.handle(CHANNELS.ceRuntimeStatus, async () =>
+    detectCeRuntime({ runtimeRoot: CE_RUNTIME_ROOT }));
+
+  ipcMain.handle(CHANNELS.ceRuntimeInstall, async (evt) => {
+    try {
+      const manifestRes = await fetch(CE_MANIFEST_URL);
+      if (!manifestRes.ok) return { ok: false as const, error: `manifest HTTP ${manifestRes.status}` };
+      const manifest = await manifestRes.json() as { cheatEngine: { platforms: { 'linux-x64': { url: string; sha256: string } } } };
+      const linux = manifest.cheatEngine.platforms['linux-x64'];
+      await installCeRuntime({
+        url: linux.url,
+        sha256: linux.sha256,
+        runtimeRoot: CE_RUNTIME_ROOT,
+        onProgress: (e) => evt.sender.send(CHANNELS.ceRuntimeProgress, e),
+      });
+      return { ok: true as const };
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {

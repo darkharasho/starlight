@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { TitleBar } from './components/TitleBar.js';
 import { TrainerLoadingOverlay } from './components/TrainerLoadingOverlay.js';
+import { RuntimeSetupModal } from './components/RuntimeSetupModal.js';
 import { useLatchState } from './stores/latch-store.js';
 import { useConfigStore, attachConfigEvents } from './stores/config-store.js';
 import { useCatalogStore } from './stores/catalog-store.js';
@@ -68,6 +69,7 @@ export default function App(): JSX.Element {
         </div>
       </div>
       <TrainerLoadingOverlay />
+      <RuntimeSetupModal />
     </div>
   );
 }
