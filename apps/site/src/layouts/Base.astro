@@ -1,0 +1,47 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description = 'Open-source, community-driven game trainers.' } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href={`${import.meta.env.BASE_URL}/favicon.svg`} />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-screen flex flex-col">
+    <header class="border-b border-line">
+      <nav class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+        <a href={import.meta.env.BASE_URL} class="text-neon-cyan font-semibold tracking-wider uppercase">
+          ✦ Starlight
+        </a>
+        <div class="flex items-center gap-5 text-xs tracking-wider uppercase text-muted">
+          <a href={`${import.meta.env.BASE_URL}/changelog`} class="hover:text-neon-cyan">Changelog</a>
+          <a href="https://github.com/darkharasho/starlight" class="hover:text-neon-cyan">GitHub</a>
+          <a href={`${import.meta.env.BASE_URL}/catalog/index.json`} class="hover:text-neon-cyan">Catalog</a>
+        </div>
+      </nav>
+    </header>
+    <main class="flex-1">
+      <slot />
+    </main>
+    <footer class="border-t border-line text-[11px] text-muted">
+      <div class="max-w-5xl mx-auto px-6 py-6 flex flex-wrap items-center justify-between gap-3">
+        <div>Starlight is open-source — MIT licensed. Trainers attributed to community contributors.</div>
+        <div class="flex items-center gap-4">
+          <a href="https://github.com/darkharasho/starlight">GitHub</a>
+          <a href="https://github.com/darkharasho/starlight/blob/main/LICENSE">License</a>
+          <a href={`${import.meta.env.BASE_URL}/catalog/index.json`}>Catalog</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

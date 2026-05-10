@@ -1,0 +1,36 @@
+---
+interface Props {
+  downloadHref: string;
+}
+const { downloadHref } = Astro.props;
+---
+<section class="relative overflow-hidden border-b border-line">
+  <div class="max-w-5xl mx-auto px-6 py-20 flex flex-col items-center text-center gap-6">
+    <div class="text-[10px] tracking-widest uppercase text-neon-pink">Open-source • Community-driven</div>
+    <h1 class="text-5xl sm:text-6xl font-semibold leading-tight">
+      Game trainers, the way they should be.
+    </h1>
+    <p class="max-w-prose text-base text-muted">
+      Starlight is a desktop app that loads Cheat Engine tables, attaches to running games, and
+      drives memory edits with global hotkeys. No installer bloat, no proprietary updater — just
+      a small Electron app and an open catalog you can run, audit, or fork.
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-3 mt-2">
+      <a
+        href={downloadHref}
+        class="px-5 py-2.5 text-xs tracking-wider uppercase rounded-sm border border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]"
+      >
+        Download
+      </a>
+      <a
+        href="https://github.com/darkharasho/starlight"
+        class="px-5 py-2.5 text-xs tracking-wider uppercase rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan"
+      >
+        View on GitHub
+      </a>
+    </div>
+    <div class="text-[10px] text-muted mt-1">
+      Linux, macOS, Windows · Built with Electron + Frida
+    </div>
+  </div>
+</section>
