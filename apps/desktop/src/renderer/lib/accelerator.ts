@@ -53,3 +53,42 @@ export function keyboardEventToAccelerator(e: KeyboardEvent): string | null {
   parts.push(token);
   return parts.join('+');
 }
+
+import type { StarlightSupportedCheat } from '../../shared/ipc.js';
+
+export interface ResolvedHotkeys { toggle?: string; inc?: string; dec?: string }
+
+/** Resolve effective hotkeys for a cheat by overlaying overrides on the cheat's defaults. */
+export function resolveCheatHotkeys(
+  cheat: StarlightSupportedCheat,
+  override: { toggle?: string | null; inc?: string | null; dec?: string | null } | undefined,
+): ResolvedHotkeys {
+  const base = cheat.hotkeys ?? {};
+  const out: ResolvedHotkeys = {};
+  for (const slot of ['toggle', 'inc', 'dec'] as const) {
+    if (override && slot in override) {
+      const v = override[slot];
+      if (v != null) out[slot] = v;
+    } else if (base[slot]) {
+      out[slot] = base[slot];
+    }
+  }
+  return out;
+}
+
+export function findConflict(
+  cheats: StarlightSupportedCheat[],
+  overrides: Record<string, { toggle?: string | null; inc?: string | null; dec?: string | null }>,
+  selfCheatId: string,
+  selfSlot: 'toggle' | 'inc' | 'dec',
+  candidate: string,
+): { cheatId: string; slot: string } | null {
+  for (const c of cheats) {
+    const hk = resolveCheatHotkeys(c, overrides[c.id]);
+    for (const slot of ['toggle', 'inc', 'dec'] as const) {
+      if (c.id === selfCheatId && slot === selfSlot) continue;
+      if (hk[slot] === candidate) return { cheatId: c.id, slot };
+    }
+  }
+  return null;
+}

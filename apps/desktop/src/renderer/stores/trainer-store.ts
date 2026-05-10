@@ -18,6 +18,7 @@ interface TrainerStore {
   clear:          () => void;
   /** Phase 5.0 stub — replaced by real impl in Task 11. */
   setActiveTrainerFromCatalog: (trainer: import('@starlight/catalog/schema').StarlightTrainer) => Promise<void>;
+  rebindHotkey: (cheatId: string, slot: 'toggle' | 'inc' | 'dec', accelerator: string | null) => Promise<{ ok: boolean; error?: string }>;
 }
 
 function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
@@ -126,5 +127,18 @@ export const useTrainerStore = create<TrainerStore>((set, get) => ({
       return;
     }
     set({ trainer, activeCheats: {}, values: seedValues(trainer), error: null });
+  },
+
+  async rebindHotkey(cheatId, slot, accelerator) {
+    const t = get().trainer;
+    if (!t) return { ok: false, error: 'no trainer' };
+    const r = await starlight().rebindHotkey({
+      trainerId: t.id, cheatId, slot, accelerator,
+    });
+    if (!r.ok) {
+      if (r.error === 'no-active-trainer') return { ok: false, error: 'No trainer is active' };
+      return { ok: false, error: r.message ?? r.error };
+    }
+    return { ok: true };
   },
 }));

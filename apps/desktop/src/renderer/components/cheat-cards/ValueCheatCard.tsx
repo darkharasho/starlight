@@ -1,3 +1,5 @@
+import { HotkeyCapture } from '../HotkeyCapture.js';
+
 interface Props {
   id: string;
   name: string;
@@ -7,9 +9,12 @@ interface Props {
   step: number;
   min?: number;
   max?: number;
-  hotkeys?: { toggle?: string; inc?: string; dec?: string };
+  hotkeys: { toggle: string | null; inc: string | null; dec: string | null };
+  hotkeyErrors?: { toggle?: string | null; inc?: string | null; dec?: string | null };
   onToggle: (id: string, next: boolean) => void;
   onValueChange: (id: string, value: number) => void;
+  onRebindHotkey: (slot: 'toggle' | 'inc' | 'dec', accelerator: string) => void;
+  onResetHotkey: (slot: 'toggle' | 'inc' | 'dec') => void;
 }
 
 function clamp(v: number, min?: number, max?: number): number {
@@ -20,7 +25,7 @@ function clamp(v: number, min?: number, max?: number): number {
 }
 
 export function ValueCheatCard(props: Props): JSX.Element {
-  const { id, name, description, active, value, step, min, max, hotkeys, onToggle, onValueChange } = props;
+  const { id, name, description, active, value, step, min, max, hotkeys, hotkeyErrors, onToggle, onValueChange, onRebindHotkey, onResetHotkey } = props;
   const containerCls = active
     ? 'border-neon-green bg-neon-green/[0.04] glow-green'
     : 'border-line hover:border-neon-cyan';
@@ -58,13 +63,26 @@ export function ValueCheatCard(props: Props): JSX.Element {
         >+</button>
       </div>
 
-      {hotkeys ? (
-        <div className="flex flex-col gap-0.5 items-end font-mono text-[9px] text-muted">
-          {hotkeys.toggle && <Hotkey label="on" keyName={hotkeys.toggle} active={active} />}
-          {hotkeys.inc    && <Hotkey label="+"  keyName={hotkeys.inc}    active={active} />}
-          {hotkeys.dec    && <Hotkey label="−"  keyName={hotkeys.dec}    active={active} />}
-        </div>
-      ) : <span />}
+      <div className="flex flex-col gap-1 items-end">
+        <HotkeyCapture
+          value={hotkeys.toggle}
+          onCapture={(a) => onRebindHotkey('toggle', a)}
+          onReset={() => onResetHotkey('toggle')}
+          {...(hotkeyErrors?.toggle ? { error: hotkeyErrors.toggle } : {})}
+        />
+        <HotkeyCapture
+          value={hotkeys.inc}
+          onCapture={(a) => onRebindHotkey('inc', a)}
+          onReset={() => onResetHotkey('inc')}
+          {...(hotkeyErrors?.inc ? { error: hotkeyErrors.inc } : {})}
+        />
+        <HotkeyCapture
+          value={hotkeys.dec}
+          onCapture={(a) => onRebindHotkey('dec', a)}
+          onReset={() => onResetHotkey('dec')}
+          {...(hotkeyErrors?.dec ? { error: hotkeyErrors.dec } : {})}
+        />
+      </div>
 
       <button
         type="button"
@@ -75,17 +93,6 @@ export function ValueCheatCard(props: Props): JSX.Element {
       >
         <span className={`absolute top-px size-[14px] rounded-full transition-all ${active ? 'left-[19px] bg-neon-green glow-green' : 'left-px bg-[#3a3a55]'}`} />
       </button>
-    </div>
-  );
-}
-
-function Hotkey({ label, keyName, active }: { label: string; keyName: string; active: boolean }): JSX.Element {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="tracking-wider uppercase opacity-70">{label}</span>
-      <span className={`border px-1.5 py-px rounded-sm min-w-[38px] text-center ${active ? 'border-neon-green/50 text-neon-green' : 'border-line'}`}>
-        {keyName}
-      </span>
     </div>
   );
 }

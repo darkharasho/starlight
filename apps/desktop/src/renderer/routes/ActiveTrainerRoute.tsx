@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useLatchState } from '../stores/latch-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
+import { useConfigStore } from '../stores/config-store.js';
+import { findConflict, resolveCheatHotkeys } from '../lib/accelerator.js';
 import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer } from '../../shared/ipc.js';
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
 import { ValueCheatCard } from '../components/cheat-cards/ValueCheatCard.js';
@@ -37,6 +39,9 @@ export function ActiveTrainerRoute(): JSX.Element {
   const toggleCheat = useTrainerStore((s) => s.toggleCheat);
   const setCheatValue = useTrainerStore((s) => s.setCheatValue);
   const setProcessName = useTrainerStore((s) => s.setProcessName);
+  const rebindHotkey = useTrainerStore((s) => s.rebindHotkey);
+
+  const config = useConfigStore((s) => s.config);
 
   const latchState = useLatchState((s) => s.state);
   const latchError = useLatchState((s) => s.error);
@@ -47,6 +52,36 @@ export function ActiveTrainerRoute(): JSX.Element {
 
   const processes = useProcessStore((s) => s.processes);
   const matchedPid = useProcessStore((s) => s.matchedPid);
+
+  const [hotkeyErrors, setHotkeyErrors] = useState<Record<string, { toggle?: string; inc?: string; dec?: string }>>({});
+
+  const overrides = config && trainer ? (config.hotkeyOverrides[trainer.id] ?? {}) : {};
+  const allCheats = trainer ? trainer.categories.flatMap(c => c.cheats.filter((x): x is StarlightSupportedCheat => isSupported(x))) : [];
+
+  async function handleRebind(cheatId: string, slot: 'toggle' | 'inc' | 'dec', accel: string): Promise<void> {
+    const conflict = findConflict(allCheats, overrides, cheatId, slot, accel);
+    if (conflict) {
+      setHotkeyErrors((e) => ({ ...e, [cheatId]: { ...e[cheatId], [slot]: `Conflicts with ${conflict.cheatId} (${conflict.slot})` } }));
+      return;
+    }
+    const r = await rebindHotkey(cheatId, slot, accel);
+    if (!r.ok) {
+      setHotkeyErrors((e) => ({ ...e, [cheatId]: { ...e[cheatId], [slot]: r.error ?? 'failed' } }));
+    } else {
+      setHotkeyErrors((e) => {
+        const next = { ...(e[cheatId] ?? {}) };
+        delete next[slot];
+        return { ...e, [cheatId]: next };
+      });
+    }
+  }
+
+  async function handleReset(cheatId: string, slot: 'toggle' | 'inc' | 'dec'): Promise<void> {
+    const r = await rebindHotkey(cheatId, slot, null);
+    if (!r.ok) {
+      setHotkeyErrors((e) => ({ ...e, [cheatId]: { ...e[cheatId], [slot]: r.error ?? 'failed' } }));
+    }
+  }
 
   if (!trainer) {
     return (
@@ -74,6 +109,10 @@ export function ActiveTrainerRoute(): JSX.Element {
       detach={detach}
       processes={processes}
       matchedPid={matchedPid}
+      overrides={overrides}
+      hotkeyErrors={hotkeyErrors}
+      handleRebind={handleRebind}
+      handleReset={handleReset}
     />
   );
 }
@@ -94,6 +133,10 @@ interface TrainerViewProps {
   detach: () => Promise<void>;
   processes: { pid: number; name: string }[];
   matchedPid: number | null;
+  overrides: Record<string, { toggle?: string | null; inc?: string | null; dec?: string | null }>;
+  hotkeyErrors: Record<string, { toggle?: string; inc?: string; dec?: string }>;
+  handleRebind: (cheatId: string, slot: 'toggle' | 'inc' | 'dec', accel: string) => Promise<void>;
+  handleReset: (cheatId: string, slot: 'toggle' | 'inc' | 'dec') => Promise<void>;
 }
 
 function TrainerView({
@@ -112,6 +155,10 @@ function TrainerView({
   detach,
   processes,
   matchedPid,
+  overrides,
+  hotkeyErrors,
+  handleRebind,
+  handleReset,
 }: TrainerViewProps): JSX.Element {
   const [activeCategory, setActiveCategory] = useState<string>(trainer.categories[0]!.name);
   const category = trainer.categories.find((c) => c.name === activeCategory) ?? trainer.categories[0]!;
@@ -216,15 +263,16 @@ function TrainerView({
                 step={c.step ?? 1}
                 {...(c.min !== undefined ? { min: c.min } : {})}
                 {...(c.max !== undefined ? { max: c.max } : {})}
-                {...(c.hotkeys ? {
-                  hotkeys: {
-                    ...(c.hotkeys.toggle !== undefined ? { toggle: c.hotkeys.toggle } : {}),
-                    ...(c.hotkeys.inc !== undefined ? { inc: c.hotkeys.inc } : {}),
-                    ...(c.hotkeys.dec !== undefined ? { dec: c.hotkeys.dec } : {}),
-                  },
-                } : {})}
+                hotkeys={{
+                  toggle: resolveCheatHotkeys(c, overrides[c.id]).toggle ?? null,
+                  inc:    resolveCheatHotkeys(c, overrides[c.id]).inc ?? null,
+                  dec:    resolveCheatHotkeys(c, overrides[c.id]).dec ?? null,
+                }}
+                {...(hotkeyErrors[c.id] ? { hotkeyErrors: hotkeyErrors[c.id]! } : {})}
                 onToggle={(id, next) => void toggleCheat(id, next)}
                 onValueChange={(id, v) => void setCheatValue(id, v)}
+                onRebindHotkey={(slot, accel) => void handleRebind(c.id, slot, accel)}
+                onResetHotkey={(slot) => void handleReset(c.id, slot)}
               />
             );
           }
@@ -235,8 +283,11 @@ function TrainerView({
               name={c.name}
               {...(c.description !== undefined ? { description: c.description } : {})}
               active={!!activeCheats[c.id]}
-              {...(c.hotkeys?.toggle ? { hotkey: c.hotkeys.toggle } : {})}
+              hotkey={resolveCheatHotkeys(c, overrides[c.id]).toggle ?? null}
+              {...(hotkeyErrors[c.id]?.toggle ? { hotkeyError: hotkeyErrors[c.id]!.toggle! } : {})}
               onToggle={(id, next) => void toggleCheat(id, next)}
+              onRebindHotkey={(slot, accel) => void handleRebind(c.id, slot, accel)}
+              onResetHotkey={(slot) => void handleReset(c.id, slot)}
             />
           );
         })}

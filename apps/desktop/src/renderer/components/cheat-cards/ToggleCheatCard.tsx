@@ -1,13 +1,21 @@
+import { HotkeyCapture } from '../HotkeyCapture.js';
+
 interface Props {
   id: string;
   name: string;
   description?: string;
   active: boolean;
-  hotkey?: string;
+  hotkey: string | null;
+  hotkeyError?: string | null;
   onToggle: (id: string, next: boolean) => void;
+  onRebindHotkey: (slot: 'toggle', accelerator: string) => void;
+  onResetHotkey: (slot: 'toggle') => void;
 }
 
-export function ToggleCheatCard({ id, name, description, active, hotkey, onToggle }: Props): JSX.Element {
+export function ToggleCheatCard({
+  id, name, description, active, hotkey, hotkeyError,
+  onToggle, onRebindHotkey, onResetHotkey,
+}: Props): JSX.Element {
   const containerCls = active
     ? 'border-neon-green bg-neon-green/[0.04] glow-green'
     : 'border-line hover:border-neon-cyan';
@@ -19,11 +27,12 @@ export function ToggleCheatCard({ id, name, description, active, hotkey, onToggl
         <div className={`text-[13px] font-semibold ${titleCls}`}>{name}</div>
         {description && <div className="text-[11px] text-muted mt-0.5">{description}</div>}
       </div>
-      {hotkey ? (
-        <span className={`text-[10px] tracking-wider px-2 py-1 rounded-sm border font-mono ${active ? 'border-neon-green text-neon-green' : 'border-line text-muted'}`}>
-          {hotkey}
-        </span>
-      ) : <span />}
+      <HotkeyCapture
+        value={hotkey}
+        onCapture={(accel) => onRebindHotkey('toggle', accel)}
+        onReset={() => onResetHotkey('toggle')}
+        {...(hotkeyError ? { error: hotkeyError } : {})}
+      />
       <button
         type="button"
         role="switch"
@@ -31,9 +40,7 @@ export function ToggleCheatCard({ id, name, description, active, hotkey, onToggl
         onClick={() => onToggle(id, !active)}
         className={`w-9 h-[18px] rounded-[10px] border relative transition-colors ${active ? 'bg-neon-green/[0.15] border-neon-green' : 'bg-line border-line'}`}
       >
-        <span
-          className={`absolute top-px size-[14px] rounded-full transition-all ${active ? 'left-[19px] bg-neon-green glow-green' : 'left-px bg-[#3a3a55]'}`}
-        />
+        <span className={`absolute top-px size-[14px] rounded-full transition-all ${active ? 'left-[19px] bg-neon-green glow-green' : 'left-px bg-[#3a3a55]'}`} />
       </button>
     </div>
   );
