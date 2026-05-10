@@ -24,6 +24,7 @@ jobs:
           node-version: '20'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @starlight/ct-importer build
       - run: pnpm --filter @starlight/catalog build
       - run: pnpm --filter @starlight/site build
       - name: Compose deploy directory
