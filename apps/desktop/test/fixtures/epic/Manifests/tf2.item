@@ -1,0 +1,6 @@
+{
+  "AppName": "TeamFortress2",
+  "DisplayName": "Team Fortress 2",
+  "InstallLocation": "/games/Team Fortress 2",
+  "LaunchExecutable": "tf2.exe"
+}

@@ -174,12 +174,67 @@ function matchCatalog(exePath: string, catalog: CatalogIndex): number | null {
   return null;
 }
 
-// Phase 5 stubs — interface conforms; scan returns []. Do not delete; the registry below
-// exercises the pluggability and these will be filled in later phases.
-class EpicScanner implements LibraryScanner {
-  readonly source = 'steam' as const;  // TODO: Phase 5 — change union and add 'epic'
-  async scan(): Promise<DetectedGame[]> { return []; }
+export interface EpicScannerOpts {
+  manifestsResolver?: () => Promise<string | null>;
 }
+
+async function defaultEpicManifestsDir(): Promise<string | null> {
+  const candidates: string[] = [];
+  switch (platform()) {
+    case 'win32': {
+      const programData = process.env['ProgramData'];
+      if (programData) candidates.push(join(programData, 'Epic', 'EpicGamesLauncher', 'Data', 'Manifests'));
+      break;
+    }
+    case 'darwin':
+      candidates.push(join(homedir(), 'Library', 'Application Support', 'Epic', 'EpicGamesLauncher', 'Data', 'Manifests'));
+      break;
+    default:
+      return null;
+  }
+  for (const c of candidates) if (await exists(c)) return c;
+  return null;
+}
+
+export class EpicScanner implements LibraryScanner {
+  readonly source = 'epic' as const;
+  private readonly resolver: () => Promise<string | null>;
+  constructor(opts: EpicScannerOpts = {}) {
+    this.resolver = opts.manifestsResolver ?? defaultEpicManifestsDir;
+  }
+  async scan(): Promise<DetectedGame[]> {
+    try {
+      const dir = await this.resolver();
+      if (!dir || !(await exists(dir))) return [];
+      let entries: string[];
+      try { entries = await readdir(dir); } catch { return []; }
+      const games: DetectedGame[] = [];
+      for (const f of entries) {
+        if (!f.endsWith('.item')) continue;
+        try {
+          const raw = JSON.parse(await readFile(join(dir, f), 'utf8')) as {
+            AppName?: unknown; DisplayName?: unknown; InstallLocation?: unknown; LaunchExecutable?: unknown;
+          };
+          if (typeof raw.AppName !== 'string' || typeof raw.DisplayName !== 'string'
+              || typeof raw.InstallLocation !== 'string' || typeof raw.LaunchExecutable !== 'string') {
+            continue;
+          }
+          games.push({
+            source: 'epic',
+            appId: raw.AppName,
+            name: raw.DisplayName,
+            installDir: raw.InstallLocation,
+          });
+        } catch { /* bad JSON — skip */ }
+      }
+      return games;
+    } catch {
+      return [];
+    }
+  }
+}
+
+// Phase 5 stubs — HeroicScanner and LutrisScanner will be filled in later phases.
 class HeroicScanner implements LibraryScanner {
   readonly source = 'steam' as const;  // TODO: Phase 5
   async scan(): Promise<DetectedGame[]> { return []; }

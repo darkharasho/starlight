@@ -1,0 +1,6 @@
+{
+  "AppName": "CounterStrike2",
+  "DisplayName": "Counter-Strike 2",
+  "InstallLocation": "/games/CSGO",
+  "LaunchExecutable": "csgo.exe"
+}
