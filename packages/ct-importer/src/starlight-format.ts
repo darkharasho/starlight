@@ -79,7 +79,7 @@ export const StarlightTrainerSchema = z.object({
   game: z.object({
     name: z.string(),
     steamAppId: z.number().int().optional(),
-    processName: z.array(z.string()).min(1),
+    processName: z.array(z.string()),
     version: z.string().optional(),
     platform: z.array(z.enum(['windows', 'linux', 'linux-proton', 'macos'])).min(1),
   }),

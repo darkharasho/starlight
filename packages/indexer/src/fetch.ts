@@ -27,14 +27,20 @@ async function resolveViewtopicAttachment(topicUrl: string): Promise<string | nu
   }
   if (!res.ok) return null;
   const html = await res.text();
+  // Real fearlessrevolution links are `href="./download/file.php?id=N&amp;sid=..."`
+  // — the `[^"]*` after the id absorbs any session token. We strip it when building
+  // the absolute URL so the fetch is session-free and cacheable.
   const matches = [...html.matchAll(
-    /<a[^>]*href="\.?\/?(download\/file\.php\?id=\d+)"[^>]*>([^<]+\.(?:CT|ct|zip))<\/a>/g,
+    /<a[^>]*href="\.?\/?download\/file\.php\?id=(\d+)[^"]*"[^>]*>([^<]+\.(?:CT|ct|zip))<\/a>/g,
   )];
   if (matches.length === 0) return null;
-  const cts = matches.filter(m => /\.(?:CT|ct)$/.test(m[2]!));
-  const pick = (cts.length > 0 ? cts : matches).at(-1)!;
+  const candidates = matches.map((m) => ({ id: Number(m[1]), filename: m[2]! }));
+  const cts = candidates.filter((c) => /\.(?:CT|ct)$/.test(c.filename));
+  // Highest `id=` is the most recently uploaded attachment.
+  const pool = cts.length > 0 ? cts : candidates;
+  const pick = pool.reduce((a, b) => (a.id >= b.id ? a : b));
   const base = new URL(topicUrl);
-  return new URL(`/${pick[1]}`, `${base.protocol}//${base.host}`).toString();
+  return new URL(`/download/file.php?id=${pick.id}`, `${base.protocol}//${base.host}`).toString();
 }
 
 export async function fetchTrainer(url: string): Promise<Buffer> {

@@ -79,11 +79,14 @@ async function processSeed(
 async function main(): Promise<number> {
   const subcommand = process.argv[2] ?? 'index';
   if (subcommand === 'discover') {
+    const pageLimitEnv = process.env.STARLIGHT_DISCOVER_PAGE_LIMIT;
+    const sleepMsEnv = process.env.STARLIGHT_DISCOVER_SLEEP_MS;
     await discover({
       forumBase: 'https://fearlessrevolution.com/viewforum.php',
       forums: [4],
       seedsPath: SEEDS_PATH,
-      sleepMs: 1000,
+      sleepMs: sleepMsEnv ? Number(sleepMsEnv) : 1000,
+      ...(pageLimitEnv ? { pageLimit: Number(pageLimitEnv) } : {}),
       loadSteamMap: () => loadSteamAppList({
         cachePath: join(PKG_ROOT, '.steam-applist-cache.json'),
       }),
