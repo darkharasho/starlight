@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Grid, type CellComponentProps } from 'react-window';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { Grid, getScrollbarSize, type CellComponentProps } from 'react-window';
 import type { CatalogGame } from '../types/catalog-game.js';
 import { GameTile } from './GameTile.js';
 
@@ -27,7 +27,9 @@ function Cell({ rowIndex, columnIndex, style, games, cols, onSelect }: CellCompo
   if (!game) return null;
   return (
     <div style={style} className="p-1.5">
-      <GameTile game={game} {...(onSelect ? { onClick: onSelect } : {})} />
+      {/* key={game.id} forces remount when react-window recycles the cell for a new game,
+          so per-tile refs (boxart resolver started, fallback tried) reset cleanly. */}
+      <GameTile key={game.id} game={game} {...(onSelect ? { onClick: onSelect } : {})} />
     </div>
   );
 }
@@ -48,8 +50,11 @@ export function BoxartGrid({ games, onSelect, tileWidth = DEFAULT_TILE_W }: Prop
     return () => ro.disconnect();
   }, []);
 
-  const cols = Math.max(1, Math.floor(size.width / tileWidth));
-  const cellW = Math.floor(size.width / cols);
+  // The grid renders its own vertical scrollbar inside `size.width`. Subtract its
+  // width so cells lay out within the visible area instead of bleeding under it.
+  const usableWidth = Math.max(1, size.width - getScrollbarSize());
+  const cols = Math.max(1, Math.floor(usableWidth / tileWidth));
+  const cellW = Math.floor(usableWidth / cols);
   // Tile inside has aspect-[2/3]; account for cell padding above/below/around.
   const innerW = cellW - CELL_PADDING * 2;
   const innerH = Math.round(innerW * 1.5);
