@@ -16,7 +16,13 @@ afterEach(async () => { await rm(cacheDir, { recursive: true, force: true }); })
 
 function fakeFetch(...responses: Array<{ ok: boolean; json?: unknown; status?: number }>) {
   let i = 0;
-  return async (): Promise<Response> => {
+  return async (_url: unknown, init?: { method?: string }): Promise<Response> => {
+    // HEAD requests (used to validate Steam library covers exist) are stubbed
+    // to "ok" without consuming a queued response — keeps existing tests
+    // focused on the GET responses they care about.
+    if (init?.method === 'HEAD') {
+      return { ok: true, status: 200, json: async () => null } as Response;
+    }
     const r = responses[i++];
     if (!r) throw new Error('fake fetch ran out of responses');
     return {
@@ -147,13 +153,12 @@ describe('resolveBoxartFor — SteamGridDB fallback', () => {
 });
 
 describe('resolveBoxartFor — forceFallback', () => {
-  it('forceFallback skips Steam CDN even when steamAppId is set', async () => {
+  it('forceFallback skips Steam CDN and Steam Store, goes straight to SGDB', async () => {
     const r = await resolveBoxartFor(
       { name: 'Elden Ring', steamAppId: 1245620, forceFallback: true },
       {
         cachePath, apiKey: 'KEY',
         fetch: fakeFetch(
-          { ok: true, json: { items: [] } },                     // Steam Store empty so we fall through to SGDB
           { ok: true, json: { success: true, data: [{ id: 99, name: 'Elden Ring' }] } },
           { ok: true, json: { success: true, data: [{ id: 1, url: 'https://sgdb.example/elden.jpg', width: 600, height: 900 }] } },
         ),
@@ -174,7 +179,6 @@ describe('resolveBoxartFor — forceFallback', () => {
       {
         cachePath, apiKey: 'KEY',
         fetch: fakeFetch(
-          { ok: true, json: { items: [] } },                     // Steam Store empty
           { ok: true, json: { success: true, data: [{ id: 99, name: 'Elden Ring' }] } },
           { ok: true, json: { success: true, data: [{ id: 1, url: 'https://sgdb.example/elden.jpg' }] } },
         ),
@@ -186,18 +190,18 @@ describe('resolveBoxartFor — forceFallback', () => {
 
 describe('resolveBoxartFor — cache hits', () => {
   it('returns cached URL on second call without re-fetching', async () => {
-    let calls = 0;
+    let getCalls = 0;
     const fetch = fakeFetch(
       { ok: true, json: { items: [{ type: 'app', id: 555, name: 'X' }] } },     // Steam Store hit
     );
-    const wrapped = async (...args: Parameters<typeof fetch>): Promise<Response> => {
-      calls++;
-      return fetch(...args);
+    const wrapped = async (url: unknown, init?: { method?: string }): Promise<Response> => {
+      if (init?.method !== 'HEAD') getCalls++;
+      return fetch(url, init);
     };
     await resolveBoxartFor({ name: 'X' }, { cachePath, apiKey: 'KEY', fetch: wrapped });
     const r2 = await resolveBoxartFor({ name: 'X' }, { cachePath, apiKey: 'KEY', fetch: wrapped });
     expect(r2.url).toBe('https://cdn.cloudflare.steamstatic.com/steam/apps/555/library_600x900.jpg');
-    expect(calls).toBe(1);   // first call: 1 (Steam Store search); second: 0 (cache hit)
+    expect(getCalls).toBe(1);   // first call: 1 GET (Steam Store search); second: 0 (cache hit)
   });
 
   it('negatively caches null results for 24h', async () => {

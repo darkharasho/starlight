@@ -9,31 +9,43 @@ interface Props {
 
 export function GameTile({ game, onClick }: Props): JSX.Element {
   const upfrontCover = steamCoverUrl(game.steamAppId);
-  const [resolvedCover, setResolvedCover] = useState<string | null>(null);
-  const [errored, setErrored] = useState(false);
+  // Single source-of-truth for what URL the <img> should attempt.
+  // null = nothing to show → render the name backdrop alone.
+  const [shownSrc, setShownSrc] = useState<string | null>(upfrontCover);
+  const [resolverRan, setResolverRan] = useState(false);
+  const [fallbackTried, setFallbackTried] = useState(false);
 
-  // Lazily resolve boxart for entries without an upfront Steam ID. Hits the
-  // main-process resolver, which uses Steam Store search (free) → SteamGridDB.
+  // Reset state when the game (and thus upfront URL) changes.
   useEffect(() => {
-    if (upfrontCover !== null || resolvedCover !== null) return;
+    setShownSrc(upfrontCover);
+    setResolverRan(false);
+    setFallbackTried(false);
+  }, [upfrontCover, game.id]);
+
+  // Proactive resolve when there's no upfront cover.
+  useEffect(() => {
+    if (shownSrc !== null || resolverRan) return;
+    setResolverRan(true);
     let cancelled = false;
     void (async () => {
       const r = await starlight().resolveBoxart({ name: game.name }).catch(() => ({ url: null }));
-      if (!cancelled && r.url) setResolvedCover(r.url);
+      if (!cancelled && r.url) setShownSrc(r.url);
     })();
     return () => { cancelled = true; };
-  }, [upfrontCover, resolvedCover, game.name]);
+  }, [shownSrc, resolverRan, game.name]);
 
-  // If the upfront URL 404s (game removed from Steam etc.) try the resolver as a fallback.
-  async function handleImgError(): Promise<void> {
-    if (errored) return;
-    setErrored(true);
+  // When the current <img> URL fails, try a forced fallback once. If that also
+  // fails (or returns null), drop the image entirely so the broken-image glyph
+  // never sticks around — the name backdrop always remains.
+  async function onImgError(): Promise<void> {
+    if (fallbackTried) {
+      setShownSrc(null);
+      return;
+    }
+    setFallbackTried(true);
     const r = await starlight().resolveBoxart({ name: game.name, forceFallback: true }).catch(() => ({ url: null }));
-    if (r.url && r.url !== upfrontCover) setResolvedCover(r.url);
+    setShownSrc(r.url && r.url !== shownSrc ? r.url : null);
   }
-
-  // After an error AND a fallback attempt, give up — keep the name backdrop only.
-  const cover = errored ? resolvedCover : (resolvedCover ?? upfrontCover);
 
   return (
     <button
@@ -42,16 +54,16 @@ export function GameTile({ game, onClick }: Props): JSX.Element {
       onClick={() => onClick?.(game)}
       className="relative w-full aspect-[2/3] rounded-sm overflow-hidden border border-neon-cyan/60 glow-cyan transition-transform duration-150 hover:-translate-y-0.5 hover:border-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan bg-[#1a1a22]"
     >
-      {/* Name backdrop — always present so broken/loading covers still show context. */}
       <span className="absolute inset-0 flex items-center justify-center text-[10px] text-muted px-2 text-center pointer-events-none">
         {game.name}
       </span>
-      {cover && (
+      {shownSrc !== null && (
         <img
-          src={cover}
+          key={shownSrc}
+          src={shownSrc}
           alt=""
           className="absolute inset-0 w-full h-full object-cover"
-          onError={() => void handleImgError()}
+          onError={() => void onImgError()}
           loading="lazy"
         />
       )}

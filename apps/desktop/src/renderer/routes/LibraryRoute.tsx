@@ -24,33 +24,45 @@ function GameTile({
   onRemove?: () => void;
 }): JSX.Element {
   const upfrontCover = boxartUrl(game);
-  const [resolvedCover, setResolvedCover] = useState<string | null>(null);
-  const [errored, setErrored] = useState(false);
+  const [shownSrc, setShownSrc] = useState<string | null>(upfrontCover);
+  const [resolverRan, setResolverRan] = useState(false);
+  const [fallbackTried, setFallbackTried] = useState(false);
 
-  // Proactive resolve when no upfront cover (e.g., manual entries without boxartSteamAppId).
   useEffect(() => {
-    if (upfrontCover !== null || resolvedCover !== null) return;
+    setShownSrc(upfrontCover);
+    setResolverRan(false);
+    setFallbackTried(false);
+  }, [upfrontCover, game.appId, game.source]);
+
+  // Proactive resolve when no upfront cover (e.g., manual entries).
+  useEffect(() => {
+    if (shownSrc !== null || resolverRan) return;
+    setResolverRan(true);
     let cancelled = false;
     void (async () => {
       const req: { name: string; steamAppId?: number } = { name: game.name };
       if (game.boxartSteamAppId != null) req.steamAppId = game.boxartSteamAppId;
       const r = await starlight().resolveBoxart(req).catch(() => ({ url: null }));
-      if (!cancelled && r.url) setResolvedCover(r.url);
+      if (!cancelled && r.url) setShownSrc(r.url);
     })();
     return () => { cancelled = true; };
-  }, [upfrontCover, resolvedCover, game.name, game.boxartSteamAppId]);
+  }, [shownSrc, resolverRan, game.name, game.boxartSteamAppId]);
 
-  // Fallback resolve when upfront cover errors out.
+  // When the current <img> URL fails, try a forced fallback once. If that also
+  // fails (or returns null), drop the image entirely.
   async function handleImgError(): Promise<void> {
-    if (errored) return;
-    setErrored(true);
+    if (fallbackTried) {
+      setShownSrc(null);
+      return;
+    }
+    setFallbackTried(true);
     const req: { name: string; steamAppId?: number; forceFallback?: boolean } = { name: game.name, forceFallback: true };
     if (game.boxartSteamAppId != null) req.steamAppId = game.boxartSteamAppId;
     const r = await starlight().resolveBoxart(req).catch(() => ({ url: null }));
-    if (r.url && r.url !== upfrontCover) setResolvedCover(r.url);
+    setShownSrc(r.url && r.url !== shownSrc ? r.url : null);
   }
 
-  const cover = errored ? resolvedCover : (resolvedCover ?? upfrontCover);
+  const cover = shownSrc;
   const clickable = !!onClick && hasTrainer;
   const tileTitle = clickable
     ? `Open ${game.name} trainer`
@@ -69,6 +81,7 @@ function GameTile({
       </div>
       {cover && (
         <img
+          key={cover}
           src={cover}
           alt=""
           className="absolute inset-0 w-full h-full object-cover"

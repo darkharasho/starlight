@@ -62,6 +62,20 @@ async function steamStoreSearch(name: string, fetchFn: typeof fetch): Promise<nu
   return firstApp?.id ?? null;
 }
 
+/**
+ * Verify the appid actually has a `library_600x900.jpg` published. Many Steam
+ * apps (DLC, soundtracks, smaller titles) are missing this asset, and giving
+ * the renderer a 404'ing URL leaves a broken-image glyph on the tile.
+ */
+async function steamCoverExists(appId: number, fetchFn: typeof fetch): Promise<boolean> {
+  try {
+    const res = await fetchFn(STEAM_CDN(appId), { method: 'HEAD' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function sgdbSearch(name: string, apiKey: string, fetchFn: typeof fetch): Promise<number | null> {
   const url = `${STEAMGRIDDB_BASE}/search/autocomplete/${encodeURIComponent(name)}`;
   let res: Response;
@@ -109,13 +123,19 @@ export async function resolveBoxartFor(
 
   let url: string | null = null;
   if (req.steamAppId != null && !req.forceFallback) {
-    url = STEAM_CDN(req.steamAppId);
-  } else {
+    if (await steamCoverExists(req.steamAppId, opts.fetch)) {
+      url = STEAM_CDN(req.steamAppId);
+    }
+  }
+  if (url === null) {
     // Free path: ask Steam's store search for an appid matching the name.
-    const appId = await steamStoreSearch(req.name, opts.fetch);
-    if (appId !== null) {
-      url = STEAM_CDN(appId);
-    } else if (opts.apiKey) {
+    if (!req.forceFallback) {
+      const appId = await steamStoreSearch(req.name, opts.fetch);
+      if (appId !== null && await steamCoverExists(appId, opts.fetch)) {
+        url = STEAM_CDN(appId);
+      }
+    }
+    if (url === null && opts.apiKey) {
       // Last resort: SteamGridDB (requires API key).
       const gameId = await sgdbSearch(req.name, opts.apiKey, opts.fetch);
       if (gameId !== null) url = await sgdbGrids(gameId, opts.apiKey, opts.fetch);
