@@ -20,6 +20,8 @@ jobs:
       - run: pnpm --filter @starlight/ct-importer build
       - run: pnpm --filter @starlight/catalog build
       - run: pnpm --filter @starlight/indexer build
+      - name: Run unit tests
+        run: pnpm --filter @starlight/indexer test && pnpm --filter @starlight/ct-importer test
       - name: Run indexer
         run: node packages/indexer/dist/index.js
       - name: Open PR if catalog changed

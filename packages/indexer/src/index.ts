@@ -94,17 +94,41 @@ async function main(): Promise<number> {
 
   await writeCache(cache);
 
-  const indexEntries: CatalogIndexEntry[] = processed.map(p => ({
-    id: p.id,
-    name: p.seed.name,
-    steamAppId: p.seed.steamAppId,
-    processName: p.seed.processName,
-    platform: p.seed.platform,
-    ...(p.seed.tags ? { tags: p.seed.tags } : {}),
-    trainerPath: `trainers/${p.id}.json`,
-    trainerUpdatedAt: p.trainerUpdatedAt,
-    trainerSource: p.seed.url,
-  }));
+  // Load the existing index so failed seeds fall back to their previous entry.
+  const existingIndexPath = join(CATALOG_DIR, 'index.json');
+  let existingIndex: { games: CatalogIndexEntry[] } = { games: [] };
+  try {
+    const text = await readFile(existingIndexPath, 'utf8');
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed.games)) existingIndex = parsed;
+  } catch { /* no existing index — fine */ }
+
+  const processedById = new Map(processed.map(p => [p.seed.url, p]));
+  const indexEntries: CatalogIndexEntry[] = [];
+  for (const seed of seeds) {
+    const p = processedById.get(seed.url);
+    if (p) {
+      // Successful or unchanged — use fresh data.
+      indexEntries.push({
+        id: p.id,
+        name: p.seed.name,
+        steamAppId: p.seed.steamAppId,
+        processName: p.seed.processName,
+        platform: p.seed.platform,
+        ...(p.seed.tags ? { tags: p.seed.tags } : {}),
+        trainerPath: `trainers/${p.id}.json`,
+        trainerUpdatedAt: p.trainerUpdatedAt,
+        trainerSource: seed.url,
+      });
+    } else {
+      // Failed this run — try to preserve the existing index entry.
+      const fallback = existingIndex.games.find(g => g.trainerSource === seed.url);
+      if (fallback) {
+        indexEntries.push(fallback);
+      }
+      // If no existing entry either, the seed is dropped (genuinely missing).
+    }
+  }
   await writeIndex(CATALOG_DIR, indexEntries);
 
   const summary = {
@@ -115,7 +139,7 @@ async function main(): Promise<number> {
     failed: failures,
   };
   console.log(`\n${JSON.stringify(summary)}`);
-  return 0;
+  return failures > 0 ? 1 : 0;
 }
 
 main().then(c => process.exit(c)).catch(err => {

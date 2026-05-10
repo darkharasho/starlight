@@ -45,6 +45,28 @@ describe('readSeeds', () => {
     }
   });
 
+  it('rejects empty processName array', async () => {
+    const bad = join(__dirname, 'fixtures', 'empty-pn.yaml');
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(bad, 'games:\n  - url: https://x\n    name: x\n    processName: []\n    platform: [windows]\n');
+    try {
+      await expect(readSeeds(bad)).rejects.toThrow(/processName/i);
+    } finally {
+      await fs.unlink(bad);
+    }
+  });
+
+  it('rejects empty platform array', async () => {
+    const bad = join(__dirname, 'fixtures', 'empty-pl.yaml');
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(bad, 'games:\n  - url: https://x\n    name: x\n    processName: [x.exe]\n    platform: []\n');
+    try {
+      await expect(readSeeds(bad)).rejects.toThrow(/platform/i);
+    } finally {
+      await fs.unlink(bad);
+    }
+  });
+
   it('rejects malformed YAML', async () => {
     const bad = join(__dirname, 'fixtures', 'malformed.yaml');
     const fs = await import('node:fs/promises');
