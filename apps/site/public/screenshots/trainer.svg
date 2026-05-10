@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" font-family="ui-sans-serif, system-ui, sans-serif">
+  <rect width="800" height="480" fill="#07070b"/>
+  <rect x="0" y="0" width="160" height="480" fill="#0d0d18"/>
+  <rect x="160" y="0" width="640" height="48" fill="#0d0d18"/>
+  <text x="20" y="36" fill="#00ffc8" font-size="14" font-weight="600" letter-spacing="2">✦ STARLIGHT</text>
+  <rect x="14" y="120" width="132" height="32" fill="#1a1a2e" rx="2"/>
+  <text x="24" y="140" fill="#00ffc8" font-size="11" font-weight="600">● Active Trainer</text>
+  <text x="180" y="84" fill="#e6e6f0" font-size="14" font-weight="600">Elden Ring</text>
+  <text x="180" y="100" fill="#7a7a92" font-size="10">trainer by Starlight community</text>
+  <rect x="640" y="76" width="80" height="28" fill="#00ffc8" fill-opacity="0.08" stroke="#00ffc8" rx="2"/>
+  <text x="680" y="94" fill="#00ffc8" font-size="11" font-weight="600" text-anchor="middle">LATCH</text>
+  <text x="180" y="148" fill="#7a7a92" font-size="9" letter-spacing="2">CATEGORIES</text>
+  <rect x="180" y="158" width="120" height="32" fill="#ff00b4" fill-opacity="0.06" stroke="#ff00b4" rx="2"/>
+  <text x="190" y="178" fill="#ff00b4" font-size="11" font-weight="600">Player</text>
+  <text x="280" y="178" fill="#ff00b4" font-size="10">3</text>
+  <text x="190" y="210" fill="#7a7a92" font-size="11">Combat</text>
+  <text x="190" y="232" fill="#7a7a92" font-size="11">Inventory</text>
+  <g transform="translate(320,158)">
+    <rect width="460" height="56" fill="#0d0d18" stroke="#00ff7a" rx="2"/>
+    <text x="14" y="24" fill="#00ff7a" font-size="13" font-weight="600">God Mode</text>
+    <text x="14" y="42" fill="#7a7a92" font-size="10">Player takes no damage</text>
+    <rect x="350" y="14" width="40" height="22" fill="#0d0d18" stroke="#1a1a2e" rx="2"/>
+    <text x="370" y="29" fill="#00ff7a" font-size="11" font-family="ui-monospace" text-anchor="middle">F1</text>
+    <rect x="410" y="14" width="36" height="20" fill="#00ff7a" fill-opacity="0.12" stroke="#00ff7a" rx="10"/>
+    <circle cx="436" cy="24" r="7" fill="#00ff7a"/>
+  </g>
+  <g transform="translate(320,224)">
+    <rect width="460" height="64" fill="#0d0d18" stroke="#1a1a2e" rx="2"/>
+    <text x="14" y="24" fill="#e6e6f0" font-size="13" font-weight="600">Speed</text>
+    <text x="14" y="42" fill="#7a7a92" font-size="10">0.0 — 10.0</text>
+    <rect x="160" y="14" width="180" height="36" fill="#07070b" stroke="#1a1a2e" rx="2"/>
+    <text x="172" y="36" fill="#7a7a92" font-size="14" font-family="ui-monospace">−</text>
+    <text x="248" y="36" fill="#e6e6f0" font-size="14" font-family="ui-monospace" text-anchor="middle">2.5</text>
+    <text x="320" y="36" fill="#7a7a92" font-size="14" font-family="ui-monospace">+</text>
+    <rect x="350" y="14" width="50" height="14" fill="#0d0d18" stroke="#1a1a2e" rx="2"/>
+    <text x="375" y="24" fill="#7a7a92" font-size="9" font-family="ui-monospace" text-anchor="middle">F4</text>
+    <rect x="350" y="32" width="50" height="14" fill="#0d0d18" stroke="#1a1a2e" rx="2"/>
+    <text x="375" y="42" fill="#7a7a92" font-size="9" font-family="ui-monospace" text-anchor="middle">F4+Up</text>
+  </g>
+</svg>

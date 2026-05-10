@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" font-family="ui-sans-serif, system-ui, sans-serif">
+  <rect width="800" height="480" fill="#07070b"/>
+  <rect x="0" y="0" width="160" height="480" fill="#0d0d18"/>
+  <rect x="160" y="0" width="640" height="48" fill="#0d0d18"/>
+  <text x="20" y="36" fill="#00ffc8" font-size="14" font-weight="600" letter-spacing="2">✦ STARLIGHT</text>
+  <text x="20" y="100" fill="#7a7a92" font-size="11">Home</text>
+  <rect x="14" y="120" width="132" height="32" fill="#1a1a2e" rx="2"/>
+  <text x="24" y="140" fill="#00ffc8" font-size="11" font-weight="600">● Library</text>
+  <text x="20" y="180" fill="#7a7a92" font-size="11">Browse</text>
+  <text x="20" y="206" fill="#7a7a92" font-size="11">Search</text>
+  <text x="20" y="232" fill="#7a7a92" font-size="11">Active Trainer</text>
+  <text x="20" y="258" fill="#7a7a92" font-size="11">Settings</text>
+  <text x="180" y="84" fill="#e6e6f0" font-size="18" font-weight="600">Library</text>
+  <g transform="translate(180,108)">
+    <rect width="120" height="180" fill="#1a1a2e" rx="2"/>
+    <text x="60" y="100" fill="#7a7a92" font-size="10" text-anchor="middle">Elden Ring</text>
+    <rect x="0" y="155" width="120" height="25" fill="#0d0d18" rx="2"/>
+    <text x="6" y="173" fill="#00ffc8" font-size="9" font-weight="600">TRAINER</text>
+    <rect x="74" y="6" width="42" height="14" fill="#ff00b4" fill-opacity="0.15" stroke="#ff00b4" stroke-width="0.5" rx="2"/>
+    <text x="80" y="16" fill="#ff00b4" font-size="8" font-weight="600">RUNNING</text>
+  </g>
+  <g transform="translate(312,108)">
+    <rect width="120" height="180" fill="#1a1a2e" rx="2"/>
+    <text x="60" y="100" fill="#7a7a92" font-size="10" text-anchor="middle">Hades II</text>
+    <rect x="0" y="155" width="120" height="25" fill="#0d0d18" rx="2"/>
+    <text x="6" y="173" fill="#00ffc8" font-size="9" font-weight="600">TRAINER</text>
+  </g>
+  <g transform="translate(444,108)">
+    <rect width="120" height="180" fill="#1a1a2e" rx="2"/>
+    <text x="60" y="100" fill="#7a7a92" font-size="10" text-anchor="middle">Stardew Valley</text>
+  </g>
+  <g transform="translate(576,108)">
+    <rect width="120" height="180" fill="#1a1a2e" rx="2"/>
+    <text x="60" y="100" fill="#7a7a92" font-size="10" text-anchor="middle">Hollow Knight</text>
+  </g>
+  <g transform="translate(180,308)">
+    <rect width="120" height="160" fill="#1a1a2e" rx="2"/>
+    <text x="60" y="86" fill="#7a7a92" font-size="10" text-anchor="middle">Cyberpunk 2077</text>
+  </g>
+</svg>
