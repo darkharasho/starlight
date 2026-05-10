@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, globalShortcut } from 'electron';
+import { app, BrowserWindow, ipcMain, globalShortcut, dialog } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
@@ -131,9 +131,24 @@ app.whenReady().then(async () => {
     return next;
   });
 
-  // TODO(phase-5.2 task 2): placeholder — replaced in task 2
-  ipcMain.handle(CHANNELS.pickExecutable, async () =>
-    ({ ok: false, error: 'unknown', message: 'pickExecutable not yet wired' }));
+  ipcMain.handle(CHANNELS.pickExecutable, async () => {
+    const focused = BrowserWindow.getFocusedWindow();
+    const opts = {
+      title: 'Pick a game executable',
+      properties: ['openFile' as const],
+      filters: [
+        { name: 'Executables', extensions: ['exe', 'app', 'sh', '*'] },
+        { name: 'All files',   extensions: ['*'] },
+      ],
+    };
+    const result = focused
+      ? await dialog.showOpenDialog(focused, opts)
+      : await dialog.showOpenDialog(opts);
+    if (result.canceled || result.filePaths.length === 0) {
+      return { ok: false, error: 'cancelled' as const };
+    }
+    return { ok: true as const, path: result.filePaths[0]! };
+  });
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
