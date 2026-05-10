@@ -1,0 +1,12 @@
+[
+  {
+    "app_name": "Fortnite",
+    "title": "Fortnite",
+    "install": { "install_path": "/games/Fortnite", "executable": "FortniteClient.exe", "is_dlc": false }
+  },
+  {
+    "app_name": "RocketLeague",
+    "title": "Rocket League",
+    "install": { "install_path": "", "executable": "" }
+  }
+]

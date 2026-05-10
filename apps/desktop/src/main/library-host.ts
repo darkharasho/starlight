@@ -234,11 +234,67 @@ export class EpicScanner implements LibraryScanner {
   }
 }
 
-// Phase 5 stubs — HeroicScanner and LutrisScanner will be filled in later phases.
-class HeroicScanner implements LibraryScanner {
-  readonly source = 'steam' as const;  // TODO: Phase 5
-  async scan(): Promise<DetectedGame[]> { return []; }
+export interface HeroicScannerOpts {
+  configResolver?: () => Promise<string | null>;
 }
+
+async function defaultHeroicConfigDir(): Promise<string | null> {
+  if (platform() !== 'linux') return null;
+  const candidates = [
+    join(homedir(), '.config', 'heroic'),
+    join(homedir(), '.var', 'app', 'com.heroicgameslauncher.hgl', 'config', 'heroic'),
+  ];
+  for (const c of candidates) if (await exists(c)) return c;
+  return null;
+}
+
+interface HeroicGame {
+  app_name?: unknown;
+  title?: unknown;
+  install?: { install_path?: unknown; executable?: unknown };
+}
+
+async function readHeroicLibrary(path: string): Promise<DetectedGame[]> {
+  if (!(await exists(path))) return [];
+  let raw: unknown;
+  try { raw = JSON.parse(await readFile(path, 'utf8')); }
+  catch { return []; }
+  if (!Array.isArray(raw)) return [];
+  const games: DetectedGame[] = [];
+  for (const entry of raw as HeroicGame[]) {
+    if (typeof entry.app_name !== 'string' || typeof entry.title !== 'string') continue;
+    const installPath = entry.install?.install_path;
+    if (typeof installPath !== 'string' || installPath.length === 0) continue;
+    games.push({
+      source: 'heroic',
+      appId: entry.app_name,
+      name: entry.title,
+      installDir: installPath,
+    });
+  }
+  return games;
+}
+
+export class HeroicScanner implements LibraryScanner {
+  readonly source = 'heroic' as const;
+  private readonly resolver: () => Promise<string | null>;
+  constructor(opts: HeroicScannerOpts = {}) {
+    this.resolver = opts.configResolver ?? defaultHeroicConfigDir;
+  }
+  async scan(): Promise<DetectedGame[]> {
+    try {
+      const dir = await this.resolver();
+      if (!dir) return [];
+      const epicGames = await readHeroicLibrary(join(dir, 'store_cache', 'library.json'));
+      const gogGames = await readHeroicLibrary(join(dir, 'gog_store', 'library.json'));
+      return [...epicGames, ...gogGames];
+    } catch {
+      return [];
+    }
+  }
+}
+
+// Phase 5 stub — LutrisScanner will be filled in later phases.
 class LutrisScanner implements LibraryScanner {
   readonly source = 'steam' as const;  // TODO: Phase 5
   async scan(): Promise<DetectedGame[]> { return []; }
