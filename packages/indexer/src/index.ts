@@ -10,6 +10,8 @@ import { readSeeds, type SeedEntry } from './seeds.js';
 import { allocateId } from './slug.js';
 import { fetchTrainer } from './fetch.js';
 import { writeTrainer, writeIndex } from './write.js';
+import { discover } from './discover.js';
+import { loadSteamAppList } from './steam.js';
 
 interface CacheEntry { sha256: string; lastFetchedAt: string; }
 type Cache = Record<string, CacheEntry>;
@@ -75,6 +77,19 @@ async function processSeed(
 }
 
 async function main(): Promise<number> {
+  const subcommand = process.argv[2] ?? 'index';
+  if (subcommand === 'discover') {
+    await discover({
+      forumBase: 'https://fearlessrevolution.com/viewforum.php',
+      forums: [4],
+      seedsPath: SEEDS_PATH,
+      sleepMs: 1000,
+      loadSteamMap: () => loadSteamAppList({
+        cachePath: join(PKG_ROOT, '.steam-applist-cache.json'),
+      }),
+    });
+    return 0;
+  }
   const seeds = await readSeeds(SEEDS_PATH);
   const cache = await readCache();
   const taken = new Set<string>();
