@@ -23,14 +23,9 @@ describe('GameTile', () => {
     expect(screen.getByText(/installed/i)).toBeInTheDocument();
   });
 
-  it('shows TRAINER badge when hasTrainer', () => {
+  it('shows TRAINER badge', () => {
     render(<GameTile game={game} />);
     expect(screen.getByText(/^trainer$/i)).toBeInTheDocument();
-  });
-
-  it('omits TRAINER badge when hasTrainer is false', () => {
-    render(<GameTile game={{ ...game, hasTrainer: false }} />);
-    expect(screen.queryByText(/^trainer$/i)).not.toBeInTheDocument();
   });
 
   it('calls onClick with the game when clicked', async () => {

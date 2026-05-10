@@ -1,59 +1,71 @@
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CATALOG, type CatalogGame } from '../data/catalog.js';
 import { BoxartGrid } from '../components/BoxartGrid.js';
 import { PageHeader } from '../components/PageHeader.js';
-import { useLatchState } from '../stores/latch-store.js';
+import { useCatalogStore } from '../stores/catalog-store.js';
+import { useLibraryStore } from '../stores/library-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
+import type { CatalogGame } from '../types/catalog-game.js';
 
 export function HomeRoute(): JSX.Element {
   const navigate = useNavigate();
-  const detect = useLatchState((s) => s.detect);
+  const index = useCatalogStore((s) => s.index);
+  const loadCatalog = useCatalogStore((s) => s.load);
+  const fetchTrainer = useCatalogStore((s) => s.trainer);
+  const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
   const loadTrainer = useTrainerStore((s) => s.loadTrainer);
   const trainerLoaded = useTrainerStore((s) => s.trainer);
+  const detectedGames = useLibraryStore((s) => s.games);
 
-  const installed = CATALOG.filter((g) => g.installed);
-  const featured = CATALOG.filter((g) => g.hasTrainer);
-  const installedWithTrainer = CATALOG.filter((g) => g.installed && g.hasTrainer).length;
+  useEffect(() => { if (!index) void loadCatalog(); }, [index, loadCatalog]);
 
-  function selectGame(g: CatalogGame): void {
-    if (g.hasTrainer) {
-      detect({ name: g.name, coverUrl: g.coverUrl, processName: g.processName[0]! });
-      navigate('/active');
-    }
+  const installedSteamIds = new Set(
+    detectedGames.filter(g => g.source === 'steam').map(g => Number(g.appId)),
+  );
+  const allGames: CatalogGame[] = (index?.games ?? []).map(entry => ({
+    ...entry,
+    installed: entry.steamAppId != null && installedSteamIds.has(entry.steamAppId),
+  }));
+  const installed = allGames.filter((g) => g.installed);
+  const featured = allGames;
+  const installedCount = installed.length;
+
+  async function selectGame(g: CatalogGame): Promise<void> {
+    const trainer = await fetchTrainer(g.trainerPath);
+    if (!trainer) return;
+    await setActiveTrainerFromCatalog(trainer);
+    navigate('/active');
   }
 
   return (
     <>
-      <PageHeader
-        title="Home"
+      <PageHeader title="Home"
         right={
           <span className="text-[11px] text-muted">
             <span className="inline-block size-1.5 rounded-full bg-neon-cyan glow-cyan mr-1.5 align-middle" />
-            {installedWithTrainer} installed games have trainers
+            {installedCount} installed games have trainers
           </span>
         }
       />
       <div className="mb-5 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={async () => { await loadTrainer(); navigate('/active'); }}
-          className="px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]"
-        >
+        <button type="button"
+                onClick={async () => { await loadTrainer(); navigate('/active'); }}
+                className="px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]">
           Load Trainer (.CT)
         </button>
         {trainerLoaded && <span className="text-[11px] text-muted">Loaded: {trainerLoaded.game.name}</span>}
       </div>
-      <Section label="Recently Played" games={installed} onSelect={selectGame} />
+      {installed.length > 0 && <Section label="Installed Games With Trainers" games={installed} onSelect={selectGame} />}
       <Section label="Featured Trainers" games={featured} onSelect={selectGame} />
     </>
   );
 }
 
-function Section({ label, games, onSelect }: { label: string; games: CatalogGame[]; onSelect: (g: CatalogGame) => void }): JSX.Element {
+function Section({ label, games, onSelect }: { label: string; games: CatalogGame[]; onSelect: (g: CatalogGame) => Promise<void> }): JSX.Element {
   return (
     <section className="mb-5">
       <div className="text-[10px] tracking-wider uppercase text-muted mb-2.5">{label}</div>
-      <BoxartGrid games={games} onSelect={onSelect} />
+      <BoxartGrid games={games} onSelect={(g) => void onSelect(g)} />
     </section>
   );
 }
