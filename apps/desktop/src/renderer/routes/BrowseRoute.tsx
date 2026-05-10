@@ -1,42 +1,68 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CATALOG, type CatalogGame } from '../data/catalog.js';
 import { BoxartGrid } from '../components/BoxartGrid.js';
 import { PageHeader } from '../components/PageHeader.js';
-import { useLatchState } from '../stores/latch-store.js';
+import { useCatalogStore } from '../stores/catalog-store.js';
+import { useLibraryStore } from '../stores/library-store.js';
+import { useTrainerStore } from '../stores/trainer-store.js';
+import type { CatalogGame } from '../types/catalog-game.js';
 
 export function BrowseRoute(): JSX.Element {
   const navigate = useNavigate();
-  const detect = useLatchState((s) => s.detect);
-  const [hasTrainerOnly, setHasTrainerOnly] = useState(true);
+  const index = useCatalogStore((s) => s.index);
+  const loading = useCatalogStore((s) => s.loading);
+  const error = useCatalogStore((s) => s.error);
+  const load = useCatalogStore((s) => s.load);
+  const fetchTrainer = useCatalogStore((s) => s.trainer);
+  const detectedGames = useLibraryStore((s) => s.games);
+  const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
 
-  const games = CATALOG.filter((g) => !hasTrainerOnly || g.hasTrainer);
+  useEffect(() => { if (!index && !loading) void load(); }, [index, loading, load]);
 
-  function onSelect(g: CatalogGame): void {
-    if (g.hasTrainer) {
-      detect({ name: g.name, coverUrl: g.coverUrl, processName: g.processName[0]! });
-      navigate('/active');
-    }
+  const installedSteamIds = new Set(
+    detectedGames.filter(g => g.source === 'steam').map(g => Number(g.appId)),
+  );
+
+  const games: CatalogGame[] = (index?.games ?? []).map(entry => ({
+    ...entry,
+    installed: entry.steamAppId != null && installedSteamIds.has(entry.steamAppId),
+  }));
+
+  async function onSelect(g: CatalogGame): Promise<void> {
+    const trainer = await fetchTrainer(g.trainerPath);
+    if (!trainer) return;
+    await setActiveTrainerFromCatalog(trainer);
+    navigate('/active');
+  }
+
+  if (error && !index) {
+    return (
+      <>
+        <PageHeader title="Browse" />
+        <div className="text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2">
+          Catalog unavailable: {error}
+        </div>
+        <button type="button" onClick={() => void load()}
+                className="mt-3 px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan glow-cyan">
+          Retry
+        </button>
+      </>
+    );
   }
 
   return (
     <>
-      <PageHeader
-        title="Browse"
-        subtitle={`${games.length} games in the catalog`}
+      <PageHeader title="Browse" subtitle={`${games.length} games in the catalog`}
         right={
-          <label className="flex items-center gap-2 text-[11px] text-muted cursor-pointer">
-            <input
-              type="checkbox"
-              checked={hasTrainerOnly}
-              onChange={(e) => setHasTrainerOnly(e.target.checked)}
-              className="accent-neon-cyan"
-            />
-            Has trainer only
-          </label>
+          <button type="button" onClick={() => void load()}
+                  className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan">
+            Refresh
+          </button>
         }
       />
-      <BoxartGrid games={games} onSelect={onSelect} />
+      {loading && games.length === 0
+        ? <div className="text-xs text-muted">Loading catalog…</div>
+        : <BoxartGrid games={games} onSelect={(g) => void onSelect(g)} />}
     </>
   );
 }

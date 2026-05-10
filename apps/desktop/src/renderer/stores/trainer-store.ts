@@ -16,6 +16,8 @@ interface TrainerStore {
   setProcessName: (names: string[]) => Promise<void>;
   applyEvent:     (e: StarlightEvent) => void;
   clear:          () => void;
+  /** Phase 5.0 stub — replaced by real impl in Task 11. */
+  setActiveTrainerFromCatalog: (trainer: import('@starlight/catalog/schema').StarlightTrainer) => Promise<void>;
 }
 
 function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
@@ -108,4 +110,8 @@ export const useTrainerStore = create<TrainerStore>((set, get) => ({
   },
 
   clear() { set({ trainer: null, activeCheats: {}, values: {}, error: null }); },
+
+  async setActiveTrainerFromCatalog() {
+    throw new Error('setActiveTrainerFromCatalog not yet wired (Phase 5.0 Task 11)');
+  },
 }));
