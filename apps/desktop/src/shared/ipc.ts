@@ -88,7 +88,7 @@ export type IpcErr = { ok: false; error: string };
 export type IpcResult<T = void> = IpcOk<T> | IpcErr;
 
 export interface DetectedGame {
-  source: 'steam' | 'manual';            // future: 'epic' | 'heroic' | 'lutris'
+  source: 'steam' | 'manual' | 'epic' | 'heroic' | 'lutris';
   appId: string;
   name: string;
   installDir: string;                    // absolute path on disk
