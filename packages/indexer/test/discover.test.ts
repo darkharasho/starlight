@@ -122,6 +122,67 @@ describe('discover', () => {
     expect(text).toContain('https://existing');
   });
 
+  it('persists a resume file after each page and deletes it on success', async () => {
+    const html = await readFile(FORUM_FIXTURE, 'utf8');
+    let calls = 0;
+    await startServer((_req, res) => {
+      calls++;
+      // Page 1 → fixture (5 topics, 3 keepable). Page 2 → empty (terminates).
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(calls === 1 ? html : '<html><body>(empty)</body></html>');
+    });
+    const resumePath = join(dir, 'discover-progress.json');
+    await discover({
+      forumBase: `http://127.0.0.1:${port}/viewforum.php`,
+      forums: [4],
+      seedsPath,
+      sleepMs: 0,
+      resumePath,
+      loadSteamMap: async () => new Map(),
+    });
+    // Successful walk must remove the resume marker.
+    await expect(readFile(resumePath, 'utf8')).rejects.toThrow();
+  });
+
+  it('resumes from a prior progress file without re-walking earlier pages', async () => {
+    const resumePath = join(dir, 'discover-progress.json');
+    // Simulate a prior interrupted run: 2 seeds collected, next page = 100.
+    const prior = {
+      schemaVersion: 1,
+      nextStartByForum: { '4': 100 },
+      seeds: [
+        { url: 'https://fearlessrevolution.com/viewtopic.php?f=4&t=1',
+          name: 'Carryover One', rawTitle: 'Carryover One',
+          steamAppId: null, processName: [], platform: ['windows'] },
+        { url: 'https://fearlessrevolution.com/viewtopic.php?f=4&t=2',
+          name: 'Carryover Two', rawTitle: 'Carryover Two',
+          steamAppId: null, processName: [], platform: ['windows'] },
+      ],
+    };
+    await writeFile(resumePath, JSON.stringify(prior));
+
+    let firstUrl: string | null = null;
+    await startServer((req, res) => {
+      if (firstUrl === null) firstUrl = req.url ?? null;
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body>(empty)</body></html>');                // terminates immediately
+    });
+    await discover({
+      forumBase: `http://127.0.0.1:${port}/viewforum.php`,
+      forums: [4],
+      seedsPath,
+      sleepMs: 0,
+      resumePath,
+      loadSteamMap: async () => new Map(),
+    });
+    // The first request should have been at start=100, not start=0.
+    expect(firstUrl).toContain('start=100');
+    // The 2 carry-over seeds should be in the final seeds.yaml.
+    const text = await readFile(seedsPath, 'utf8');
+    expect(text).toContain('Carryover One');
+    expect(text).toContain('Carryover Two');
+  });
+
   it('writes seeds.yaml that readSeeds() accepts (round-trip contract)', async () => {
     const html = await readFile(FORUM_FIXTURE, 'utf8');
     await startServer((_req, res) => {

@@ -2,3 +2,4 @@ dist/
 .indexer-cache.json
 .indexer-status.json
 .steam-applist-cache.json
+.discover-progress.json

@@ -1,4 +1,4 @@
-import { writeFile, rename, mkdir } from 'node:fs/promises';
+import { writeFile, rename, mkdir, readFile, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { stringify as yamlStringify } from 'yaml';
 import { cleanTitle } from './title.js';
@@ -27,6 +27,37 @@ export interface DiscoverOpts {
   fetch?: typeof fetch;
   /** Path to write a periodic JSON status snapshot. Skipped if undefined. */
   statusPath?: string;
+  /** Path to persist mid-walk state for resume. Skipped if undefined. */
+  resumePath?: string;
+}
+
+interface DiscoverResumeState {
+  schemaVersion: 1;
+  nextStartByForum: Record<string, number>;
+  seeds: DiscoveredSeed[];
+}
+
+async function readResumeState(path: string): Promise<DiscoverResumeState | null> {
+  try {
+    const raw = JSON.parse(await readFile(path, 'utf8')) as { schemaVersion?: unknown; nextStartByForum?: unknown; seeds?: unknown };
+    if (raw.schemaVersion !== 1) return null;
+    if (typeof raw.nextStartByForum !== 'object' || raw.nextStartByForum === null) return null;
+    if (!Array.isArray(raw.seeds)) return null;
+    return raw as DiscoverResumeState;
+  } catch {
+    return null;
+  }
+}
+
+async function writeResumeState(path: string, state: DiscoverResumeState): Promise<void> {
+  await mkdir(dirname(path), { recursive: true }).catch(() => {});
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await writeFile(tmp, JSON.stringify(state) + '\n', 'utf8');
+    await rename(tmp, path);
+  } catch {
+    /* best effort — never fail the run for resume bookkeeping */
+  }
 }
 
 const USER_AGENT = 'starlight-indexer/0.0 (+https://github.com/darkharasho/starlight)';
@@ -92,15 +123,46 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
   const seeds: DiscoveredSeed[] = [];
   const dedupeKey = (forumId: number, topicId: number): string => `${forumId}:${topicId}`;
   const seenKeys = new Set<string>();
+  const nextStartByForum: Record<string, number> = {};
+
+  // Resume from a prior interrupted walk if the state file exists.
+  let resumed = false;
+  if (opts.resumePath) {
+    const prior = await readResumeState(opts.resumePath);
+    if (prior) {
+      for (const s of prior.seeds) {
+        seeds.push(s);
+        const m = s.url.match(/[?&]f=(\d+)&t=(\d+)/);
+        if (m) seenKeys.add(`${m[1]}:${m[2]}`);
+      }
+      for (const [k, v] of Object.entries(prior.nextStartByForum)) {
+        if (typeof v === 'number') nextStartByForum[k] = v;
+      }
+      resumed = true;
+    }
+  }
 
   const progress = new Progress({
     phase: 'discover',
     statusPath: opts.statusPath ?? null,
     lineEvery: 1,
   });
+  if (resumed) {
+    progress.bump('added', seeds.length);
+    await progress.update(`resumed from ${opts.resumePath} · ${seeds.length} seeds carried over`);
+  }
+
+  const persistResume = async (): Promise<void> => {
+    if (!opts.resumePath) return;
+    await writeResumeState(opts.resumePath, {
+      schemaVersion: 1,
+      nextStartByForum,
+      seeds,
+    });
+  };
 
   for (const forumId of opts.forums) {
-    let start = 0;
+    let start = nextStartByForum[String(forumId)] ?? 0;
     let pages = 0;
     while (pages < pageLimit) {
       const url = `${opts.forumBase}?f=${forumId}&start=${start}`;
@@ -114,7 +176,12 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
         break;
       }
       const threads = extractTopics(html);
-      if (threads.length === 0) break;
+      if (threads.length === 0) {
+        // Forum exhausted; clear its resume cursor so a future re-run starts fresh.
+        delete nextStartByForum[String(forumId)];
+        await persistResume();
+        break;
+      }
       let pageKept = 0;
       let pageFiltered = 0;
       for (const t of threads) {
@@ -137,6 +204,8 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
       progress.bump('skipped', pageFiltered);
       pages += 1;
       start += PAGE_SIZE;
+      nextStartByForum[String(forumId)] = start;
+      await persistResume();
       await progress.tick(`f=${forumId} page ${pages} · ${seeds.length} seeds collected`);
       if (sleepMs > 0) await sleep(sleepMs);
     }
@@ -157,6 +226,9 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
 
   const yaml = yamlStringify({ games: seeds });
   await atomicWrite(opts.seedsPath, yaml);
+
+  // Walk completed successfully — clean up the resume marker.
+  if (opts.resumePath) await unlink(opts.resumePath).catch(() => {});
 
   await progress.done(`${seeds.length} games (${withId} with Steam IDs) → ${opts.seedsPath}`);
 }

@@ -25,6 +25,7 @@ const SEEDS_PATH = join(PKG_ROOT, 'seeds.yaml');
 const CACHE_PATH = join(PKG_ROOT, '.indexer-cache.json');
 const CATALOG_DIR = join(REPO_ROOT, 'packages', 'catalog');
 const STATUS_PATH = join(PKG_ROOT, '.indexer-status.json');
+const DISCOVER_RESUME_PATH = join(PKG_ROOT, '.discover-progress.json');
 
 async function readCache(): Promise<Cache> {
   try {
@@ -56,12 +57,22 @@ async function processSeed(
   seed: SeedEntry,
   taken: Set<string>,
   cache: Cache,
+  skipRecentMs: number,
+  now: () => number,
 ): Promise<ProcessedEntry> {
   const id = allocateId(seed.name, taken);
   taken.add(id);
+  const cached = cache[seed.url];
+  // Fast-path resume: if we successfully fetched this URL within skipRecentMs,
+  // trust the cached SHA + trainer JSON and skip the network entirely.
+  if (skipRecentMs > 0 && cached) {
+    const ageMs = now() - Date.parse(cached.lastFetchedAt);
+    if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < skipRecentMs) {
+      return { seed, id, trainerUpdatedAt: cached.lastFetchedAt, status: 'unchanged' };
+    }
+  }
   const buf = await fetchTrainer(seed.url);
   const sha = sha256(buf);
-  const cached = cache[seed.url];
   if (cached && cached.sha256 === sha) {
     return { seed, id, trainerUpdatedAt: cached.lastFetchedAt, status: 'unchanged' };
   }
@@ -90,6 +101,7 @@ async function main(): Promise<number> {
       sleepMs: sleepMsEnv ? Number(sleepMsEnv) : 1000,
       ...(pageLimitEnv ? { pageLimit: Number(pageLimitEnv) } : {}),
       statusPath: STATUS_PATH,
+      resumePath: DISCOVER_RESUME_PATH,
       loadSteamMap: () => loadSteamAppList({
         cachePath: join(PKG_ROOT, '.steam-applist-cache.json'),
       }),
@@ -102,6 +114,12 @@ async function main(): Promise<number> {
   const processed: ProcessedEntry[] = [];
   let failures = 0;
 
+  const skipRecentHours = Number(process.env.STARLIGHT_INDEX_SKIP_RECENT_HOURS ?? 0);
+  const skipRecentMs = Number.isFinite(skipRecentHours) && skipRecentHours > 0
+    ? skipRecentHours * 60 * 60 * 1000
+    : 0;
+  const flushEvery = Number(process.env.STARLIGHT_INDEX_FLUSH_EVERY ?? 5);
+
   const progress = new Progress({
     phase: 'index',
     total: seeds.length,
@@ -109,9 +127,10 @@ async function main(): Promise<number> {
     lineEvery: 10,
   });
 
+  let processedSinceFlush = 0;
   for (const seed of seeds) {
     try {
-      const r = await processSeed(seed, taken, cache);
+      const r = await processSeed(seed, taken, cache, skipRecentMs, Date.now);
       processed.push(r);
       progress.bump(r.status);
       await progress.tick(`[${r.status}] ${r.id}`);
@@ -121,6 +140,11 @@ async function main(): Promise<number> {
       progress.bump('failed');
       progress.noteError(`${seed.name}: ${msg}`);
       await progress.tick(`[failed] ${seed.name} — ${msg.slice(0, 80)}`);
+    }
+    processedSinceFlush++;
+    if (flushEvery > 0 && processedSinceFlush >= flushEvery) {
+      await writeCache(cache);
+      processedSinceFlush = 0;
     }
   }
 

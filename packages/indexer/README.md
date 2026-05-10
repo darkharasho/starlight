@@ -38,6 +38,25 @@ the catalog:
 The full bootstrap (discover + index) takes a few hours on first run. Subsequent runs
 are SHA-deltas via the Phase 5.4 cache.
 
+### Resume after Ctrl-C
+
+`discover` writes `.discover-progress.json` after every page, so an interrupted walk
+picks up where it left off on the next run. The file is deleted on successful
+completion. Delete it manually to force a fresh walk.
+
+`index` flushes `.indexer-cache.json` every 5 seeds (override with
+`STARLIGHT_INDEX_FLUSH_EVERY=N`), so a Ctrl-C still preserves cache progress. Set
+`STARLIGHT_INDEX_SKIP_RECENT_HOURS=24` to short-circuit the network entirely for any
+seed last fetched within that window — the resumed run will fly through already-done
+seeds in seconds.
+
+Useful env vars:
+
+    STARLIGHT_DISCOVER_PAGE_LIMIT=10        # cap discover walk (default: full forum)
+    STARLIGHT_DISCOVER_SLEEP_MS=500         # sleep between forum pages (default 1000)
+    STARLIGHT_INDEX_SKIP_RECENT_HOURS=24    # skip refetch if cache is younger than this
+    STARLIGHT_INDEX_FLUSH_EVERY=5           # flush cache file every N seeds
+
 ## Cron
 
 A GitHub Actions workflow runs the indexer weekly and opens a PR with any diffs (see
