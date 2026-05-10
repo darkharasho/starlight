@@ -1,6 +1,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
+import Database from 'better-sqlite3';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseVdf } from './vdf.js';
@@ -294,10 +295,58 @@ export class HeroicScanner implements LibraryScanner {
   }
 }
 
-// Phase 5 stub — LutrisScanner will be filled in later phases.
-class LutrisScanner implements LibraryScanner {
-  readonly source = 'steam' as const;  // TODO: Phase 5
-  async scan(): Promise<DetectedGame[]> { return []; }
+export interface LutrisScannerOpts {
+  dbPathResolver?: () => Promise<string | null>;
+}
+
+async function defaultLutrisDbPath(): Promise<string | null> {
+  if (platform() !== 'linux') return null;
+  const candidate = join(homedir(), '.local', 'share', 'lutris', 'games', 'lutris.db');
+  return (await exists(candidate)) ? candidate : null;
+}
+
+interface LutrisRow {
+  id: number;
+  name: string | null;
+  runner: string | null;
+  directory: string | null;
+  installed: number | null;
+  slug: string | null;
+}
+
+export class LutrisScanner implements LibraryScanner {
+  readonly source = 'lutris' as const;
+  private readonly resolver: () => Promise<string | null>;
+  constructor(opts: LutrisScannerOpts = {}) {
+    this.resolver = opts.dbPathResolver ?? defaultLutrisDbPath;
+  }
+  async scan(): Promise<DetectedGame[]> {
+    try {
+      const dbPath = await this.resolver();
+      if (!dbPath || !(await exists(dbPath))) return [];
+      let db: Database.Database;
+      try { db = new Database(dbPath, { readonly: true, fileMustExist: true }); }
+      catch { return []; }
+      try {
+        const rows = db.prepare(`SELECT id, name, runner, directory, installed, slug FROM games`).all() as LutrisRow[];
+        const games: DetectedGame[] = [];
+        for (const r of rows) {
+          if (!r.installed || !r.name || !r.directory) continue;
+          games.push({
+            source: 'lutris',
+            appId: r.slug ?? String(r.id),
+            name: r.name,
+            installDir: r.directory,
+          });
+        }
+        return games;
+      } finally {
+        db.close();
+      }
+    } catch {
+      return [];
+    }
+  }
 }
 
 const defaultScanners: LibraryScanner[] = [
