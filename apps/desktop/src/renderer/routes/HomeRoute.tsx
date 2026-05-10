@@ -3,9 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { BoxartGrid } from '../components/BoxartGrid.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
+import { useConfigStore, attachConfigEvents } from '../stores/config-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import type { CatalogGame } from '../types/catalog-game.js';
+import type { RecentTrainer } from '../../shared/ipc.js';
 
 export function HomeRoute(): JSX.Element {
   const navigate = useNavigate();
@@ -18,6 +20,23 @@ export function HomeRoute(): JSX.Element {
   const detectedGames = useLibraryStore((s) => s.games);
 
   useEffect(() => { if (!index) void loadCatalog(); }, [index, loadCatalog]);
+
+  useEffect(() => { attachConfigEvents(); }, []);
+  const config = useConfigStore((s) => s.config);
+  const loadConfig = useConfigStore((s) => s.load);
+  useEffect(() => { if (!config) void loadConfig(); }, [config, loadConfig]);
+
+  const recents = config?.recents ?? [];
+
+  async function selectRecent(r: RecentTrainer): Promise<void> {
+    if (r.source !== 'catalog' || !index) return;
+    const entry = index.games.find(g => g.id === r.id);
+    if (!entry) return;
+    const trainer = await fetchTrainer(entry.trainerPath);
+    if (!trainer) return;
+    await setActiveTrainerFromCatalog(trainer);
+    navigate('/active');
+  }
 
   const installedSteamIds = new Set(
     detectedGames.filter(g => g.source === 'steam').map(g => Number(g.appId)),
@@ -55,6 +74,27 @@ export function HomeRoute(): JSX.Element {
         </button>
         {trainerLoaded && <span className="text-[11px] text-muted">Loaded: {trainerLoaded.game.name}</span>}
       </div>
+      {recents.length > 0 && (
+        <section className="mb-5">
+          <div className="text-[10px] tracking-wider uppercase text-muted mb-2.5">Recently Played</div>
+          <div className="grid grid-cols-1 gap-1.5">
+            {recents.slice(0, 6).map((r) => (
+              <button
+                key={`${r.source}:${r.id}:${r.openedAt}`}
+                type="button"
+                onClick={() => void selectRecent(r)}
+                disabled={r.source === 'file' || !index?.games.some(g => g.id === r.id)}
+                className="text-left flex items-center justify-between px-3 py-2 text-xs rounded-sm border border-line bg-panel hover:border-neon-cyan disabled:opacity-50 disabled:hover:border-line"
+              >
+                <span>{r.name}</span>
+                <span className="text-[10px] text-muted">
+                  {r.source === 'catalog' ? 'catalog' : 'file'} · {timeAgo(r.openedAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       {installed.length > 0 && <Section label="Installed Games With Trainers" games={installed} onSelect={selectGame} />}
       <Section label="Featured Trainers" games={featured} onSelect={selectGame} />
     </>
@@ -68,4 +108,12 @@ function Section({ label, games, onSelect }: { label: string; games: CatalogGame
       <BoxartGrid games={games} onSelect={(g) => void onSelect(g)} />
     </section>
   );
+}
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return 'just now';
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return `${Math.floor(ms / 86_400_000)}d ago`;
 }
