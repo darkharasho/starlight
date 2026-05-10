@@ -6,6 +6,7 @@ const NAV = [
   { to: '/browse',    label: 'Browse' },
   { to: '/search',    label: 'Search' },
   { to: '/active',    label: 'Active Trainer' },
+  { to: '/settings',  label: 'Settings' },
 ];
 
 export function Sidebar(): JSX.Element {

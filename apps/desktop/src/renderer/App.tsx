@@ -12,6 +12,7 @@ import { LibraryRoute } from './routes/LibraryRoute.js';
 import { BrowseRoute } from './routes/BrowseRoute.js';
 import { SearchRoute } from './routes/SearchRoute.js';
 import { ActiveTrainerRoute } from './routes/ActiveTrainerRoute.js';
+import { SettingsRoute } from './routes/SettingsRoute.js';
 
 export default function App(): JSX.Element {
   const latchState = useLatchState((s) => s.state);
@@ -40,6 +41,7 @@ export default function App(): JSX.Element {
               <Route path="/browse"  element={<BrowseRoute />} />
               <Route path="/search"  element={<SearchRoute />} />
               <Route path="/active"  element={<ActiveTrainerRoute />} />
+              <Route path="/settings" element={<SettingsRoute />} />
             </Routes>
           </main>
         </div>
