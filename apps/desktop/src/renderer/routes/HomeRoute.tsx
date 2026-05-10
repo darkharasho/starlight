@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BoxartGrid } from '../components/BoxartGrid.js';
+import { BoxartShelf } from '../components/BoxartShelf.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useConfigStore, attachConfigEvents } from '../stores/config-store.js';
@@ -105,7 +105,7 @@ function Section({ label, games, onSelect }: { label: string; games: CatalogGame
   return (
     <section className="mb-5">
       <div className="text-[10px] tracking-wider uppercase text-muted mb-2.5">{label}</div>
-      <BoxartGrid games={games} onSelect={(g) => void onSelect(g)} />
+      <BoxartShelf games={games} onSelect={(g) => void onSelect(g)} />
     </section>
   );
 }

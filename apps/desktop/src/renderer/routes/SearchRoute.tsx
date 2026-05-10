@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BoxartGrid } from '../components/BoxartGrid.js';
+import { BoxartShelf } from '../components/BoxartShelf.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
@@ -50,7 +50,7 @@ export function SearchRoute(): JSX.Element {
       {query.trim() && matches.length === 0 ? (
         <div className="text-xs text-muted">No games match.</div>
       ) : (
-        <BoxartGrid games={matches} onSelect={(g) => void onSelect(g)} />
+        <BoxartShelf games={matches} onSelect={(g) => void onSelect(g)} limit={120} />
       )}
     </>
   );
