@@ -21,6 +21,10 @@ export function AddManualGameDialog({ onCancel, onConfirm }: Props): JSX.Element
       return;
     }
     setExePath(r.path);
+    if (!name) {
+      const base = r.path.split(/[\\/]/).pop() ?? '';
+      setName(base.replace(/\.(exe|app|sh)$/i, ''));
+    }
   }
 
   async function handleSave(): Promise<void> {

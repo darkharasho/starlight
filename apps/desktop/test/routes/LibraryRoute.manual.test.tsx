@@ -44,7 +44,9 @@ describe('LibraryRoute — manual entries', () => {
     await userEvent.click(screen.getByRole('button', { name: /add manually/i }));
     await userEvent.click(screen.getByRole('button', { name: /pick executable/i }));
     await waitFor(() => expect(screen.getByText('/games/foo/foo.exe')).toBeInTheDocument());
-    await userEvent.type(screen.getByLabelText(/display name/i), 'Foo');
+    const nameInput = screen.getByLabelText(/display name/i);
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, 'Foo');
     await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(addManual).toHaveBeenCalledWith('Foo', '/games/foo/foo.exe'));
   });

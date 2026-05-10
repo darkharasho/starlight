@@ -133,7 +133,7 @@ export function LibraryRoute(): JSX.Element {
       {games.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 overflow-y-auto">
           {games.map((g) => {
-            const dirName = (g.installDir.split('/').pop() ?? '').toLowerCase();
+            const dirName = (g.installDir.split(/[\\/]/).pop() ?? '').toLowerCase();
             const isCatalogMatch = (g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : NaN));
             return (
               <GameTile
