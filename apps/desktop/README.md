@@ -143,6 +143,18 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
     better-sqlite3`. The Electron app rebuilds via electron-builder during packaging
     (Phase 6).
 
+## Phase 5.7 demo additions
+
+32. **Product page is live:** the placeholder Astro site is replaced with a real homepage
+    at https://darkharasho.github.io/starlight/ — hero, features, three SVG mockups,
+    changelog, and 404. Themed to match the desktop app (neon cyan/pink on dark).
+33. **Changelog:** `https://darkharasho.github.io/starlight/changelog` renders
+    `apps/site/src/content/changelog.md` as a versioned history. Append an entry there
+    when shipping new phases.
+34. **Real screenshots:** the v1 site uses SVG mockups in `apps/site/public/screenshots/`.
+    Replace those files with real PNG screenshots (same filenames) when you want
+    photographic stills.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
@@ -154,4 +166,4 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 - Periodic indexer — DONE — Phase 5.4
 - SteamGridDB boxart fallback — DONE — Phase 5.5
 - Epic / Heroic / Lutris scanners (replace 4.5 stubs) — DONE — Phase 5.6
-- Astro product page real content — Phase 5.7
+- Astro product page real content — DONE — Phase 5.7
