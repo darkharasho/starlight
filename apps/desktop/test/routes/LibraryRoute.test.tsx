@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { LibraryRoute } from '../../src/renderer/routes/LibraryRoute.js';
 import { useLibraryStore } from '../../src/renderer/stores/library-store.js';
 import { useProcessStore } from '../../src/renderer/stores/process-store.js';
+import { useCatalogStore } from '../../src/renderer/stores/catalog-store.js';
 import { setStarlightApi, clearStarlightApi } from '../../src/renderer/ipc-client.js';
 
 const TWO_GAMES = [
@@ -28,6 +29,14 @@ function makeScanApi(games: typeof TWO_GAMES) {
 beforeEach(() => {
   useLibraryStore.setState({ games: [], loading: false, error: null });
   useProcessStore.setState({ processes: [], matchedPid: null });
+  useCatalogStore.setState({
+    index: {
+      schemaVersion: 1, generatedAt: 'x',
+      games: [{ id: 'tf2', name: 'Team Fortress 2', steamAppId: 440,
+                processName: ['hl2.exe'], platform: ['windows'], trainerPath: 'trainers/tf2.json' }],
+    },
+    loading: false, error: null,
+  } as never);
   setStarlightApi(makeScanApi(TWO_GAMES));
 });
 
@@ -64,5 +73,14 @@ describe('LibraryRoute', () => {
     render(<LibraryRoute />);
     await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
     expect(screen.getByText('Running')).toBeInTheDocument();
+  });
+
+  it('shows Trainer badge only on tiles whose Steam ID is in the catalog', async () => {
+    render(<LibraryRoute />);
+    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    // TF2 (appId 440) is in the catalog stub — badge should appear
+    expect(screen.getByText('Trainer')).toBeInTheDocument();
+    // CS2 (appId 730) is NOT in the catalog stub — only one Trainer badge total
+    expect(screen.getAllByText('Trainer')).toHaveLength(1);
   });
 });
