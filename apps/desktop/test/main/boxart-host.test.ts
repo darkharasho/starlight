@@ -107,6 +107,42 @@ describe('resolveBoxartFor — SteamGridDB fallback', () => {
   });
 });
 
+describe('resolveBoxartFor — forceFallback', () => {
+  it('forceFallback skips Steam CDN even when steamAppId is set', async () => {
+    const r = await resolveBoxartFor(
+      { name: 'Elden Ring', steamAppId: 1245620, forceFallback: true },
+      {
+        cachePath, apiKey: 'KEY',
+        fetch: fakeFetch(
+          { ok: true, json: { success: true, data: [{ id: 99, name: 'Elden Ring' }] } },
+          { ok: true, json: { success: true, data: [{ id: 1, url: 'https://sgdb.example/elden.jpg', width: 600, height: 900 }] } },
+        ),
+      },
+    );
+    expect(r.url).toBe('https://sgdb.example/elden.jpg');
+  });
+
+  it('forceFallback caches under a different key than the Steam-positive cache', async () => {
+    // First, populate the steamAppId cache with the Steam URL.
+    await resolveBoxartFor(
+      { name: 'Elden Ring', steamAppId: 1245620 },
+      { cachePath, apiKey: null, fetch: fakeFetch() },
+    );
+    // Now request with forceFallback. Should hit SGDB (different cache key), not return the Steam URL.
+    const r = await resolveBoxartFor(
+      { name: 'Elden Ring', steamAppId: 1245620, forceFallback: true },
+      {
+        cachePath, apiKey: 'KEY',
+        fetch: fakeFetch(
+          { ok: true, json: { success: true, data: [{ id: 99, name: 'Elden Ring' }] } },
+          { ok: true, json: { success: true, data: [{ id: 1, url: 'https://sgdb.example/elden.jpg' }] } },
+        ),
+      },
+    );
+    expect(r.url).toBe('https://sgdb.example/elden.jpg');
+  });
+});
+
 describe('resolveBoxartFor — cache hits', () => {
   it('returns cached URL on second call without re-fetching', async () => {
     let calls = 0;
@@ -140,19 +176,36 @@ describe('resolveBoxartFor — cache hits', () => {
 
   it('refreshes negative cache after 24h', async () => {
     const stale = JSON.stringify({
-      'OldEmpty': { url: null, resolvedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() },
+      'name:oldempty': { url: null, resolvedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() },
     });
     await writeFile(cachePath, stale);
     let searchCalls = 0;
     const wrapped = async (): Promise<Response> => {
       searchCalls++;
-      return { ok: true, status: 200, json: async () => ({ success: true, data: [{ id: 1, name: 'OldEmpty' }] }) } as Response;
+      return { ok: true, status: 200, json: async () => ({ success: true, data: [] }) } as Response;
     };
     const r = await resolveBoxartFor({ name: 'OldEmpty' }, {
       cachePath,
       apiKey: 'KEY',
       fetch: wrapped,
     });
-    expect(searchCalls).toBeGreaterThan(0);   // cache was stale, re-fetched
+    expect(searchCalls).toBe(1);   // cache was stale, re-fetched exactly once
+  });
+
+  it('does NOT refresh negative cache before 24h', async () => {
+    const fresh = JSON.stringify({
+      'name:freshempty': { url: null, resolvedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() },
+    });
+    await writeFile(cachePath, fresh);
+    let searchCalls = 0;
+    const wrapped = async (): Promise<Response> => {
+      searchCalls++;
+      return { ok: true, status: 200, json: async () => ({ success: true, data: [] }) } as Response;
+    };
+    const r = await resolveBoxartFor({ name: 'FreshEmpty' }, {
+      cachePath, apiKey: 'KEY', fetch: wrapped,
+    });
+    expect(r.url).toBeNull();
+    expect(searchCalls).toBe(0);
   });
 });

@@ -30,7 +30,8 @@ async function writeCache(path: string, cache: Cache): Promise<void> {
   await rename(tmp, path);
 }
 
-function cacheKey(req: { name: string; steamAppId?: number }): string {
+function cacheKey(req: { name: string; steamAppId?: number; forceFallback?: boolean }): string {
+  if (req.forceFallback) return `fallback:${req.name.toLowerCase()}`;
   return req.steamAppId != null ? String(req.steamAppId) : `name:${req.name.toLowerCase()}`;
 }
 
@@ -69,7 +70,7 @@ export interface ResolveBoxartOpts {
 }
 
 export async function resolveBoxartFor(
-  req: { name: string; steamAppId?: number },
+  req: { name: string; steamAppId?: number; forceFallback?: boolean },
   opts: ResolveBoxartOpts,
 ): Promise<{ url: string | null }> {
   const cache = await readCache(opts.cachePath);
@@ -84,7 +85,7 @@ export async function resolveBoxartFor(
   }
 
   let url: string | null = null;
-  if (req.steamAppId != null) {
+  if (req.steamAppId != null && !req.forceFallback) {
     url = STEAM_CDN(req.steamAppId);
   } else if (opts.apiKey) {
     const gameId = await sgdbSearch(req.name, opts.apiKey, opts.fetch);
@@ -102,7 +103,7 @@ function defaultCachePath(): string {
   return join(app.getPath('userData'), 'boxart-cache.json');
 }
 
-export async function resolveBoxart(req: { name: string; steamAppId?: number }): Promise<{ url: string | null }> {
+export async function resolveBoxart(req: { name: string; steamAppId?: number; forceFallback?: boolean }): Promise<{ url: string | null }> {
   return resolveBoxartFor(req, {
     cachePath: defaultCachePath(),
     apiKey: process.env['STEAMGRIDDB_API_KEY'] ?? null,

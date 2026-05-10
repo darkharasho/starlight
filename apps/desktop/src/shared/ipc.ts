@@ -65,6 +65,8 @@ export type RebindHotkeyResult =
 export interface ResolveBoxartRequest {
   name: string;
   steamAppId?: number;
+  /** When true, skip Steam CDN even if steamAppId is set — used after a confirmed CDN miss. */
+  forceFallback?: boolean;
 }
 
 export interface ResolveBoxartResult {

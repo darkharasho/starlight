@@ -41,7 +41,7 @@ function GameTile({
   async function handleImgError(): Promise<void> {
     if (errored) return;
     setErrored(true);
-    const req: { name: string; steamAppId?: number } = { name: game.name };
+    const req: { name: string; steamAppId?: number; forceFallback?: boolean } = { name: game.name, forceFallback: true };
     if (game.boxartSteamAppId != null) req.steamAppId = game.boxartSteamAppId;
     const r = await starlight().resolveBoxart(req).catch(() => ({ url: null }));
     if (r.url && r.url !== upfrontCover) setResolvedCover(r.url);
