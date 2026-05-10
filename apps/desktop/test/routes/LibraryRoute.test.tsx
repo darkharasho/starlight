@@ -84,4 +84,57 @@ describe('LibraryRoute', () => {
     // CS2 (appId 730) is NOT in the catalog stub — only one Trainer badge total
     expect(screen.getAllByText('Trainer')).toHaveLength(1);
   });
+
+  it('lights Trainer badge via name match when steamAppId is null', async () => {
+    useCatalogStore.setState({
+      index: {
+        schemaVersion: 1, generatedAt: 'x',
+        games: [{
+          id: 'tf2', name: 'Team Fortress 2', steamAppId: null,
+          processName: [], platform: ['windows'],
+          trainerPath: 'trainers/tf2.json',
+        }],
+      },
+      loading: false, error: null,
+    } as never);
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    expect(screen.getAllByText('Trainer').length).toBeGreaterThan(0);
+  });
+
+  it('Steam-ID match takes precedence over name match', async () => {
+    useCatalogStore.setState({
+      index: {
+        schemaVersion: 1, generatedAt: 'x',
+        games: [
+          {
+            id: 'by-id', name: 'Different Name', steamAppId: 440,
+            processName: [], platform: ['windows'],
+            trainerPath: 'trainers/by-id.json',
+          },
+          {
+            id: 'by-name', name: 'Team Fortress 2', steamAppId: null,
+            processName: [], platform: ['windows'],
+            trainerPath: 'trainers/by-name.json',
+          },
+        ],
+      },
+      loading: false, error: null,
+    } as never);
+    let requestedPath: string | null = null;
+    const setActive = vi.fn(async () => undefined);
+    useCatalogStore.setState({
+      trainer: async (path: string) => {
+        requestedPath = path;
+        return null;
+      },
+    } as never);
+    const { useTrainerStore } = await import('../../src/renderer/stores/trainer-store.js');
+    useTrainerStore.setState({ setActiveTrainerFromCatalog: setActive } as never);
+
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('Team Fortress 2')).toBeInTheDocument());
+    await userEvent.click(screen.getByTitle('Open Team Fortress 2 trainer'));
+    await waitFor(() => expect(requestedPath).toBe('trainers/by-id.json'));
+  });
 });

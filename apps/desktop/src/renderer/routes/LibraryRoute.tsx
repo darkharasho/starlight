@@ -149,11 +149,26 @@ export function LibraryRoute(): JSX.Element {
   const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
   useEffect(() => { if (!catalogIndex) void loadCatalog(); }, [catalogIndex, loadCatalog]);
 
-  async function openTrainerForGame(g: DetectedGame): Promise<void> {
-    if (!catalogIndex) return;
+  const catalogNameIndex = useMemo(() => {
+    const m = new Map<string, NonNullable<typeof catalogIndex>['games'][number]>();
+    for (const g of catalogIndex?.games ?? []) {
+      m.set(g.name.toLowerCase(), g);
+    }
+    return m;
+  }, [catalogIndex]);
+
+  function findCatalogEntry(g: DetectedGame): NonNullable<typeof catalogIndex>['games'][number] | undefined {
+    if (!catalogIndex) return undefined;
     const steamId = g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : NaN);
-    if (Number.isNaN(steamId)) return;
-    const entry = catalogIndex.games.find((e) => e.steamAppId === steamId);
+    if (!Number.isNaN(steamId)) {
+      const byId = catalogIndex.games.find(e => e.steamAppId === steamId);
+      if (byId) return byId;
+    }
+    return catalogNameIndex.get(g.name.toLowerCase());
+  }
+
+  async function openTrainerForGame(g: DetectedGame): Promise<void> {
+    const entry = findCatalogEntry(g);
     if (!entry) return;
     const trainer = await fetchTrainer(entry.trainerPath);
     if (!trainer) return;
@@ -164,11 +179,6 @@ export function LibraryRoute(): JSX.Element {
   const runningSet = useMemo(() => {
     return new Set(processes.map((p) => p.name.toLowerCase().replace(/\.exe$/i, '')));
   }, [processes]);
-
-  const catalogSteamIds = useMemo(
-    () => new Set((catalogIndex?.games ?? []).filter(g => g.steamAppId != null).map(g => g.steamAppId as number)),
-    [catalogIndex],
-  );
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -216,13 +226,13 @@ export function LibraryRoute(): JSX.Element {
         <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 overflow-y-auto">
           {games.map((g) => {
             const dirName = (g.installDir.split(/[\\/]/).pop() ?? '').toLowerCase();
-            const isCatalogMatch = (g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : NaN));
+            const matched = findCatalogEntry(g);
             return (
               <GameTile
                 key={`${g.source}:${g.appId}`}
                 game={g}
                 running={runningSet.has(dirName)}
-                hasTrainer={!Number.isNaN(isCatalogMatch) && catalogSteamIds.has(isCatalogMatch as number)}
+                hasTrainer={!!matched}
                 onClick={() => void openTrainerForGame(g)}
                 {...(g.source === 'manual' ? { onRemove: () => void removeManual(g.appId) } : {})}
               />
