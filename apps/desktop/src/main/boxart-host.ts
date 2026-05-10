@@ -17,19 +17,55 @@ interface CacheEntry {
 
 type Cache = Record<string, CacheEntry>;
 
-async function readCache(path: string): Promise<Cache> {
-  try {
-    return JSON.parse(await readFile(path, 'utf8')) as Cache;
-  } catch {
-    return {};
+/**
+ * Per-cachePath in-memory state. Multiple concurrent IPC calls share one
+ * Cache object, avoiding the read-then-write race that otherwise lets later
+ * writes overwrite earlier ones with a stale snapshot. Disk writes are
+ * coalesced through a serialized queue.
+ */
+interface CacheState {
+  data: Cache;
+  loaded: boolean;
+  pendingWrite: Promise<void> | null;
+}
+const states = new Map<string, CacheState>();
+
+function stateFor(path: string): CacheState {
+  let s = states.get(path);
+  if (!s) {
+    s = { data: {}, loaded: false, pendingWrite: null };
+    states.set(path, s);
   }
+  return s;
 }
 
-async function writeCache(path: string, cache: Cache): Promise<void> {
+async function loadCache(path: string): Promise<Cache> {
+  const s = stateFor(path);
+  if (s.loaded) return s.data;
+  try {
+    s.data = JSON.parse(await readFile(path, 'utf8')) as Cache;
+  } catch {
+    s.data = {};
+  }
+  s.loaded = true;
+  return s.data;
+}
+
+async function flushCache(path: string): Promise<void> {
+  const s = stateFor(path);
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  await writeFile(tmp, JSON.stringify(cache, null, 2) + '\n', 'utf8');
+  await writeFile(tmp, JSON.stringify(s.data, null, 2) + '\n', 'utf8');
   await rename(tmp, path);
+}
+
+/** Serialize disk writes through a queue so concurrent IPC calls don't race. */
+function scheduleFlush(path: string): Promise<void> {
+  const s = stateFor(path);
+  s.pendingWrite = (s.pendingWrite ?? Promise.resolve())
+    .then(() => flushCache(path))
+    .catch(() => { /* best-effort */ });
+  return s.pendingWrite;
 }
 
 function cacheKey(req: { name: string; steamAppId?: number; forceFallback?: boolean }): string {
@@ -119,7 +155,7 @@ export async function resolveBoxartFor(
   req: { name: string; steamAppId?: number; forceFallback?: boolean },
   opts: ResolveBoxartOpts,
 ): Promise<{ url: string | null }> {
-  const cache = await readCache(opts.cachePath);
+  const cache = await loadCache(opts.cachePath);
   const key = cacheKey(req);
   const cached = cache[key];
 
@@ -148,7 +184,7 @@ export async function resolveBoxartFor(
   }
 
   cache[key] = { url, resolvedAt: new Date().toISOString() };
-  await writeCache(opts.cachePath, cache);
+  await scheduleFlush(opts.cachePath);
   return { url };
 }
 

@@ -10,15 +10,13 @@ interface Props {
 export function GameTile({ game, onClick }: Props): JSX.Element {
   const upfrontCover = steamCoverUrl(game.steamAppId);
   const [shownSrc, setShownSrc] = useState<string | null>(upfrontCover);
-  // Refs (not state) so they don't trigger re-renders that re-run the effect
-  // and cancel the in-flight fetch via the cleanup function.
-  const resolverStarted = useRef(false);
   const fallbackTried = useRef(false);
 
-  // Proactive resolve when there's no upfront cover.
+  // Proactive resolve when there's no upfront cover. The IPC is idempotent
+  // (server-side cache), so it's fine for this to run twice in React strict
+  // mode — the duplicate hits the cache.
   useEffect(() => {
-    if (shownSrc !== null || resolverStarted.current) return;
-    resolverStarted.current = true;
+    if (shownSrc !== null) return;
     let cancelled = false;
     void (async () => {
       const r = await starlight().resolveBoxart({ name: game.name }).catch(() => ({ url: null }));

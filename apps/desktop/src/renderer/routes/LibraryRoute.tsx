@@ -25,13 +25,10 @@ function GameTile({
 }): JSX.Element {
   const upfrontCover = boxartUrl(game);
   const [shownSrc, setShownSrc] = useState<string | null>(upfrontCover);
-  const resolverStarted = useRef(false);
   const fallbackTried = useRef(false);
 
-  // Proactive resolve when no upfront cover (e.g., manual entries).
   useEffect(() => {
-    if (shownSrc !== null || resolverStarted.current) return;
-    resolverStarted.current = true;
+    if (shownSrc !== null) return;
     let cancelled = false;
     void (async () => {
       const req: { name: string; steamAppId?: number } = { name: game.name };
