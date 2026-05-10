@@ -81,7 +81,7 @@ function ensureStarted(): void {
     uIOhook.start();
     started = true;
   } catch (err) {
-    uIOhook.off('keydown', onKeyDown);
+    try { uIOhook.off('keydown', onKeyDown); } catch { /* ignore */ }
     const message = err instanceof Error ? err.message : String(err);
     onInitFailure?.(message);
   }

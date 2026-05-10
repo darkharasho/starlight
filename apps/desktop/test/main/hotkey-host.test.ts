@@ -81,15 +81,6 @@ describe('hotkey-host (uiohook)', () => {
     shutdown();
   });
 
-  it('inc accelerator fires engineHost.incCheat for set-type cheats', async () => {
-    const { registerForTrainer, shutdown } = await import('../../src/main/hotkey-host.js');
-    registerForTrainer(trainer);
-    await fireKey({ keycode: 0xc8 });                   // F4+Up requires F4 modifier? No — F4 is the KEY in toggle, ArrowUp is the key in inc. Recheck below.
-    // Actually F4+Up means key=Up with modifier=F4? No — Electron accelerator format: tokens split on '+', last is the key. So 'F4+Up' has key=Up, modifier=F4. But F4 is not a modifier. parseAccelerator should reject this.
-    // For this test, our trainer's inc='F4+Up' will fail to parse. Skip and use a simpler one:
-    shutdown();
-  });
-
   it('inc accelerator fires when matched (using parseable form)', async () => {
     // Build a trainer with simpler hotkeys to avoid the F4+Up parse issue (F4 is not a modifier).
     const t = {
