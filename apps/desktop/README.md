@@ -125,6 +125,24 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 27. **Get a key:** sign up at https://www.steamgriddb.com/profile/preferences/api and
     create an API key. Free, rate-limited (sufficient for personal use).
 
+## Phase 5.6 demo additions
+
+28. **Epic Games Launcher detection** (Win/Mac): Library tab now picks up games installed
+    via the Epic Games Store. Reads `%PROGRAMDATA%/Epic/EpicGamesLauncher/Data/Manifests/`
+    on Windows or `~/Library/Application Support/Epic/EpicGamesLauncher/Data/Manifests/`
+    on macOS. Each `.item` JSON manifest produces one tile.
+29. **Heroic detection** (Linux): reads `~/.config/heroic/store_cache/library.json` (Epic
+    games installed via Heroic) and `~/.config/heroic/gog_store/library.json` (GOG games
+    via Heroic). Flatpak path (`~/.var/app/com.heroicgameslauncher.hgl/...`) is also
+    checked.
+30. **Lutris detection** (Linux): opens `~/.local/share/lutris/games/lutris.db` read-only
+    via `better-sqlite3`. Only installed games (`installed = 1`) appear as tiles.
+31. **Native module:** `better-sqlite3` is the first native dep beyond Frida itself. If
+    `pnpm install` fails to build it, install platform build tools (Linux: `build-essential
+    python3-dev`; macOS: Xcode CLI tools; Windows: MSVC build tools), then `pnpm rebuild
+    better-sqlite3`. The Electron app rebuilds via electron-builder during packaging
+    (Phase 6).
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
@@ -135,5 +153,5 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 - Hotkey rebinding UI + `HotkeyCapture` — DONE — Phase 5.3
 - Periodic indexer — DONE — Phase 5.4
 - SteamGridDB boxart fallback — DONE — Phase 5.5
-- Epic / Heroic / Lutris scanners (replace 4.5 stubs) — Phase 5.6
+- Epic / Heroic / Lutris scanners (replace 4.5 stubs) — DONE — Phase 5.6
 - Astro product page real content — Phase 5.7
