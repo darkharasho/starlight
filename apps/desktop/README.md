@@ -173,6 +173,22 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
     instructions. The rest of the app continues to work — you just can't fire hotkeys
     until the issue is resolved.
 
+## Phase 6.1 demo additions
+
+38. **Auto-discovered catalog:** `node packages/indexer/dist/index.js discover` walks
+    fearlessrevolution's public forum, generates a `seeds.yaml` with thousands of game
+    entries, then `node packages/indexer/dist/index.js` (no arg) downloads each trainer
+    and regenerates `packages/catalog/`. After the cron runs once, the catalog moves
+    from 5 placeholder entries to the full fearlessrevolution corpus.
+39. **Library tile click flow:** the Library tab now matches catalog entries by name
+    in addition to Steam App ID. Even when an auto-discovered entry doesn't have a
+    Steam ID (Linux-only games, regional variants, soundtrack mismatches), the Trainer
+    badge lights as long as the cleaned forum title matches the detected game's name.
+40. **Steam-ID precedence:** if the catalog has two entries for the same game — one
+    matched by Steam ID and one by name — the Steam-ID match wins. This handles edge
+    cases where the cleaned forum title resolves to the wrong Steam record (e.g., a
+    game named identically to a soundtrack).
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
@@ -189,8 +205,9 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 ## Phase 6 deferred items
 
 - Wayland `globalShortcut` workarounds — DONE — Phase 6.0
-- Linux packaging — Phase 6.1
-- Windows packaging — Phase 6.2
-- macOS packaging + signing + notarization — Phase 6.3
-- Auto-update channel — Phase 6.4
-- Error states / polish — Phase 6.5
+- Auto-discovered catalog — DONE — Phase 6.1
+- Linux packaging — Phase 6.2
+- Windows packaging — Phase 6.3
+- macOS packaging + signing + notarization — Phase 6.4
+- Auto-update channel — Phase 6.5
+- Error states / polish — Phase 6.6

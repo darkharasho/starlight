@@ -19,6 +19,25 @@ The indexer:
 A URL that fails (404, network error, parse error) is logged and skipped. The whole run never
 fails for a single bad seed.
 
+## Discover seeds from fearlessrevolution
+
+    pnpm --filter @starlight/indexer build
+    node packages/indexer/dist/index.js discover
+
+This walks the public phpBB forum at https://fearlessrevolution.com/viewforum.php?f=4
+paginating by 50, extracts each topic's id and title, filters stickies/requests, applies
+aggressive title cleanup, looks up Steam App IDs via Steam's GetAppList (no auth, 24h
+cache at `.steam-applist-cache.json`), and writes the result to `seeds.yaml`.
+
+The discover step takes ~80 minutes for the full forum (~5,000 threads at 1 req/sec).
+After it finishes, run the index step (no arg) to download trainers and regenerate
+the catalog:
+
+    node packages/indexer/dist/index.js
+
+The full bootstrap (discover + index) takes a few hours on first run. Subsequent runs
+are SHA-deltas via the Phase 5.4 cache.
+
 ## Cron
 
 A GitHub Actions workflow runs the indexer weekly and opens a PR with any diffs (see
