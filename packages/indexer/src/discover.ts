@@ -2,6 +2,7 @@ import { writeFile, rename, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { stringify as yamlStringify } from 'yaml';
 import { cleanTitle } from './title.js';
+import { Progress } from './progress.js';
 
 const TOPIC_RE = /<a href="\.\/viewtopic\.php\?f=(\d+)&amp;t=(\d+)[^"]*" class="topictitle"[^>]*>([^<]+)<\/a>/g;
 
@@ -24,6 +25,8 @@ export interface DiscoverOpts {
   pageLimit?: number;
   loadSteamMap?: () => Promise<Map<string, number>>;
   fetch?: typeof fetch;
+  /** Path to write a periodic JSON status snapshot. Skipped if undefined. */
+  statusPath?: string;
 }
 
 const USER_AGENT = 'starlight-indexer/0.0 (+https://github.com/darkharasho/starlight)';
@@ -90,6 +93,12 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
   const dedupeKey = (forumId: number, topicId: number): string => `${forumId}:${topicId}`;
   const seenKeys = new Set<string>();
 
+  const progress = new Progress({
+    phase: 'discover',
+    statusPath: opts.statusPath ?? null,
+    lineEvery: 1,
+  });
+
   for (const forumId of opts.forums) {
     let start = 0;
     let pages = 0;
@@ -98,15 +107,20 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
       let html: string;
       try { html = await fetchPage(url, fetchFn); }
       catch (err) {
-        console.error(`discover: failed to fetch ${url}: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        progress.bump('failed');
+        progress.noteError(`fetch ${url}: ${msg}`);
+        await progress.update(`fetch error · stopping forum f=${forumId}`);
         break;
       }
       const threads = extractTopics(html);
       if (threads.length === 0) break;
+      let pageKept = 0;
+      let pageFiltered = 0;
       for (const t of threads) {
-        if (isStickyOrRequest(t.rawTitle)) continue;
+        if (isStickyOrRequest(t.rawTitle)) { pageFiltered++; continue; }
         const key = dedupeKey(t.forumId, t.topicId);
-        if (seenKeys.has(key)) continue;
+        if (seenKeys.has(key)) { pageFiltered++; continue; }
         seenKeys.add(key);
         const cleaned = cleanTitle(t.rawTitle);
         seeds.push({
@@ -117,18 +131,23 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
           processName: [],
           platform: ['windows'],
         });
+        pageKept++;
       }
+      progress.bump('added', pageKept);
+      progress.bump('skipped', pageFiltered);
       pages += 1;
       start += PAGE_SIZE;
+      await progress.tick(`f=${forumId} page ${pages} · ${seeds.length} seeds collected`);
       if (sleepMs > 0) await sleep(sleepMs);
     }
   }
 
   if (seeds.length === 0) {
-    console.warn('discover: zero topics discovered; preserving existing seeds.yaml');
+    await progress.done('zero topics discovered; existing seeds.yaml preserved');
     return;
   }
 
+  await progress.update(`enriching ${seeds.length} seeds with Steam IDs…`);
   const steamMap = await loadSteamMap();
   let withId = 0;
   for (const s of seeds) {
@@ -139,5 +158,5 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
   const yaml = yamlStringify({ games: seeds });
   await atomicWrite(opts.seedsPath, yaml);
 
-  console.log(`discover: ${seeds.length} games (${withId} with Steam IDs) → ${opts.seedsPath}`);
+  await progress.done(`${seeds.length} games (${withId} with Steam IDs) → ${opts.seedsPath}`);
 }

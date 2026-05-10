@@ -1,2 +1,4 @@
 dist/
 .indexer-cache.json
+.indexer-status.json
+.steam-applist-cache.json

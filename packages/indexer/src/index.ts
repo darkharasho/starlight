@@ -12,6 +12,7 @@ import { fetchTrainer } from './fetch.js';
 import { writeTrainer, writeIndex } from './write.js';
 import { discover } from './discover.js';
 import { loadSteamAppList } from './steam.js';
+import { Progress } from './progress.js';
 
 interface CacheEntry { sha256: string; lastFetchedAt: string; }
 type Cache = Record<string, CacheEntry>;
@@ -23,6 +24,7 @@ const REPO_ROOT = resolve(PKG_ROOT, '..', '..');
 const SEEDS_PATH = join(PKG_ROOT, 'seeds.yaml');
 const CACHE_PATH = join(PKG_ROOT, '.indexer-cache.json');
 const CATALOG_DIR = join(REPO_ROOT, 'packages', 'catalog');
+const STATUS_PATH = join(PKG_ROOT, '.indexer-status.json');
 
 async function readCache(): Promise<Cache> {
   try {
@@ -87,6 +89,7 @@ async function main(): Promise<number> {
       seedsPath: SEEDS_PATH,
       sleepMs: sleepMsEnv ? Number(sleepMsEnv) : 1000,
       ...(pageLimitEnv ? { pageLimit: Number(pageLimitEnv) } : {}),
+      statusPath: STATUS_PATH,
       loadSteamMap: () => loadSteamAppList({
         cachePath: join(PKG_ROOT, '.steam-applist-cache.json'),
       }),
@@ -99,18 +102,30 @@ async function main(): Promise<number> {
   const processed: ProcessedEntry[] = [];
   let failures = 0;
 
+  const progress = new Progress({
+    phase: 'index',
+    total: seeds.length,
+    statusPath: STATUS_PATH,
+    lineEvery: 10,
+  });
+
   for (const seed of seeds) {
     try {
       const r = await processSeed(seed, taken, cache);
       processed.push(r);
-      console.log(`  [${r.status}] ${r.id} ← ${seed.url}`);
+      progress.bump(r.status);
+      await progress.tick(`[${r.status}] ${r.id}`);
     } catch (err) {
       failures++;
-      console.error(`  [failed] ${seed.name} ← ${seed.url}: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      progress.bump('failed');
+      progress.noteError(`${seed.name}: ${msg}`);
+      await progress.tick(`[failed] ${seed.name} — ${msg.slice(0, 80)}`);
     }
   }
 
   await writeCache(cache);
+  await progress.done(`${processed.length} processed · ${failures} failed`);
 
   // Load the existing index so failed seeds fall back to their previous entry.
   const existingIndexPath = join(CATALOG_DIR, 'index.json');
