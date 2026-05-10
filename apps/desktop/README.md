@@ -69,8 +69,22 @@ Phase 4.5 adds Library auto-detection, process-picker auto-fill, and Inc/Dec hot
 
 6. **Detach:** Click Detach. The process-poll loop resumes. Minimise the window and confirm CPU drops; restore and confirm the UI updates.
 
+## Phase 5.0 demo additions
+
+7. **Browse / Search:** the static placeholder catalog is gone. Browse renders the live catalog from `https://darkharasho.github.io/starlight/catalog/index.json` (cached under `<userData>/catalog-cache/`), or the bundled `packages/catalog/` files in dev. Search filters by name across the same data.
+8. **Home — Installed Games With Trainers:** appears when your detected Steam library overlaps the catalog (joined by `steamAppId`).
+9. **Library "Trainer" badge:** lit when the tile's Steam App ID matches a catalog entry.
+10. **Catalog from a tile:** clicking a tile fetches the per-trainer JSON and activates it without a `.CT` dialog.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
 - Inc/Dec hotkeys for value cheats — DONE — Phase 4.5
-- Catalog repo + community trainer index — Phase 5
+- Catalog repo + community trainer index — DONE — Phase 5.0
+- User config persistence (processName overrides, recents, preferences, manual games, hotkey overrides) — Phase 5.1
+- Manual library entries UI — Phase 5.2
+- Hotkey rebinding UI + `HotkeyCapture` — Phase 5.3
+- Indexer (`packages/indexer/`) — Phase 5.4
+- SteamGridDB boxart fallback — Phase 5.5
+- Epic / Heroic / Lutris scanners (replace 4.5 stubs) — Phase 5.6
+- Astro product page real content — Phase 5.7
