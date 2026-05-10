@@ -51,7 +51,7 @@ export function BrowseRoute(): JSX.Element {
   }
 
   return (
-    <>
+    <div className="flex flex-col h-full min-h-0">
       <PageHeader title="Browse" subtitle={`${games.length} games in the catalog`}
         right={
           <button type="button" onClick={() => void load()}
@@ -63,6 +63,6 @@ export function BrowseRoute(): JSX.Element {
       {loading && games.length === 0
         ? <div className="text-xs text-muted">Loading catalog…</div>
         : <BoxartGrid games={games} onSelect={(g) => void onSelect(g)} />}
-    </>
+    </div>
   );
 }

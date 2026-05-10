@@ -39,6 +39,29 @@ interface SgdbSearchHit { id: number; name: string }
 interface SgdbGrid { id: number; url: string; width?: number; height?: number }
 interface SgdbResponse<T> { success: boolean; data?: T }
 
+/**
+ * Look up a Steam appid by name via Steam's public store search. No auth.
+ * Returns the appid of the first `type: "app"` hit whose name matches
+ * (case-insensitive, ignoring punctuation), else null.
+ */
+async function steamStoreSearch(name: string, fetchFn: typeof fetch): Promise<number | null> {
+  const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(name)}&l=english&cc=us`;
+  let res: Response;
+  try { res = await fetchFn(url); } catch { return null; }
+  if (!res.ok) return null;
+  const body = await res.json().catch(() => null) as { items?: Array<{ type?: string; id?: number; name?: string }> } | null;
+  const items = body?.items ?? [];
+  const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const target = norm(name);
+  for (const item of items) {
+    if (item.type !== 'app' || typeof item.id !== 'number' || typeof item.name !== 'string') continue;
+    if (norm(item.name) === target) return item.id;
+  }
+  // No exact match — fall back to first app result.
+  const firstApp = items.find(i => i.type === 'app' && typeof i.id === 'number');
+  return firstApp?.id ?? null;
+}
+
 async function sgdbSearch(name: string, apiKey: string, fetchFn: typeof fetch): Promise<number | null> {
   const url = `${STEAMGRIDDB_BASE}/search/autocomplete/${encodeURIComponent(name)}`;
   let res: Response;
@@ -87,9 +110,16 @@ export async function resolveBoxartFor(
   let url: string | null = null;
   if (req.steamAppId != null && !req.forceFallback) {
     url = STEAM_CDN(req.steamAppId);
-  } else if (opts.apiKey) {
-    const gameId = await sgdbSearch(req.name, opts.apiKey, opts.fetch);
-    if (gameId !== null) url = await sgdbGrids(gameId, opts.apiKey, opts.fetch);
+  } else {
+    // Free path: ask Steam's store search for an appid matching the name.
+    const appId = await steamStoreSearch(req.name, opts.fetch);
+    if (appId !== null) {
+      url = STEAM_CDN(appId);
+    } else if (opts.apiKey) {
+      // Last resort: SteamGridDB (requires API key).
+      const gameId = await sgdbSearch(req.name, opts.apiKey, opts.fetch);
+      if (gameId !== null) url = await sgdbGrids(gameId, opts.apiKey, opts.fetch);
+    }
   }
 
   cache[key] = { url, resolvedAt: new Date().toISOString() };

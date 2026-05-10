@@ -47,21 +47,53 @@ describe('resolveBoxartFor — steamAppId path', () => {
   });
 });
 
+describe('resolveBoxartFor — Steam Store search (free name → appid)', () => {
+  it('uses Steam Store search to resolve appid → Steam CDN url', async () => {
+    const r = await resolveBoxartFor(
+      { name: 'Crusader Kings III' },
+      {
+        cachePath, apiKey: null,
+        fetch: fakeFetch(
+          { ok: true, json: { items: [{ type: 'app', id: 1158310, name: 'Crusader Kings III' }] } },
+        ),
+      },
+    );
+    expect(r.url).toBe('https://cdn.cloudflare.steamstatic.com/steam/apps/1158310/library_600x900.jpg');
+  });
+
+  it('falls back to first app result when no exact match found', async () => {
+    const r = await resolveBoxartFor(
+      { name: 'Some Variant' },
+      {
+        cachePath, apiKey: null,
+        fetch: fakeFetch(
+          { ok: true, json: { items: [{ type: 'bundle', id: 1, name: 'b' }, { type: 'app', id: 42, name: 'Different Title' }] } },
+        ),
+      },
+    );
+    expect(r.url).toBe('https://cdn.cloudflare.steamstatic.com/steam/apps/42/library_600x900.jpg');
+  });
+});
+
 describe('resolveBoxartFor — SteamGridDB fallback', () => {
-  it('returns null when no steamAppId and no API key', async () => {
+  it('returns null when no steamAppId, Steam Store empty, and no API key', async () => {
     const r = await resolveBoxartFor(
       { name: 'My Game' },
-      { cachePath, apiKey: null, fetch: fakeFetch() },
+      {
+        cachePath, apiKey: null,
+        fetch: fakeFetch({ ok: true, json: { items: [] } }),
+      },
     );
     expect(r.url).toBeNull();
   });
 
-  it('queries SteamGridDB search → grids when no steamAppId', async () => {
+  it('queries SteamGridDB search → grids when Steam Store has no match', async () => {
     const r = await resolveBoxartFor(
       { name: 'My Game' },
       {
         cachePath, apiKey: 'TESTKEY',
         fetch: fakeFetch(
+          { ok: true, json: { items: [] } },                     // Steam Store: no match
           { ok: true, json: { success: true, data: [{ id: 99, name: 'My Game' }] } },
           { ok: true, json: { success: true, data: [{ id: 1, url: 'https://cdn.example/grid.jpg', width: 600, height: 900 }] } },
         ),
@@ -75,7 +107,10 @@ describe('resolveBoxartFor — SteamGridDB fallback', () => {
       { name: 'Unknown Game' },
       {
         cachePath, apiKey: 'TESTKEY',
-        fetch: fakeFetch({ ok: true, json: { success: true, data: [] } }),
+        fetch: fakeFetch(
+          { ok: true, json: { items: [] } },                     // Steam Store empty
+          { ok: true, json: { success: true, data: [] } },
+        ),
       },
     );
     expect(r.url).toBeNull();
@@ -87,6 +122,7 @@ describe('resolveBoxartFor — SteamGridDB fallback', () => {
       {
         cachePath, apiKey: 'TESTKEY',
         fetch: fakeFetch(
+          { ok: true, json: { items: [] } },                     // Steam Store empty
           { ok: true, json: { success: true, data: [{ id: 99, name: 'Game With No Art' }] } },
           { ok: true, json: { success: true, data: [] } },
         ),
@@ -100,7 +136,10 @@ describe('resolveBoxartFor — SteamGridDB fallback', () => {
       { name: 'Crashy Game' },
       {
         cachePath, apiKey: 'TESTKEY',
-        fetch: fakeFetch({ ok: false, status: 503 }),
+        fetch: fakeFetch(
+          { ok: true, json: { items: [] } },                     // Steam Store empty
+          { ok: false, status: 503 },
+        ),
       },
     );
     expect(r.url).toBeNull();
@@ -114,6 +153,7 @@ describe('resolveBoxartFor — forceFallback', () => {
       {
         cachePath, apiKey: 'KEY',
         fetch: fakeFetch(
+          { ok: true, json: { items: [] } },                     // Steam Store empty so we fall through to SGDB
           { ok: true, json: { success: true, data: [{ id: 99, name: 'Elden Ring' }] } },
           { ok: true, json: { success: true, data: [{ id: 1, url: 'https://sgdb.example/elden.jpg', width: 600, height: 900 }] } },
         ),
@@ -134,6 +174,7 @@ describe('resolveBoxartFor — forceFallback', () => {
       {
         cachePath, apiKey: 'KEY',
         fetch: fakeFetch(
+          { ok: true, json: { items: [] } },                     // Steam Store empty
           { ok: true, json: { success: true, data: [{ id: 99, name: 'Elden Ring' }] } },
           { ok: true, json: { success: true, data: [{ id: 1, url: 'https://sgdb.example/elden.jpg' }] } },
         ),
@@ -147,8 +188,7 @@ describe('resolveBoxartFor — cache hits', () => {
   it('returns cached URL on second call without re-fetching', async () => {
     let calls = 0;
     const fetch = fakeFetch(
-      { ok: true, json: { success: true, data: [{ id: 1, name: 'X' }] } },
-      { ok: true, json: { success: true, data: [{ id: 1, url: 'https://cdn.example/x.jpg' }] } },
+      { ok: true, json: { items: [{ type: 'app', id: 555, name: 'X' }] } },     // Steam Store hit
     );
     const wrapped = async (...args: Parameters<typeof fetch>): Promise<Response> => {
       calls++;
@@ -156,22 +196,28 @@ describe('resolveBoxartFor — cache hits', () => {
     };
     await resolveBoxartFor({ name: 'X' }, { cachePath, apiKey: 'KEY', fetch: wrapped });
     const r2 = await resolveBoxartFor({ name: 'X' }, { cachePath, apiKey: 'KEY', fetch: wrapped });
-    expect(r2.url).toBe('https://cdn.example/x.jpg');
-    expect(calls).toBe(2);   // first call: 2 (search + grids); second: 0 (cache hit)
+    expect(r2.url).toBe('https://cdn.cloudflare.steamstatic.com/steam/apps/555/library_600x900.jpg');
+    expect(calls).toBe(1);   // first call: 1 (Steam Store search); second: 0 (cache hit)
   });
 
   it('negatively caches null results for 24h', async () => {
     const apiKey = 'KEY';
     let searchCalls = 0;
-    const wrapped = async (): Promise<Response> => {
+    const wrapped = async (url: unknown): Promise<Response> => {
       searchCalls++;
+      const u = String(url);
+      // Steam Store returns no items; SGDB search returns no data.
+      if (u.includes('store.steampowered.com')) {
+        return { ok: true, status: 200, json: async () => ({ items: [] }) } as Response;
+      }
       return { ok: true, status: 200, json: async () => ({ success: true, data: [] }) } as Response;
     };
     const r1 = await resolveBoxartFor({ name: 'Empty' }, { cachePath, apiKey, fetch: wrapped });
     const r2 = await resolveBoxartFor({ name: 'Empty' }, { cachePath, apiKey, fetch: wrapped });
     expect(r1.url).toBeNull();
     expect(r2.url).toBeNull();
-    expect(searchCalls).toBe(1);    // second call hits the negative cache
+    // First call: Steam Store + SGDB search = 2 fetches. Second call: cache hit = 0 fetches.
+    expect(searchCalls).toBe(2);
   });
 
   it('refreshes negative cache after 24h', async () => {
@@ -180,8 +226,12 @@ describe('resolveBoxartFor — cache hits', () => {
     });
     await writeFile(cachePath, stale);
     let searchCalls = 0;
-    const wrapped = async (): Promise<Response> => {
+    const wrapped = async (url: unknown): Promise<Response> => {
       searchCalls++;
+      const u = String(url);
+      if (u.includes('store.steampowered.com')) {
+        return { ok: true, status: 200, json: async () => ({ items: [] }) } as Response;
+      }
       return { ok: true, status: 200, json: async () => ({ success: true, data: [] }) } as Response;
     };
     const r = await resolveBoxartFor({ name: 'OldEmpty' }, {
@@ -189,7 +239,9 @@ describe('resolveBoxartFor — cache hits', () => {
       apiKey: 'KEY',
       fetch: wrapped,
     });
-    expect(searchCalls).toBe(1);   // cache was stale, re-fetched exactly once
+    expect(r.url).toBeNull();
+    // Stale cache → re-fetch path runs Steam Store + SGDB = 2 calls.
+    expect(searchCalls).toBe(2);
   });
 
   it('does NOT refresh negative cache before 24h', async () => {
@@ -200,7 +252,7 @@ describe('resolveBoxartFor — cache hits', () => {
     let searchCalls = 0;
     const wrapped = async (): Promise<Response> => {
       searchCalls++;
-      return { ok: true, status: 200, json: async () => ({ success: true, data: [] }) } as Response;
+      return { ok: true, status: 200, json: async () => ({ items: [] }) } as Response;
     };
     const r = await resolveBoxartFor({ name: 'FreshEmpty' }, {
       cachePath, apiKey: 'KEY', fetch: wrapped,
