@@ -1,8 +1,11 @@
+import { useEffect } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { TitleBar } from './components/TitleBar.js';
 import { useLatchState } from './stores/latch-store.js';
+import { useConfigStore, attachConfigEvents } from './stores/config-store.js';
+import { useCatalogStore } from './stores/catalog-store.js';
 
 import { HomeRoute } from './routes/HomeRoute.js';
 import { LibraryRoute } from './routes/LibraryRoute.js';
@@ -12,6 +15,17 @@ import { ActiveTrainerRoute } from './routes/ActiveTrainerRoute.js';
 
 export default function App(): JSX.Element {
   const latchState = useLatchState((s) => s.state);
+
+  useEffect(() => {
+    attachConfigEvents();
+    void (async () => {
+      await useConfigStore.getState().load();
+      const cfg = useConfigStore.getState().config;
+      if (cfg?.preferences.catalogRefreshOnLaunch !== false) {
+        await useCatalogStore.getState().load();
+      }
+    })();
+  }, []);
   return (
     <div className="flex flex-col h-screen">
       <TitleBar />
