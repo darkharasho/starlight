@@ -14,7 +14,7 @@ function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
 function ErrorBanner({ message }: { message: string }): JSX.Element {
   const isPermission = /ptrace|permission|EPERM/i.test(message);
   return (
-    <div className="col-span-2 text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-2">
+    <div className="text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2">
       <div className="font-semibold mb-1">{isPermission ? 'Permission denied' : 'Error'}</div>
       <div>{message}</div>
       {isPermission && (
@@ -121,8 +121,8 @@ function TrainerView({
     (acc, c) => acc + c.cheats.filter((x) => isSupported(x)).length, 0);
 
   return (
-    <div className="grid grid-cols-[200px_1fr] gap-4 h-full">
-      <div className="col-span-2 flex items-center gap-3 -mt-2 mb-2">
+    <div className="flex flex-col h-full gap-3">
+      <div className="flex items-center gap-3 -mt-2">
         <div>
           <div className="text-[13px] font-semibold">{trainer.game.name}</div>
           <div className="text-[10px] text-muted">trainer by {trainer.metadata.author ?? 'unknown'}</div>
@@ -167,6 +167,7 @@ function TrainerView({
 
       <TrainerInfoDisclosure trainer={trainer} setProcessName={setProcessName} />
 
+      <div className="grid grid-cols-[200px_1fr] gap-4 flex-1 min-h-0">
       <aside className="flex flex-col gap-1">
         <div className="text-[9px] tracking-wider uppercase text-muted px-2 pb-1">Categories</div>
         {trainer.categories.map((c) => {
@@ -240,6 +241,7 @@ function TrainerView({
           );
         })}
       </section>
+      </div>
     </div>
   );
 }
@@ -293,7 +295,7 @@ function TrainerInfoDisclosure({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(trainer.game.processName.join(', '));
   return (
-    <div className="col-span-2 mt-2">
+    <div>
       <button type="button" onClick={() => setOpen(o => !o)}
               className="text-[10px] tracking-wider uppercase text-muted hover:text-ink">
         Trainer Info {open ? '▲' : '▼'}
