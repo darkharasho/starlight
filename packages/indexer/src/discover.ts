@@ -161,6 +161,11 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
     });
   };
 
+  const persistSeedsYaml = async (): Promise<void> => {
+    if (seeds.length === 0) return;
+    await atomicWrite(opts.seedsPath, yamlStringify({ games: seeds }));
+  };
+
   for (const forumId of opts.forums) {
     let start = nextStartByForum[String(forumId)] ?? 0;
     let pages = 0;
@@ -206,6 +211,7 @@ export async function discover(opts: DiscoverOpts): Promise<void> {
       start += PAGE_SIZE;
       nextStartByForum[String(forumId)] = start;
       await persistResume();
+      await persistSeedsYaml();
       await progress.tick(`f=${forumId} page ${pages} · ${seeds.length} seeds collected`);
       if (sleepMs > 0) await sleep(sleepMs);
     }
