@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
@@ -205,8 +205,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async () => {
   processHost.pause();
+  shutdownHotkeys();
   unregisterHotkeys();
   await engineHost.detach();
 });
-
-app.on('will-quit', () => globalShortcut.unregisterAll());
