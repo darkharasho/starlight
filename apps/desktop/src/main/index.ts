@@ -7,6 +7,7 @@ import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
+import { resolveBoxart } from './boxart-host.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -174,8 +175,8 @@ app.whenReady().then(async () => {
     return { ok: true };
   });
 
-  // TODO(phase-5.5 task 3): placeholder — replaced in task 3
-  ipcMain.handle(CHANNELS.resolveBoxart, async () => ({ url: null }));
+  ipcMain.handle(CHANNELS.resolveBoxart, async (_evt, req: import('../shared/ipc.js').ResolveBoxartRequest):
+    Promise<import('../shared/ipc.js').ResolveBoxartResult> => resolveBoxart(req));
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
