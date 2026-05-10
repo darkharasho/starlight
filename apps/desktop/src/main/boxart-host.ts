@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 
 const STEAM_CDN = (id: number): string =>
   `https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_600x900.jpg`;
+const STEAM_HERO = (id: number): string =>
+  `https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_hero.jpg`;
 
 const STEAMGRIDDB_BASE = 'https://www.steamgriddb.com/api/v2';
 const NEGATIVE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -62,18 +64,25 @@ async function steamStoreSearch(name: string, fetchFn: typeof fetch): Promise<nu
   return firstApp?.id ?? null;
 }
 
-/**
- * Verify the appid actually has a `library_600x900.jpg` published. Many Steam
- * apps (DLC, soundtracks, smaller titles) are missing this asset, and giving
- * the renderer a 404'ing URL leaves a broken-image glyph on the tile.
- */
-async function steamCoverExists(appId: number, fetchFn: typeof fetch): Promise<boolean> {
+async function urlExists(url: string, fetchFn: typeof fetch): Promise<boolean> {
   try {
-    const res = await fetchFn(STEAM_CDN(appId), { method: 'HEAD' });
+    const res = await fetchFn(url, { method: 'HEAD' });
     return res.ok;
   } catch {
     return false;
   }
+}
+
+/**
+ * Pick the best available Steam-CDN image for an appid. Many smaller titles
+ * don't publish `library_600x900.jpg` (the portrait we'd love to use); a lot
+ * of those still publish `library_hero.jpg` (a wide landscape banner). The
+ * hero looks fine when cropped to 2:3 — much better than a broken tile.
+ */
+async function bestSteamCover(appId: number, fetchFn: typeof fetch): Promise<string | null> {
+  if (await urlExists(STEAM_CDN(appId), fetchFn)) return STEAM_CDN(appId);
+  if (await urlExists(STEAM_HERO(appId), fetchFn)) return STEAM_HERO(appId);
+  return null;
 }
 
 async function sgdbSearch(name: string, apiKey: string, fetchFn: typeof fetch): Promise<number | null> {
@@ -123,17 +132,13 @@ export async function resolveBoxartFor(
 
   let url: string | null = null;
   if (req.steamAppId != null && !req.forceFallback) {
-    if (await steamCoverExists(req.steamAppId, opts.fetch)) {
-      url = STEAM_CDN(req.steamAppId);
-    }
+    url = await bestSteamCover(req.steamAppId, opts.fetch);
   }
   if (url === null) {
     // Free path: ask Steam's store search for an appid matching the name.
     if (!req.forceFallback) {
       const appId = await steamStoreSearch(req.name, opts.fetch);
-      if (appId !== null && await steamCoverExists(appId, opts.fetch)) {
-        url = STEAM_CDN(appId);
-      }
+      if (appId !== null) url = await bestSteamCover(appId, opts.fetch);
     }
     if (url === null && opts.apiKey) {
       // Last resort: SteamGridDB (requires API key).
