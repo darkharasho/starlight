@@ -54,6 +54,7 @@ function createWindow(): void {
 }
 
 const CE_RUNTIME_ROOT = join(app.getPath('userData'), 'runtime');
+const CT_CACHE_DIR = join(app.getPath('userData'), 'ct-cache');
 const CE_MANIFEST_URL = 'https://raw.githubusercontent.com/darkharasho/starlight-runtimes/main/manifest.json';
 
 engineHost.onDetached((reason) => {
@@ -227,9 +228,14 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { ctPath: string }) => {
+  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { source: string; cacheKey: string }) => {
     try {
-      const r = await ceStartSession({ ctPath: req.ctPath, runtimeRoot: CE_RUNTIME_ROOT });
+      const r = await ceStartSession({
+        source: req.source,
+        cacheKey: req.cacheKey,
+        runtimeRoot: CE_RUNTIME_ROOT,
+        ctCacheDir: CT_CACHE_DIR,
+      });
       return { ok: true as const, sessionId: r.sessionId, records: r.records };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

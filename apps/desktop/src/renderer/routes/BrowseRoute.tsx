@@ -5,6 +5,7 @@ import { PageHeader } from '../components/PageHeader.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
+import { useCeSessionStore } from '../stores/ce-session-store.js';
 import type { CatalogGame } from '../types/catalog-game.js';
 
 export function BrowseRoute(): JSX.Element {
@@ -16,6 +17,7 @@ export function BrowseRoute(): JSX.Element {
   const fetchTrainer = useCatalogStore((s) => s.trainer);
   const detectedGames = useLibraryStore((s) => s.games);
   const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
+  const startCeSession = useCeSessionStore((s) => s.start);
 
   useEffect(() => { if (!index && !loading) void load(); }, [index, loading, load]);
 
@@ -29,6 +31,11 @@ export function BrowseRoute(): JSX.Element {
   }));
 
   async function onSelect(g: CatalogGame): Promise<void> {
+    if (g.trainerSource) {
+      const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id });
+      if (ok) navigate('/active');
+      return;
+    }
     const trainer = await fetchTrainer(g);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);

@@ -4,6 +4,7 @@ import { useLibraryStore } from '../stores/library-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
+import { useCeSessionStore } from '../stores/ce-session-store.js';
 import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 import { starlight } from '../ipc-client.js';
@@ -148,6 +149,7 @@ export function LibraryRoute(): JSX.Element {
   const loadCatalog = useCatalogStore((s) => s.load);
   const fetchTrainer = useCatalogStore((s) => s.trainer);
   const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
+  const startCeSession = useCeSessionStore((s) => s.start);
   useEffect(() => { if (!catalogIndex) void loadCatalog(); }, [catalogIndex, loadCatalog]);
 
   const catalogNameIndex = useMemo(() => {
@@ -171,6 +173,11 @@ export function LibraryRoute(): JSX.Element {
   async function openTrainerForGame(g: DetectedGame): Promise<void> {
     const entry = findCatalogEntry(g);
     if (!entry) return;
+    if (entry.trainerSource) {
+      const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id });
+      if (ok) navigate('/active');
+      return;
+    }
     const trainer = await fetchTrainer(entry);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);

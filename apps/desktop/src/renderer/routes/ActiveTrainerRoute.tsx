@@ -3,8 +3,9 @@ import { useLatchState } from '../stores/latch-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useConfigStore } from '../stores/config-store.js';
+import { useCeSessionStore } from '../stores/ce-session-store.js';
 import { findConflict, resolveCheatHotkeys } from '../lib/accelerator.js';
-import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer } from '../../shared/ipc.js';
+import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer, CeSessionRecord } from '../../shared/ipc.js';
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
 import { ValueCheatCard } from '../components/cheat-cards/ValueCheatCard.js';
 import { UnsupportedCheatCard } from '../components/cheat-cards/UnsupportedCheatCard.js';
@@ -52,6 +53,12 @@ function ErrorBanner({ message }: { message: string }): JSX.Element {
 
 export function ActiveTrainerRoute(): JSX.Element {
   useEffect(() => { attachProcessEvents(); }, []);
+
+  const ceSessionId = useCeSessionStore((s) => s.sessionId);
+  const ceRecords = useCeSessionStore((s) => s.records);
+  const cePending = useCeSessionStore((s) => s.pending);
+  const ceSetActive = useCeSessionStore((s) => s.setActive);
+  const ceEnd = useCeSessionStore((s) => s.end);
 
   const trainer = useTrainerStore((s) => s.trainer);
   const activeCheats = useTrainerStore((s) => s.activeCheats);
@@ -108,6 +115,10 @@ export function ActiveTrainerRoute(): JSX.Element {
         return { ...e, [cheatId]: next };
       });
     }
+  }
+
+  if (ceSessionId) {
+    return <CeSessionView records={ceRecords} pending={cePending} setActive={ceSetActive} end={ceEnd} />;
   }
 
   if (!trainer) {
@@ -401,6 +412,48 @@ function TrainerInfoDisclosure({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+function CeSessionView({ records, pending, setActive, end }: {
+  records: CeSessionRecord[];
+  pending: Set<number>;
+  setActive: (id: number, active: boolean) => Promise<void>;
+  end: () => Promise<void>;
+}): JSX.Element {
+  const visible = records.filter((r) => !r.isGroupHeader);
+  const headers = records.filter((r) => r.isGroupHeader);
+  return (
+    <div className="flex flex-col h-full gap-3">
+      <div className="flex items-baseline justify-between">
+        <div>
+          <div className="text-[13px] font-semibold">Cheat Engine session</div>
+          <div className="text-[10px] text-muted">{records.length} records · {visible.length} cheats · {headers.length} sections</div>
+        </div>
+        <button type="button" onClick={() => void end()}
+                className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-pink hover:text-neon-pink">
+          End session
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
+        {records.map((r) => (
+          <div key={r.id} className={`flex items-center gap-3 px-3 py-2 rounded-sm border ${r.isGroupHeader ? 'border-line bg-panel/40' : 'border-line bg-panel'} ${r.isActive ? 'border-neon-cyan/60' : ''}`}>
+            <div className="flex-1 truncate text-xs">{r.name}</div>
+            {r.isGroupHeader ? (
+              <span className="text-[10px] text-muted uppercase tracking-wider">section</span>
+            ) : (
+              <button type="button" disabled={pending.has(r.id)}
+                      onClick={() => void setActive(r.id, !r.isActive)}
+                      className={`px-3 py-1 text-[11px] rounded-sm border transition-colors ${
+                        r.isActive ? 'border-neon-cyan text-neon-cyan glow-cyan' : 'border-line text-muted hover:border-neon-cyan hover:text-neon-cyan'
+                      } ${pending.has(r.id) ? 'opacity-50' : ''}`}>
+                {r.isActive ? 'On' : 'Off'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

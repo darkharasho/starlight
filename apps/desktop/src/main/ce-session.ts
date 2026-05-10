@@ -3,6 +3,7 @@ import { detectCeRuntime } from './ce-runtime-detect.js';
 import { createBridge, type Bridge } from './ce-bridge.js';
 import { generateControlScript } from './ce-control-script.js';
 import { spawnCeProcess, type CeProcessHandle } from './ce-process.js';
+import { downloadCtToDisk } from './ct-cache.js';
 
 export interface CeRecord {
   id: number;
@@ -22,8 +23,10 @@ export interface SessionState {
 let active: SessionState | null = null;
 
 export interface StartSessionOpts {
-  ctPath: string;
+  source: string;       // URL of the .CT or viewtopic page
+  cacheKey: string;     // unique key per catalog entry id
   runtimeRoot: string;
+  ctCacheDir: string;
   pingTimeoutMs?: number;
 }
 
@@ -35,6 +38,8 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
     throw new Error('CE runtime not installed');
   }
 
+  const { ctPath } = await downloadCtToDisk({ source: opts.source, cacheDir: opts.ctCacheDir, cacheKey: opts.cacheKey });
+
   const bridge = await createBridge();
   const controlScript = generateControlScript({ bridgeUrl: bridge.url });
   const sessionId = randomUUID();
@@ -42,7 +47,7 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
   const ceProcess = await spawnCeProcess({
     binaryPath: detect.binary,
     installDir: detect.installDir,
-    ctPath: opts.ctPath,
+    ctPath,
     controlScript,
     onExit: () => {
       // If this session was active, drop it.
@@ -74,7 +79,7 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
   const reply = await bridge.send({ method: 'list_records' }) as { records?: CeRecord[] };
   const records = reply.records ?? [];
 
-  active = { sessionId, ctPath: opts.ctPath, bridge, ceProcess, records };
+  active = { sessionId, ctPath, bridge, ceProcess, records };
   return { sessionId, records };
 }
 

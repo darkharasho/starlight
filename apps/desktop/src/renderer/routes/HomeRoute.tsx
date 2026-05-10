@@ -6,6 +6,7 @@ import { useCatalogStore } from '../stores/catalog-store.js';
 import { useConfigStore, attachConfigEvents } from '../stores/config-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
+import { useCeSessionStore } from '../stores/ce-session-store.js';
 import type { CatalogGame } from '../types/catalog-game.js';
 import type { RecentTrainer } from '../../shared/ipc.js';
 
@@ -18,6 +19,7 @@ export function HomeRoute(): JSX.Element {
   const loadTrainer = useTrainerStore((s) => s.loadTrainer);
   const trainerLoaded = useTrainerStore((s) => s.trainer);
   const detectedGames = useLibraryStore((s) => s.games);
+  const startCeSession = useCeSessionStore((s) => s.start);
 
   useEffect(() => { if (!index) void loadCatalog(); }, [index, loadCatalog]);
 
@@ -32,6 +34,11 @@ export function HomeRoute(): JSX.Element {
     if (r.source !== 'catalog' || !index) return;
     const entry = index.games.find(g => g.id === r.id);
     if (!entry) return;
+    if (entry.trainerSource) {
+      const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id });
+      if (ok) navigate('/active');
+      return;
+    }
     const trainer = await fetchTrainer(entry);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);
@@ -50,6 +57,11 @@ export function HomeRoute(): JSX.Element {
   const installedCount = installed.length;
 
   async function selectGame(g: CatalogGame): Promise<void> {
+    if (g.trainerSource) {
+      const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id });
+      if (ok) navigate('/active');
+      return;
+    }
     const trainer = await fetchTrainer(g);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);

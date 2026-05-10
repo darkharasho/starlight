@@ -162,6 +162,11 @@ export interface CeSessionRecord {
   isGroupHeader: boolean;
 }
 
+export interface CeSessionStartRequest {
+  source: string;     // URL of .CT or viewtopic page
+  cacheKey: string;   // unique key per catalog entry id
+}
+
 export type CeSessionStartResult =
   | { ok: true; sessionId: string; records: CeSessionRecord[] }
   | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'unknown' };
@@ -195,7 +200,7 @@ export interface StarlightApi {
   ceRuntimeInstall(): Promise<{ ok: true } | { ok: false; error: string }>;
   onCeRuntimeProgress(cb: (e: CeRuntimeProgressEvent) => void): () => void;
   // CE session
-  ceSessionStart(req: { ctPath: string }): Promise<CeSessionStartResult>;
+  ceSessionStart(req: CeSessionStartRequest): Promise<CeSessionStartResult>;
   ceSessionEnd(req: { sessionId: string }): Promise<{ ok: boolean }>;
   ceSessionSetActive(req: { sessionId: string; recordId: number; active: boolean }): Promise<{ ok: boolean; error?: string }>;
   // Window controls
