@@ -1,0 +1,38 @@
+name: Catalog Indexer
+on:
+  schedule:
+    - cron: '0 6 * * 0'                    # Sunday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  indexer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @starlight/ct-importer build
+      - run: pnpm --filter @starlight/catalog build
+      - run: pnpm --filter @starlight/indexer build
+      - name: Run indexer
+        run: node packages/indexer/dist/index.js
+      - name: Open PR if catalog changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: 'chore(catalog): indexer run'
+          title: 'chore(catalog): weekly indexer run'
+          body: |
+            Automated catalog refresh from `packages/indexer/seeds.yaml`.
+
+            Run output is in the workflow logs (look for the JSON summary at the bottom).
+          branch: chore/indexer-${{ github.run_id }}
+          add-paths: |
+            packages/catalog/index.json
+            packages/catalog/trainers/**
+          delete-branch: true
