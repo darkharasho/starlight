@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
@@ -25,19 +25,13 @@ function GameTile({
 }): JSX.Element {
   const upfrontCover = boxartUrl(game);
   const [shownSrc, setShownSrc] = useState<string | null>(upfrontCover);
-  const [resolverRan, setResolverRan] = useState(false);
-  const [fallbackTried, setFallbackTried] = useState(false);
-
-  useEffect(() => {
-    setShownSrc(upfrontCover);
-    setResolverRan(false);
-    setFallbackTried(false);
-  }, [upfrontCover, game.appId, game.source]);
+  const resolverStarted = useRef(false);
+  const fallbackTried = useRef(false);
 
   // Proactive resolve when no upfront cover (e.g., manual entries).
   useEffect(() => {
-    if (shownSrc !== null || resolverRan) return;
-    setResolverRan(true);
+    if (shownSrc !== null || resolverStarted.current) return;
+    resolverStarted.current = true;
     let cancelled = false;
     void (async () => {
       const req: { name: string; steamAppId?: number } = { name: game.name };
@@ -46,16 +40,14 @@ function GameTile({
       if (!cancelled && r.url) setShownSrc(r.url);
     })();
     return () => { cancelled = true; };
-  }, [shownSrc, resolverRan, game.name, game.boxartSteamAppId]);
+  }, [shownSrc, game.name, game.boxartSteamAppId]);
 
-  // When the current <img> URL fails, try a forced fallback once. If that also
-  // fails (or returns null), drop the image entirely.
   async function handleImgError(): Promise<void> {
-    if (fallbackTried) {
+    if (fallbackTried.current) {
       setShownSrc(null);
       return;
     }
-    setFallbackTried(true);
+    fallbackTried.current = true;
     const req: { name: string; steamAppId?: number; forceFallback?: boolean } = { name: game.name, forceFallback: true };
     if (game.boxartSteamAppId != null) req.steamAppId = game.boxartSteamAppId;
     const r = await starlight().resolveBoxart(req).catch(() => ({ url: null }));

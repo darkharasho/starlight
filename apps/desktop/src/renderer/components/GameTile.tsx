@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { type CatalogGame, steamCoverUrl } from '../types/catalog-game.js';
 import { starlight } from '../ipc-client.js';
 
@@ -9,40 +9,33 @@ interface Props {
 
 export function GameTile({ game, onClick }: Props): JSX.Element {
   const upfrontCover = steamCoverUrl(game.steamAppId);
-  // Single source-of-truth for what URL the <img> should attempt.
-  // null = nothing to show → render the name backdrop alone.
   const [shownSrc, setShownSrc] = useState<string | null>(upfrontCover);
-  const [resolverRan, setResolverRan] = useState(false);
-  const [fallbackTried, setFallbackTried] = useState(false);
-
-  // Reset state when the game (and thus upfront URL) changes.
-  useEffect(() => {
-    setShownSrc(upfrontCover);
-    setResolverRan(false);
-    setFallbackTried(false);
-  }, [upfrontCover, game.id]);
+  // Refs (not state) so they don't trigger re-renders that re-run the effect
+  // and cancel the in-flight fetch via the cleanup function.
+  const resolverStarted = useRef(false);
+  const fallbackTried = useRef(false);
 
   // Proactive resolve when there's no upfront cover.
   useEffect(() => {
-    if (shownSrc !== null || resolverRan) return;
-    setResolverRan(true);
+    if (shownSrc !== null || resolverStarted.current) return;
+    resolverStarted.current = true;
     let cancelled = false;
     void (async () => {
       const r = await starlight().resolveBoxart({ name: game.name }).catch(() => ({ url: null }));
       if (!cancelled && r.url) setShownSrc(r.url);
     })();
     return () => { cancelled = true; };
-  }, [shownSrc, resolverRan, game.name]);
+  }, [shownSrc, game.name]);
 
   // When the current <img> URL fails, try a forced fallback once. If that also
-  // fails (or returns null), drop the image entirely so the broken-image glyph
-  // never sticks around — the name backdrop always remains.
+  // fails (or returns the same url / null), drop the image entirely so the
+  // broken-image glyph never sticks around — the name backdrop always remains.
   async function onImgError(): Promise<void> {
-    if (fallbackTried) {
+    if (fallbackTried.current) {
       setShownSrc(null);
       return;
     }
-    setFallbackTried(true);
+    fallbackTried.current = true;
     const r = await starlight().resolveBoxart({ name: game.name, forceFallback: true }).catch(() => ({ url: null }));
     setShownSrc(r.url && r.url !== shownSrc ? r.url : null);
   }
