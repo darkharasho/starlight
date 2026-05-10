@@ -85,13 +85,19 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 13. **Process-name override persistence:** in Active Trainer → Trainer Info, edit the process name. The change is saved per-trainer and re-applied next time you open it.
 14. **Corrupt config recovery:** if `config.json` ever becomes unreadable, Starlight backs it up as `config.json.corrupt-<ts>` and starts fresh.
 
+## Phase 5.2 demo additions
+
+15. **Add manually:** Library tab now has an "Add manually" button. Click → pick an executable on disk → enter a display name → Save. The game appears as a tile alongside auto-detected entries.
+16. **Manual tile boxart:** if your manual entry's exe basename matches a catalog game's `processName[]` (e.g. `eldenring.exe`), Starlight renders that game's Steam CDN cover. Otherwise the tile shows a name-only placeholder (until Phase 5.5 adds SteamGridDB fallback).
+17. **Remove a manual entry:** hover a manual tile and click the `×` in the top-right. Confirms before removing from your config.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
 - Inc/Dec hotkeys for value cheats — DONE — Phase 4.5
 - Catalog repo + community trainer index — DONE — Phase 5.0
 - User config persistence (processName overrides, recents, preferences, manual games, hotkey overrides) — DONE — Phase 5.1
-- Manual library entries UI — Phase 5.2
+- Manual library entries UI — DONE — Phase 5.2
 - Hotkey rebinding UI + `HotkeyCapture` — Phase 5.3
 - Indexer (`packages/indexer/`) — Phase 5.4
 - SteamGridDB boxart fallback — Phase 5.5
