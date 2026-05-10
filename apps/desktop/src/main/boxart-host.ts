@@ -25,7 +25,7 @@ async function readCache(path: string): Promise<Cache> {
 
 async function writeCache(path: string, cache: Cache): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   await writeFile(tmp, JSON.stringify(cache, null, 2) + '\n', 'utf8');
   await rename(tmp, path);
 }
