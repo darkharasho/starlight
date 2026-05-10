@@ -19,6 +19,8 @@ export const CHANNELS = {
   // Phase 5.1
   getConfig:    'starlight:getConfig',
   updateConfig: 'starlight:updateConfig',
+  // Phase 5.2
+  pickExecutable: 'starlight:pickExecutable',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -38,6 +40,10 @@ export type LoadTrainerResult =
   | { ok: true; trainer: StarlightTrainer; stats: ImportStats }
   | { ok: false; error: string };
 
+export type PickExecutableResult =
+  | { ok: true; path: string }
+  | { ok: false; error: 'cancelled' | 'unknown'; message?: string };
+
 export type CatalogResult =
   | { ok: true; index: CatalogIndex }
   | { ok: false; error: string };
@@ -53,10 +59,14 @@ export type IpcErr = { ok: false; error: string };
 export type IpcResult<T = void> = IpcOk<T> | IpcErr;
 
 export interface DetectedGame {
-  source: 'steam';                       // future: 'epic' | 'heroic' | 'lutris'
+  source: 'steam' | 'manual';            // future: 'epic' | 'heroic' | 'lutris'
   appId: string;
   name: string;
   installDir: string;                    // absolute path on disk
+  /** Optional: Steam app id (number) to use for the Library tile's boxart.
+   *  Steam-source scanners leave this undefined (boxart is computed from appId).
+   *  Manual-source scanner sets this when it matches the entry to a catalog game. */
+  boxartSteamAppId?: number;
 }
 export interface DetectedProcess { pid: number; name: string }
 
@@ -96,6 +106,8 @@ export interface StarlightApi {
   // Phase 5.1
   getConfig():    Promise<UserConfig>;
   updateConfig(req: UpdateConfigRequest): Promise<UserConfig>;
+  // Phase 5.2
+  pickExecutable(): Promise<PickExecutableResult>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;

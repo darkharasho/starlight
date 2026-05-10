@@ -15,6 +15,7 @@ const api: StarlightApi = {
   setTrainerFromCatalog: (req) => ipcRenderer.invoke(CHANNELS.setTrainerFromCatalog, req),
   getConfig:    ()    => ipcRenderer.invoke(CHANNELS.getConfig),
   updateConfig: (req) => ipcRenderer.invoke(CHANNELS.updateConfig, req),
+  pickExecutable: () => ipcRenderer.invoke(CHANNELS.pickExecutable),
   onEvent: (listener) => {
     const handler = (_evt: unknown, e: StarlightEvent): void => listener(e);
     ipcRenderer.on(CHANNELS.event, handler);

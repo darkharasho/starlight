@@ -131,6 +131,10 @@ app.whenReady().then(async () => {
     return next;
   });
 
+  // TODO(phase-5.2 task 2): placeholder — replaced in task 2
+  ipcMain.handle(CHANNELS.pickExecutable, async () =>
+    ({ ok: false, error: 'unknown', message: 'pickExecutable not yet wired' }));
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);
