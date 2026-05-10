@@ -155,6 +155,24 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
     Replace those files with real PNG screenshots (same filenames) when you want
     photographic stills.
 
+## Phase 6.0 demo additions
+
+35. **Wayland-capable hotkeys:** the hotkey path now uses `uiohook-napi` instead of
+    Electron's `globalShortcut`. Hotkeys work on Linux Wayland (and continue to work on
+    Linux X11, macOS, and Windows). Same accelerator format as before; no migration
+    needed for existing trainers or saved overrides.
+36. **Permissions:**
+    - **Linux:** users must be in the `input` group. Most distros do this for the
+      logged-in desktop user automatically. If hotkeys don't fire, run
+      `sudo usermod -a -G input $USER` and re-log.
+    - **macOS:** the app prompts for Accessibility permission on first run. Grant it
+      in System Settings → Privacy & Security → Accessibility.
+    - **Windows:** no permission prompts.
+37. **Failure UX:** if `uiohook-napi` can't initialize (missing permissions or broken
+    native build), the app shows a one-time alert with platform-specific recovery
+    instructions. The rest of the app continues to work — you just can't fire hotkeys
+    until the issue is resolved.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
@@ -167,3 +185,12 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 - SteamGridDB boxart fallback — DONE — Phase 5.5
 - Epic / Heroic / Lutris scanners (replace 4.5 stubs) — DONE — Phase 5.6
 - Astro product page real content — DONE — Phase 5.7
+
+## Phase 6 deferred items
+
+- Wayland `globalShortcut` workarounds — DONE — Phase 6.0
+- Linux packaging — Phase 6.1
+- Windows packaging — Phase 6.2
+- macOS packaging + signing + notarization — Phase 6.3
+- Auto-update channel — Phase 6.4
+- Error states / polish — Phase 6.5
