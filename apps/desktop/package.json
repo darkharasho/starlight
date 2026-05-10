@@ -12,6 +12,7 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@starlight/catalog": "workspace:*",
     "@starlight/engine": "workspace:*",
     "@starlight/ct-importer": "workspace:*",
     "ps-list": "^8.1.1",

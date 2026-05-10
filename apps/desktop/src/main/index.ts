@@ -89,6 +89,11 @@ app.whenReady().then(() => {
     if (engineHost.getActiveTrainer()) engineHost.updateProcessName(req.names);
   });
 
+  // TODO(phase-5.0 task 4): placeholder — replaced by catalog-host in task 4
+  ipcMain.handle(CHANNELS.fetchCatalog, async () => ({ ok: false, error: 'catalog-host not yet wired' }));
+  // TODO(phase-5.0 task 4): placeholder — replaced by catalog-host in task 4
+  ipcMain.handle(CHANNELS.fetchTrainer, async () => ({ ok: false, error: 'catalog-host not yet wired' }));
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);

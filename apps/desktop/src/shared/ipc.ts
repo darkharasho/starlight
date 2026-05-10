@@ -1,4 +1,5 @@
 import type { StarlightTrainer, ImportStats } from '@starlight/ct-importer';
+import type { CatalogIndex, StarlightTrainer as CatalogTrainer } from '@starlight/catalog/schema';
 
 export const CHANNELS = {
   loadTrainer:   'starlight:loadTrainer',
@@ -7,6 +8,8 @@ export const CHANNELS = {
   toggleCheat:   'starlight:toggleCheat',
   setCheatValue: 'starlight:setCheatValue',
   event:         'starlight:event',
+  fetchCatalog:  'starlight:fetchCatalog',
+  fetchTrainer:  'starlight:fetchTrainer',
   // Phase 4.5
   scanLibrary:    'starlight:scanLibrary',
   listProcesses:  'starlight:listProcesses',
@@ -29,6 +32,16 @@ export interface SetValueRequest    { cheatId: string; value: number }
 export type LoadTrainerResult =
   | { ok: true; trainer: StarlightTrainer; stats: ImportStats }
   | { ok: false; error: string };
+
+export type CatalogResult =
+  | { ok: true; index: CatalogIndex }
+  | { ok: false; error: string };
+
+export type TrainerResult =
+  | { ok: true; trainer: CatalogTrainer }
+  | { ok: false; error: string };
+
+export interface FetchTrainerRequest { trainerPath: string }
 
 export type IpcOk<T = void> = T extends void ? { ok: true } : { ok: true; value: T };
 export type IpcErr = { ok: false; error: string };
@@ -54,7 +67,8 @@ export type StarlightEvent =
   | { type: 'process:matched';      pid: number; name: string }
   | { type: 'library:scanned';      games: DetectedGame[] }
   | { type: 'hotkey:inc';           cheatId: string }
-  | { type: 'hotkey:dec';           cheatId: string };
+  | { type: 'hotkey:dec';           cheatId: string }
+  | { type: 'catalog:loaded';       index: CatalogIndex };
 
 export interface WindowState { maximized: boolean }
 
@@ -68,6 +82,9 @@ export interface StarlightApi {
   scanLibrary():     Promise<ScanLibraryResult>;
   listProcesses():   Promise<ListProcessesResult>;
   setProcessName(req: SetProcessNameRequest): Promise<void>;
+  // Phase 5.0
+  fetchCatalog():    Promise<CatalogResult>;
+  fetchTrainer(req: FetchTrainerRequest): Promise<TrainerResult>;
   onEvent(listener: (e: StarlightEvent) => void): () => void;
   // Window controls
   windowMinimize():       void;
@@ -83,3 +100,5 @@ declare global {
 export type {
   StarlightTrainer, StarlightCheat, StarlightSupportedCheat, ImportStats,
 } from '@starlight/ct-importer';
+
+export type { CatalogIndex, CatalogIndexEntry } from '@starlight/catalog/schema';

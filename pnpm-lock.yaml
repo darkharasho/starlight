@@ -10,6 +10,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@starlight/catalog':
+        specifier: workspace:*
+        version: link:../../packages/catalog
       '@starlight/ct-importer':
         specifier: workspace:*
         version: link:../../packages/ct-importer
