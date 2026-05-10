@@ -4,7 +4,9 @@ import { homedir, platform } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseVdf } from './vdf.js';
-import type { DetectedGame } from '../shared/ipc.js';
+import { getConfig } from './user-config.js';
+import { getCachedIndex } from './catalog-host.js';
+import type { DetectedGame, CatalogIndex, ManualGame } from '../shared/ipc.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -113,6 +115,65 @@ export class SteamScanner implements LibraryScanner {
   }
 }
 
+export interface ManualScannerOpts {
+  readManualGames?: () => Promise<ManualGame[]>;
+  readCatalog?:     () => Promise<CatalogIndex | null>;
+}
+
+export class ManualScanner implements LibraryScanner {
+  readonly source = 'manual' as const;
+  private readonly readManualGames: () => Promise<ManualGame[]>;
+  private readonly readCatalog:     () => Promise<CatalogIndex | null>;
+  constructor(opts: ManualScannerOpts = {}) {
+    this.readManualGames = opts.readManualGames ?? (async () => (await getConfig()).manualGames);
+    this.readCatalog     = opts.readCatalog     ?? (async () => getCachedIndex());
+  }
+  async scan(): Promise<DetectedGame[]> {
+    let games: ManualGame[];
+    try { games = await this.readManualGames(); }
+    catch { return []; }
+    if (games.length === 0) return [];
+    const catalog = await this.readCatalog().catch(() => null);
+    return games.map((g): DetectedGame => {
+      const installDir = dirnameOf(g.exePath);
+      const match = catalog ? matchCatalog(g.exePath, catalog) : null;
+      const out: DetectedGame = {
+        source: 'manual',
+        appId: g.id,
+        name: g.name,
+        installDir,
+      };
+      if (match !== null) out.boxartSteamAppId = match;
+      return out;
+    });
+  }
+}
+
+function dirnameOf(p: string): string {
+  // Cross-platform-safe dirname. Works for both POSIX (/) and Windows (\) paths.
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return idx === -1 ? '' : p.slice(0, idx);
+}
+
+function basenameOf(p: string): string {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return idx === -1 ? p : p.slice(idx + 1);
+}
+
+function matchCatalog(exePath: string, catalog: CatalogIndex): number | null {
+  const baseLower = basenameOf(exePath).toLowerCase();
+  const baseStripped = baseLower.replace(/\.exe$/, '');
+  for (const entry of catalog.games) {
+    if (entry.steamAppId == null) continue;
+    for (const candidate of entry.processName) {
+      const c = candidate.toLowerCase();
+      const cStripped = c.replace(/\.exe$/, '');
+      if (c === baseLower || cStripped === baseStripped) return entry.steamAppId;
+    }
+  }
+  return null;
+}
+
 // Phase 5 stubs — interface conforms; scan returns []. Do not delete; the registry below
 // exercises the pluggability and these will be filled in later phases.
 class EpicScanner implements LibraryScanner {
@@ -130,6 +191,7 @@ class LutrisScanner implements LibraryScanner {
 
 const defaultScanners: LibraryScanner[] = [
   new SteamScanner(),
+  new ManualScanner(),
   new EpicScanner(),
   new HeroicScanner(),
   new LutrisScanner(),

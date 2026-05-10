@@ -106,9 +106,15 @@ export async function fetchTrainerFrom(
   return parsed;
 }
 
+let lastFetched: CatalogIndex | null = null;
+
+export function getCachedIndex(): CatalogIndex | null { return lastFetched; }
+
 export async function fetchCatalog(): Promise<CatalogIndex> {
   const cacheDir = join(app.getPath('userData'), 'catalog-cache');
-  return fetchCatalogFrom(PROD_CATALOG_URL, cacheDir);
+  const idx = await fetchCatalogFrom(PROD_CATALOG_URL, cacheDir);
+  lastFetched = idx;
+  return idx;
 }
 
 export async function fetchTrainer(trainerPath: string): Promise<StarlightTrainer> {
