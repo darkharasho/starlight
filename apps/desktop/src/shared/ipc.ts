@@ -14,6 +14,8 @@ export const CHANNELS = {
   scanLibrary:    'starlight:scanLibrary',
   listProcesses:  'starlight:listProcesses',
   setProcessName: 'starlight:setProcessName',
+  // Phase 5.0 Task 11
+  setTrainerFromCatalog: 'starlight:setTrainerFromCatalog',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -85,6 +87,7 @@ export interface StarlightApi {
   // Phase 5.0
   fetchCatalog():    Promise<CatalogResult>;
   fetchTrainer(req: FetchTrainerRequest): Promise<TrainerResult>;
+  setTrainerFromCatalog(req: { trainer: import('@starlight/catalog/schema').StarlightTrainer }): Promise<IpcResult>;
   onEvent(listener: (e: StarlightEvent) => void): () => void;
   // Window controls
   windowMinimize():       void;

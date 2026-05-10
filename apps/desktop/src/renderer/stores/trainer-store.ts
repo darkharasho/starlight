@@ -111,7 +111,12 @@ export const useTrainerStore = create<TrainerStore>((set, get) => ({
 
   clear() { set({ trainer: null, activeCheats: {}, values: {}, error: null }); },
 
-  async setActiveTrainerFromCatalog() {
-    throw new Error('setActiveTrainerFromCatalog not yet wired (Phase 5.0 Task 11)');
+  async setActiveTrainerFromCatalog(trainer) {
+    const r = await starlight().setTrainerFromCatalog({ trainer });
+    if (!r.ok) {
+      set({ error: r.error });
+      return;
+    }
+    set({ trainer, activeCheats: {}, values: seedValues(trainer), error: null });
   },
 }));

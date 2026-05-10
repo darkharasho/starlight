@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, globalShortcut } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
-import { loadTrainer } from './trainer-loader.js';
+import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
@@ -102,6 +102,9 @@ app.whenReady().then(() => {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  ipcMain.handle(CHANNELS.setTrainerFromCatalog, async (_evt, req: { trainer: import('@starlight/ct-importer').StarlightTrainer }) =>
+    setTrainerFromCatalog(req.trainer));
 
   ipcMain.handle(CHANNELS.fetchTrainer, async (_evt, req: { trainerPath: string }) => {
     try {

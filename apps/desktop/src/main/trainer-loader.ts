@@ -2,6 +2,7 @@ import { dialog, BrowserWindow } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { importCt } from '@starlight/ct-importer';
+import type { StarlightTrainer } from '@starlight/ct-importer';
 import type { LoadTrainerResult } from '../shared/ipc.js';
 import { setActiveTrainer, cancelAllFreezes } from './engine-host.js';
 import { registerForTrainer } from './hotkey-host.js';
@@ -44,5 +45,17 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
     return { ok: true, trainer: out.trainer, stats: out.stats };
   } catch (err) {
     return { ok: false, error: `failed to import ${path}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+export async function setTrainerFromCatalog(trainer: StarlightTrainer): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await cancelAllFreezes();
+    setActiveTrainer(trainer);
+    registerForTrainer(trainer);
+    processHost.setTrainerProcessNames(trainer.game.processName);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
