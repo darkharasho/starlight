@@ -75,4 +75,25 @@ describe('trainer-loader pushRecent', () => {
     expect(cfg.recents[0]!.id).toBe('trainer-3');                 // most recent
     expect(cfg.recents.filter(r => r.id === 'trainer-3')).toHaveLength(1);
   });
+
+  it('applies processNameOverrides to trainer.game.processName before registration', async () => {
+    const { updateConfigFrom } = await import('../../src/main/user-config.js');
+    const { join } = await import('node:path');
+    await updateConfigFrom(join(tmpUserDataRef.current, 'config.json'), {
+      processNameOverrides: { 'overridden-trainer': ['custom-name.exe'] },
+    });
+    const { clearConfigCache } = await import('../../src/main/user-config.js');
+    clearConfigCache();
+    const { setTrainerFromCatalog } = await import('../../src/main/trainer-loader.js');
+    const result = await setTrainerFromCatalog({
+      schemaVersion: 1,
+      id: 'overridden-trainer',
+      game: { name: 'Demo', processName: ['original.exe'], platform: ['windows'] },
+      metadata: { source: { convertedFrom: '.CT' }, convertedAt: '2026-05-09T00:00:00Z' },
+      categories: [],
+    } as never);
+    expect(result.ok).toBe(true);
+    const { processHost } = await import('../../src/main/process-host-singleton.js');
+    expect(processHost.setTrainerProcessNames).toHaveBeenCalledWith(['custom-name.exe']);
+  });
 });
