@@ -3,6 +3,7 @@ import { Routes, Route } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { TitleBar } from './components/TitleBar.js';
+import { TrainerLoadingOverlay } from './components/TrainerLoadingOverlay.js';
 import { useLatchState } from './stores/latch-store.js';
 import { useConfigStore, attachConfigEvents } from './stores/config-store.js';
 import { useCatalogStore } from './stores/catalog-store.js';
@@ -66,6 +67,7 @@ export default function App(): JSX.Element {
           </main>
         </div>
       </div>
+      <TrainerLoadingOverlay />
     </div>
   );
 }

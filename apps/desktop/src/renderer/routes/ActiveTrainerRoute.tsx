@@ -13,6 +13,27 @@ function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
   return !('unsupported' in c) || c.unsupported !== true;
 }
 
+function LuaHeavyBanner({ supported, total, sourceUrl }: { supported: number; total: number; sourceUrl?: string | undefined }): JSX.Element {
+  const pct = total > 0 ? Math.round((supported / total) * 100) : 0;
+  return (
+    <div className="text-xs text-neon-cyan border border-neon-cyan/40 bg-neon-cyan/[0.06] rounded-sm px-3 py-2">
+      <div className="font-semibold mb-1">Mostly Lua-driven trainer</div>
+      <div className="text-muted">
+        Only {supported}/{total} entries ({pct}%) are statically supported. The rest rely on Cheat Engine&apos;s Lua runtime, which Starlight can&apos;t evaluate yet.
+      </div>
+      {sourceUrl && (
+        <div className="mt-2">
+          <a href={sourceUrl} target="_blank" rel="noreferrer"
+             className="underline hover:text-neon-pink">
+            Open original thread on fearlessrevolution
+          </a>{' '}
+          <span className="text-muted">to use the full table in Cheat Engine.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ErrorBanner({ message }: { message: string }): JSX.Element {
   const isPermission = /ptrace|permission|EPERM/i.test(message);
   return (
@@ -217,6 +238,14 @@ function TrainerView({
       </div>
 
       {(latchError || trainerError) && <ErrorBanner message={latchError ?? trainerError ?? ''} />}
+
+      {totalCheats > 0 && supportedCount / totalCheats < 0.3 && (
+        <LuaHeavyBanner
+          supported={supportedCount}
+          total={totalCheats}
+          sourceUrl={trainer.metadata.source.url}
+        />
+      )}
 
       <TrainerInfoDisclosure trainer={trainer} setProcessName={setProcessName} />
 

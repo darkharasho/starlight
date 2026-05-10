@@ -41,18 +41,18 @@ export function GameTile({ game, onClick }: Props): JSX.Element {
       onClick={() => onClick?.(game)}
       className="relative w-full aspect-[2/3] rounded-sm overflow-hidden border border-neon-cyan/60 glow-cyan transition-transform duration-150 hover:-translate-y-0.5 hover:border-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan bg-[#1a1a22]"
     >
-      {cover ? (
+      {/* Name backdrop — always present so broken/loading covers still show context. */}
+      <span className="absolute inset-0 flex items-center justify-center text-[10px] text-muted px-2 text-center pointer-events-none">
+        {game.name}
+      </span>
+      {cover && (
         <img
           src={cover}
-          alt={game.name}
+          alt=""
           className="absolute inset-0 w-full h-full object-cover"
           onError={() => void handleImgError()}
           loading="lazy"
         />
-      ) : (
-        <span className="absolute inset-0 flex items-center justify-center text-[10px] text-muted px-2 text-center">
-          {game.name}
-        </span>
       )}
       {game.installed && (
         <span className="absolute top-1.5 left-1.5 text-[8px] tracking-wider text-neon-pink bg-bg/70 px-1.5 py-[2px] rounded-sm z-10">

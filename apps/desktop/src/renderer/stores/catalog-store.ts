@@ -7,6 +7,10 @@ interface CatalogState {
   index: CatalogIndex | null;
   loading: boolean;
   error: string | null;
+  /** Catalog id of the trainer currently being fetched, or null. */
+  fetchingTrainerId: string | null;
+  /** Last trainer-fetch error, cleared on the next attempt. */
+  trainerError: string | null;
   load: () => Promise<void>;
   /**
    * Fetch the trainer JSON for a catalog entry. Routes to a static CDN
@@ -34,6 +38,8 @@ export const useCatalogStore = create<CatalogState>((set) => ({
   index: null,
   loading: false,
   error: null,
+  fetchingTrainerId: null,
+  trainerError: null,
   load: async () => {
     set({ loading: true, error: null });
     try {
@@ -49,9 +55,19 @@ export const useCatalogStore = create<CatalogState>((set) => ({
     if (cached) return cached;
     const req = buildRequest(entry);
     if (!req) return null;
-    const r = await starlight().fetchTrainer(req);
-    if (!r.ok) return null;
-    trainerCache.set(entry.id, r.trainer);
-    return r.trainer;
+    set({ fetchingTrainerId: entry.id, trainerError: null });
+    try {
+      const r = await starlight().fetchTrainer(req);
+      if (!r.ok) {
+        set({ fetchingTrainerId: null, trainerError: r.error });
+        return null;
+      }
+      trainerCache.set(entry.id, r.trainer);
+      set({ fetchingTrainerId: null });
+      return r.trainer;
+    } catch (err) {
+      set({ fetchingTrainerId: null, trainerError: err instanceof Error ? err.message : String(err) });
+      return null;
+    }
   },
 }));
