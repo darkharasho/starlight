@@ -5,20 +5,48 @@ import { useCatalogStore } from '../stores/catalog-store.js';
 import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 
-function boxartUrl(g: DetectedGame): string {
-  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appId}/library_600x900.jpg`;
+function boxartUrl(g: DetectedGame): string | null {
+  const id = g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : null);
+  if (id == null || Number.isNaN(id)) return null;
+  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_600x900.jpg`;
 }
 
-function GameTile({ game, running, hasTrainer }: { game: DetectedGame; running: boolean; hasTrainer: boolean }): JSX.Element {
+function GameTile({
+  game, running, hasTrainer, onRemove,
+}: {
+  game: DetectedGame;
+  running: boolean;
+  hasTrainer: boolean;
+  onRemove?: () => void;
+}): JSX.Element {
+  const cover = boxartUrl(game);
   return (
-    <div className="flex flex-col gap-1.5 group">
+    <div className="flex flex-col gap-1.5 group relative">
       <div className="aspect-[2/3] rounded-sm border border-line bg-panel overflow-hidden">
-        <img
-          src={boxartUrl(game)}
-          alt={game.name}
-          className="w-full h-full object-cover"
-          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-        />
+        {cover ? (
+          <img
+            src={cover}
+            alt={game.name}
+            className="w-full h-full object-cover"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-[10px] text-muted px-2 text-center">
+            {game.name}
+          </div>
+        )}
+        {onRemove && (
+          <button
+            type="button"
+            aria-label={`Remove ${game.name}`}
+            onClick={() => {
+              if (window.confirm(`Remove "${game.name}" from your library?`)) onRemove();
+            }}
+            className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center text-[10px] rounded-sm border border-line bg-bg/80 text-muted opacity-0 group-hover:opacity-100 hover:border-neon-pink hover:text-neon-pink"
+          >
+            ×
+          </button>
+        )}
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
         <div className="text-[11px] font-semibold truncate">{game.name}</div>
@@ -40,6 +68,7 @@ export function LibraryRoute(): JSX.Element {
   const error = useLibraryStore((s) => s.error);
   const scan = useLibraryStore((s) => s.scan);
   const addManual = useLibraryStore((s) => s.addManual);
+  const removeManual = useLibraryStore((s) => s.removeManual);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const processes = useProcessStore((s) => s.processes);
 
@@ -105,12 +134,14 @@ export function LibraryRoute(): JSX.Element {
         <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 overflow-y-auto">
           {games.map((g) => {
             const dirName = (g.installDir.split('/').pop() ?? '').toLowerCase();
+            const isCatalogMatch = (g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : NaN));
             return (
               <GameTile
                 key={`${g.source}:${g.appId}`}
                 game={g}
                 running={runningSet.has(dirName)}
-                hasTrainer={g.source === 'steam' && catalogSteamIds.has(Number(g.appId))}
+                hasTrainer={!Number.isNaN(isCatalogMatch) && catalogSteamIds.has(isCatalogMatch as number)}
+                {...(g.source === 'manual' ? { onRemove: () => void removeManual(g.appId) } : {})}
               />
             );
           })}

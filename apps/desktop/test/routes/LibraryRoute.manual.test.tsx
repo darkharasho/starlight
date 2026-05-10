@@ -60,4 +60,26 @@ describe('LibraryRoute — manual entries', () => {
     await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
     expect(screen.queryByRole('heading', { name: /add a manual game/i })).not.toBeInTheDocument();
   });
+
+  it('manual tiles render a × remove button that calls removeManual', async () => {
+    const removeManual = vi.fn(async () => undefined);
+    useLibraryStore.setState({
+      games: [{ source: 'manual', appId: 'manual-foo-aaa', name: 'Foo', installDir: '/games/foo' }],
+      loading: false,
+      error: null,
+      addManual: async () => undefined,
+      removeManual,
+      scan: async () => undefined,
+    } as never);
+    setStarlightApi({
+      scanLibrary: async () => ({ games: [] }),
+      pickExecutable: async () => ({ ok: false, error: 'cancelled' }),
+      onEvent: () => () => {},
+    } as never);
+    // window.confirm is jsdom-default false; stub it true.
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
+    await userEvent.click(screen.getByRole('button', { name: /remove foo/i }));
+    expect(removeManual).toHaveBeenCalledWith('manual-foo-aaa');
+  });
 });
