@@ -24,9 +24,36 @@ function tryRegister(accel: string, cb: () => void | Promise<void>): boolean {
   }
 }
 
-function registerCheat(cheat: StarlightSupportedCheat): void {
-  const hk = cheat.hotkeys;
-  if (!hk) return;
+export interface CheatHotkeyOverrideMap {
+  toggle?: string | null;
+  inc?: string | null;
+  dec?: string | null;
+}
+
+export type TrainerHotkeyOverrides = Record<string, CheatHotkeyOverrideMap>;
+
+/** Resolve the effective hotkeys for a cheat by overlaying overrides on the trainer defaults.
+ *  Override value `null` → slot is explicitly cleared (no binding). Missing → use default. */
+function resolveHotkeys(
+  cheat: StarlightSupportedCheat,
+  override: CheatHotkeyOverrideMap | undefined,
+): { toggle?: string; inc?: string; dec?: string } {
+  const base = cheat.hotkeys ?? {};
+  const out: { toggle?: string; inc?: string; dec?: string } = {};
+  for (const slot of ['toggle', 'inc', 'dec'] as const) {
+    if (override && slot in override) {
+      const v = override[slot];
+      if (v != null) out[slot] = v;                      // explicit non-null override
+      // else: explicitly cleared → omit from out
+    } else if (base[slot]) {
+      out[slot] = base[slot];                             // default
+    }
+  }
+  return out;
+}
+
+function registerCheat(cheat: StarlightSupportedCheat, override: CheatHotkeyOverrideMap | undefined): void {
+  const hk = resolveHotkeys(cheat, override);
   if (hk.toggle) {
     tryRegister(hk.toggle, async () => {
       const next = !(isOn.get(cheat.id) ?? false);
@@ -50,13 +77,13 @@ function registerCheat(cheat: StarlightSupportedCheat): void {
   }
 }
 
-export function registerForTrainer(t: StarlightTrainer | null): void {
+export function registerForTrainer(t: StarlightTrainer | null, overrides: TrainerHotkeyOverrides = {}): void {
   unregisterAll();
   if (!t) return;
   for (const cat of t.categories) {
     for (const cheat of cat.cheats) {
       if (!isSupported(cheat)) continue;
-      registerCheat(cheat);
+      registerCheat(cheat, overrides[cheat.id]);
     }
   }
 }
