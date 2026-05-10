@@ -80,6 +80,12 @@ export function ActiveTrainerRoute(): JSX.Element {
     const r = await rebindHotkey(cheatId, slot, null);
     if (!r.ok) {
       setHotkeyErrors((e) => ({ ...e, [cheatId]: { ...e[cheatId], [slot]: r.error ?? 'failed' } }));
+    } else {
+      setHotkeyErrors((e) => {
+        const next = { ...(e[cheatId] ?? {}) };
+        delete next[slot];
+        return { ...e, [cheatId]: next };
+      });
     }
   }
 

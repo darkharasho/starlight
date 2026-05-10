@@ -65,3 +65,69 @@ describe('keyboardEventToAccelerator', () => {
     expect(keyboardEventToAccelerator(ev({ code: 'Minus', key: '-' }))).toBe('-');
   });
 });
+
+import { findConflict, resolveCheatHotkeys } from '../../src/renderer/lib/accelerator.js';
+import type { StarlightSupportedCheat } from '../../src/shared/ipc.js';
+
+describe('findConflict', () => {
+  const cheats: StarlightSupportedCheat[] = [
+    { id: 'a', name: 'A', type: 'toggle', valueType: 'uint32',
+      address: { kind: 'absolute', address: '0x0' },
+      hotkeys: { toggle: 'F1' } } as never,
+    { id: 'b', name: 'B', type: 'set', valueType: 'float',
+      address: { kind: 'absolute', address: '0x0' },
+      min: 0, max: 10, step: 1, default: 0,
+      hotkeys: { toggle: 'F2', inc: 'F2+Up', dec: 'F2+Down' } } as never,
+  ];
+
+  it('returns null when candidate doesnt collide', () => {
+    expect(findConflict(cheats, {}, 'a', 'toggle', 'F9')).toBeNull();
+  });
+
+  it('detects collision against another cheat default', () => {
+    const c = findConflict(cheats, {}, 'a', 'toggle', 'F2');
+    expect(c).toEqual({ cheatId: 'b', slot: 'toggle' });
+  });
+
+  it('ignores self when collision check', () => {
+    expect(findConflict(cheats, {}, 'a', 'toggle', 'F1')).toBeNull();
+  });
+
+  it('respects null override (cleared slot doesnt count as collision)', () => {
+    const overrides = { b: { toggle: null as string | null } };
+    expect(findConflict(cheats, overrides, 'a', 'toggle', 'F2')).toBeNull();
+  });
+
+  it('respects non-null override (overridden slot is the conflict target)', () => {
+    const overrides = { b: { toggle: 'F9' } };
+    expect(findConflict(cheats, overrides, 'a', 'toggle', 'F9')).toEqual({ cheatId: 'b', slot: 'toggle' });
+    expect(findConflict(cheats, overrides, 'a', 'toggle', 'F2')).toBeNull();   // default replaced
+  });
+});
+
+describe('resolveCheatHotkeys', () => {
+  const cheat = {
+    id: 'x', name: 'X', type: 'set', valueType: 'float',
+    address: { kind: 'absolute', address: '0x0' },
+    min: 0, max: 10, step: 1, default: 0,
+    hotkeys: { toggle: 'F4', inc: 'F4+Up', dec: 'F4+Down' },
+  } as never as StarlightSupportedCheat;
+
+  it('returns defaults when no override', () => {
+    expect(resolveCheatHotkeys(cheat, undefined)).toEqual({
+      toggle: 'F4', inc: 'F4+Up', dec: 'F4+Down',
+    });
+  });
+
+  it('replaces a slot with a non-null override', () => {
+    expect(resolveCheatHotkeys(cheat, { toggle: 'F5' })).toEqual({
+      toggle: 'F5', inc: 'F4+Up', dec: 'F4+Down',
+    });
+  });
+
+  it('clears a slot with null override', () => {
+    expect(resolveCheatHotkeys(cheat, { toggle: null })).toEqual({
+      inc: 'F4+Up', dec: 'F4+Down',
+    });
+  });
+});

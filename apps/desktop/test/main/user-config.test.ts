@@ -107,4 +107,18 @@ describe('user-config updateConfigFrom', () => {
     await expect(updateConfigFrom(path, { preferences: { pollIntervalMs: 100 } }))
       .rejects.toThrow();
   });
+
+  it('deep-merges into a previously-empty nested record (regression for undefined-base bug)', async () => {
+    const path = join(dir, 'config.json');
+    // Start with default config (no hotkeyOverrides entries) then patch a deeply nested key.
+    const next = await updateConfigFrom(path, {
+      hotkeyOverrides: {
+        'trainer-x': { 'cheat-y': { toggle: 'F5' } },
+      },
+    });
+    expect(next.hotkeyOverrides['trainer-x']!['cheat-y']!.toggle).toBe('F5');
+    // Round-trip: subsequent reads see the same value.
+    const round = await getConfigFrom(path);
+    expect(round.hotkeyOverrides['trainer-x']!['cheat-y']!.toggle).toBe('F5');
+  });
 });

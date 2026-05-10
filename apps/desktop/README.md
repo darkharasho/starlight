@@ -94,7 +94,7 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 ## Phase 5.3 demo additions
 
 18. **Rebind a hotkey:** open a trainer → on any cheat card click the ✎ next to a hotkey badge → press your new key combo (e.g. `Ctrl+Shift+G`). The new accelerator binds live. Press Esc to cancel.
-19. **Clear a hotkey:** click the ↺ button to remove the override and (if there was a default) restore it. Click ↺ again to clear the default for that slot.
+19. **Clear a hotkey:** click the ↺ button to clear the slot. The hotkey is unregistered immediately, regardless of whether it was a default or a previous override.
 20. **Conflict detection:** if your new accelerator is already bound to another cheat in this trainer, an inline error appears and the rebind is rejected before reaching the OS.
 21. **Persistence:** overrides save per-trainer-per-cheat to `<userData>/config.json` and re-apply automatically next time you open that trainer.
 
