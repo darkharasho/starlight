@@ -6,6 +6,7 @@ import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-hos
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
+import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -56,6 +57,12 @@ engineHost.onDetached((reason) => {
 engineHost.onAttachStateChange((attached) => setEngineAttached(attached));
 
 app.whenReady().then(() => {
+  setOnCorrupt((backupPath) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event, { type: 'config:corrupted', backupPath });
+    }
+  });
+
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
     loadTrainer(BrowserWindow.getFocusedWindow() ?? undefined));
 
@@ -111,13 +118,13 @@ app.whenReady().then(() => {
     }
   });
 
-  // TODO(phase-5.1 task 3): placeholder — replaced by user-config in task 3
-  ipcMain.handle(CHANNELS.getConfig, async () => {
-    throw new Error('user-config not yet wired');
-  });
-  // TODO(phase-5.1 task 3): placeholder — replaced by user-config in task 3
-  ipcMain.handle(CHANNELS.updateConfig, async () => {
-    throw new Error('user-config not yet wired');
+  ipcMain.handle(CHANNELS.getConfig, async () => getConfig());
+  ipcMain.handle(CHANNELS.updateConfig, async (_evt, req: { patch: import('../shared/ipc.js').DeepPartial<import('../shared/ipc.js').UserConfig> }) => {
+    const next = await updateConfig(req.patch);
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event, { type: 'config:changed', config: next });
+    }
+    return next;
   });
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
