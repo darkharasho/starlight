@@ -1,51 +1,5 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-09T00:00:00.000Z",
-  "games": [
-    {
-      "id": "elden-ring",
-      "name": "Elden Ring",
-      "steamAppId": 1245620,
-      "processName": ["eldenring.exe"],
-      "platform": ["windows"],
-      "tags": ["souls", "rpg"],
-      "trainerPath": "trainers/elden-ring.json"
-    },
-    {
-      "id": "cyberpunk-2077",
-      "name": "Cyberpunk 2077",
-      "steamAppId": 1091500,
-      "processName": ["Cyberpunk2077.exe"],
-      "platform": ["windows"],
-      "tags": ["rpg"],
-      "trainerPath": "trainers/cyberpunk-2077.json"
-    },
-    {
-      "id": "hades-ii",
-      "name": "Hades II",
-      "steamAppId": 1145350,
-      "processName": ["Hades2.exe"],
-      "platform": ["windows"],
-      "tags": ["roguelike"],
-      "trainerPath": "trainers/hades-ii.json"
-    },
-    {
-      "id": "stardew-valley",
-      "name": "Stardew Valley",
-      "steamAppId": 413150,
-      "processName": ["Stardew Valley.exe"],
-      "platform": ["windows"],
-      "tags": ["sim"],
-      "trainerPath": "trainers/stardew-valley.json"
-    },
-    {
-      "id": "hollow-knight",
-      "name": "Hollow Knight",
-      "steamAppId": 367520,
-      "processName": ["hollow_knight.exe"],
-      "platform": ["windows"],
-      "tags": ["metroidvania"],
-      "trainerPath": "trainers/hollow-knight.json"
-    }
-  ]
+  "generatedAt": "2026-05-10T06:50:56.668Z",
+  "games": []
 }
