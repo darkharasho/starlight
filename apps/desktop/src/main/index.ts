@@ -5,6 +5,7 @@ import * as engineHost from './engine-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
+import { fetchCatalog, fetchTrainer, setCatalogEventBroadcaster } from './catalog-host.js';
 import { join } from 'node:path';
 
 function createWindow(): void {
@@ -55,6 +56,10 @@ engineHost.onDetached((reason) => {
 engineHost.onAttachStateChange((attached) => setEngineAttached(attached));
 
 app.whenReady().then(() => {
+  setCatalogEventBroadcaster((e) => {
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send(CHANNELS.event, e);
+  });
+
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
     loadTrainer(BrowserWindow.getFocusedWindow() ?? undefined));
 
@@ -89,10 +94,23 @@ app.whenReady().then(() => {
     if (engineHost.getActiveTrainer()) engineHost.updateProcessName(req.names);
   });
 
-  // TODO(phase-5.0 task 4): placeholder — replaced by catalog-host in task 4
-  ipcMain.handle(CHANNELS.fetchCatalog, async () => ({ ok: false, error: 'catalog-host not yet wired' }));
-  // TODO(phase-5.0 task 4): placeholder — replaced by catalog-host in task 4
-  ipcMain.handle(CHANNELS.fetchTrainer, async () => ({ ok: false, error: 'catalog-host not yet wired' }));
+  ipcMain.handle(CHANNELS.fetchCatalog, async () => {
+    try {
+      const index = await fetchCatalog();
+      return { ok: true as const, index };
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.fetchTrainer, async (_evt, req: { trainerPath: string }) => {
+    try {
+      const trainer = await fetchTrainer(req.trainerPath);
+      return { ok: true as const, trainer };
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
