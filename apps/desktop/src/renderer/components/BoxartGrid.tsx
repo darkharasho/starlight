@@ -1,4 +1,4 @@
-import type { CatalogGame } from '../data/catalog.js';
+import type { CatalogGame } from '../types/catalog-game.js';
 import { GameTile } from './GameTile.js';
 
 interface Props {
@@ -12,7 +12,7 @@ export function BoxartGrid({ games, onSelect, cols = 'grid-cols-8' }: Props): JS
   return (
     <div className={`grid ${cols} gap-3`}>
       {games.map((g) => (
-        <GameTile key={g.steamAppId} game={g} {...(onSelect ? { onClick: onSelect } : {})} />
+        <GameTile key={g.id} game={g} {...(onSelect ? { onClick: onSelect } : {})} />
       ))}
     </div>
   );
