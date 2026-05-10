@@ -1,10 +1,29 @@
 import { app } from 'electron';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CatalogIndexSchema, StarlightTrainerSchema, type CatalogIndex, type StarlightTrainer } from '@starlight/catalog/schema';
 
 const PROD_CATALOG_URL = 'https://darkharasho.github.io/starlight/catalog/index.json';
 const PROD_CATALOG_BASE = 'https://darkharasho.github.io/starlight/catalog/';
+
+/**
+ * In dev (electron-vite), read the catalog from the local monorepo so changes
+ * to `pnpm --filter @starlight/indexer build && node dist/index.js` show up
+ * immediately without waiting for a Pages deploy. Returns null in packaged
+ * builds or when the local file is missing.
+ */
+async function readLocalCatalog(): Promise<CatalogIndex | null> {
+  if (app.isPackaged) return null;
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));            // out/main
+    const repoCatalog = resolve(here, '..', '..', '..', '..', 'packages', 'catalog', 'index.json');
+    const text = await readFile(repoCatalog, 'utf8');
+    return CatalogIndexSchema.parse(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
 
 interface CacheMeta {
   etag?: string;
@@ -111,6 +130,11 @@ let lastFetched: CatalogIndex | null = null;
 export function getCachedIndex(): CatalogIndex | null { return lastFetched; }
 
 export async function fetchCatalog(): Promise<CatalogIndex> {
+  const local = await readLocalCatalog();
+  if (local) {
+    lastFetched = local;
+    return local;
+  }
   const cacheDir = join(app.getPath('userData'), 'catalog-cache');
   const idx = await fetchCatalogFrom(PROD_CATALOG_URL, cacheDir);
   lastFetched = idx;
