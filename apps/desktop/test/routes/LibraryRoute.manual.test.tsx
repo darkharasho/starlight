@@ -76,6 +76,7 @@ describe('LibraryRoute — manual entries', () => {
     setStarlightApi({
       scanLibrary: async () => ({ games: [] }),
       pickExecutable: async () => ({ ok: false, error: 'cancelled' }),
+      resolveBoxart: async () => ({ url: null }),
       onEvent: () => () => {},
     } as never);
     // window.confirm is jsdom-default false; stub it true.

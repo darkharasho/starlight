@@ -4,6 +4,7 @@ import { useProcessStore, attachProcessEvents } from '../stores/process-store.js
 import { useCatalogStore } from '../stores/catalog-store.js';
 import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
+import { starlight } from '../ipc-client.js';
 
 function boxartUrl(g: DetectedGame): string | null {
   const id = g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : null);
@@ -19,7 +20,35 @@ function GameTile({
   hasTrainer: boolean;
   onRemove?: () => void;
 }): JSX.Element {
-  const cover = boxartUrl(game);
+  const upfrontCover = boxartUrl(game);
+  const [resolvedCover, setResolvedCover] = useState<string | null>(null);
+  const [errored, setErrored] = useState(false);
+
+  // Proactive resolve when no upfront cover (e.g., manual entries without boxartSteamAppId).
+  useEffect(() => {
+    if (upfrontCover !== null || resolvedCover !== null) return;
+    let cancelled = false;
+    void (async () => {
+      const req: { name: string; steamAppId?: number } = { name: game.name };
+      if (game.boxartSteamAppId != null) req.steamAppId = game.boxartSteamAppId;
+      const r = await starlight().resolveBoxart(req).catch(() => ({ url: null }));
+      if (!cancelled && r.url) setResolvedCover(r.url);
+    })();
+    return () => { cancelled = true; };
+  }, [upfrontCover, resolvedCover, game.name, game.boxartSteamAppId]);
+
+  // Fallback resolve when upfront cover errors out.
+  async function handleImgError(): Promise<void> {
+    if (errored) return;
+    setErrored(true);
+    const req: { name: string; steamAppId?: number } = { name: game.name };
+    if (game.boxartSteamAppId != null) req.steamAppId = game.boxartSteamAppId;
+    const r = await starlight().resolveBoxart(req).catch(() => ({ url: null }));
+    if (r.url && r.url !== upfrontCover) setResolvedCover(r.url);
+  }
+
+  const cover = resolvedCover ?? (errored ? null : upfrontCover);
+
   return (
     <div className="flex flex-col gap-1.5 group relative">
       <div className="aspect-[2/3] rounded-sm border border-line bg-panel overflow-hidden">
@@ -28,7 +57,7 @@ function GameTile({
             src={cover}
             alt={game.name}
             className="w-full h-full object-cover"
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+            onError={() => void handleImgError()}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-[10px] text-muted px-2 text-center">
