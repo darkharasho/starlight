@@ -76,6 +76,8 @@ Phase 4.5 adds Library auto-detection, process-picker auto-fill, and Inc/Dec hot
 9. **Library "Trainer" badge:** lit when the tile's Steam App ID matches a catalog entry.
 10. **Catalog from a tile:** clicking a tile fetches the per-trainer JSON and activates it without a `.CT` dialog.
 
+Note: the live catalog URL becomes reachable only after the `Publish Pages` GitHub Actions workflow completes its first run. To enable that workflow on a fresh clone, go to GitHub → repo Settings → Pages → Source: "GitHub Actions" and trigger the workflow (push to main or use Run workflow). Until then, the in-app Browse view will show "Catalog unavailable" with a Retry button.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5

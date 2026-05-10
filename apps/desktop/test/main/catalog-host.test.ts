@@ -99,7 +99,7 @@ describe('catalog-host fetchTrainerFrom', () => {
       schemaVersion: 1,
       id: 'a',
       game: { name: 'A', processName: ['a.exe'], platform: ['windows'] },
-      metadata: { author: 't', createdAt: '2026-05-09T00:00:00Z' },
+      metadata: { author: 't', source: { convertedFrom: '.CT' }, convertedAt: '2026-05-09T00:00:00Z' },
       categories: [{ name: 'X', cheats: [] }],
     };
     await startServer((req, res) => {

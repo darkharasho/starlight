@@ -1,8 +1,7 @@
 import { app } from 'electron';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CatalogIndexSchema, type CatalogIndex, type StarlightTrainer } from '@starlight/catalog/schema';
-import type { StarlightEvent } from '../shared/ipc.js';
+import { CatalogIndexSchema, StarlightTrainerSchema, type CatalogIndex, type StarlightTrainer } from '@starlight/catalog/schema';
 
 const PROD_CATALOG_URL = 'https://darkharasho.github.io/starlight/catalog/index.json';
 const PROD_CATALOG_BASE = 'https://darkharasho.github.io/starlight/catalog/';
@@ -90,38 +89,29 @@ export async function fetchTrainerFrom(
   try {
     res = await fetch(url, { headers: { Accept: 'application/json' } });
   } catch {
-    const cached = await readJsonIfExists<StarlightTrainer>(bodyPath);
-    if (cached !== null) return cached;
+    const cached = await readJsonIfExists<unknown>(bodyPath);
+    if (cached !== null) return StarlightTrainerSchema.parse(cached);
     throw new Error('trainer unavailable: network failed and no cache present');
   }
 
   if (!res.ok) {
-    const cached = await readJsonIfExists<StarlightTrainer>(bodyPath);
-    if (cached !== null) return cached;
+    const cached = await readJsonIfExists<unknown>(bodyPath);
+    if (cached !== null) return StarlightTrainerSchema.parse(cached);
     throw new Error(`trainer unavailable: HTTP ${res.status}`);
   }
 
   const text = await res.text();
-  const json = JSON.parse(text) as StarlightTrainer;
+  const parsed = StarlightTrainerSchema.parse(JSON.parse(text));
   await atomicWrite(bodyPath, text);
-  return json;
+  return parsed;
 }
-
-let cachedIndex: CatalogIndex | null = null;
-let broadcaster: ((e: StarlightEvent) => void) | null = null;
-export function setCatalogEventBroadcaster(fn: (e: StarlightEvent) => void): void { broadcaster = fn; }
 
 export async function fetchCatalog(): Promise<CatalogIndex> {
   const cacheDir = join(app.getPath('userData'), 'catalog-cache');
-  const idx = await fetchCatalogFrom(PROD_CATALOG_URL, cacheDir);
-  cachedIndex = idx;
-  broadcaster?.({ type: 'catalog:loaded', index: idx });
-  return idx;
+  return fetchCatalogFrom(PROD_CATALOG_URL, cacheDir);
 }
 
 export async function fetchTrainer(trainerPath: string): Promise<StarlightTrainer> {
   const cacheDir = join(app.getPath('userData'), 'catalog-cache');
   return fetchTrainerFrom(PROD_CATALOG_BASE, trainerPath, cacheDir);
 }
-
-export function getCachedIndex(): CatalogIndex | null { return cachedIndex; }

@@ -37,11 +37,3 @@ export const useCatalogStore = create<CatalogState>((set) => ({
   },
 }));
 
-let unsub: (() => void) | null = null;
-export function attachCatalogEvents(): void {
-  if (unsub) return;
-  unsub = starlight().onEvent((e) => {
-    if (e.type === 'catalog:loaded') useCatalogStore.setState({ index: e.index });
-  });
-}
-export function detachCatalogEvents(): void { unsub?.(); unsub = null; }

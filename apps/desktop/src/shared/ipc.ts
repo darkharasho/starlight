@@ -69,8 +69,7 @@ export type StarlightEvent =
   | { type: 'process:matched';      pid: number; name: string }
   | { type: 'library:scanned';      games: DetectedGame[] }
   | { type: 'hotkey:inc';           cheatId: string }
-  | { type: 'hotkey:dec';           cheatId: string }
-  | { type: 'catalog:loaded';       index: CatalogIndex };
+  | { type: 'hotkey:dec';           cheatId: string };
 
 export interface WindowState { maximized: boolean }
 
