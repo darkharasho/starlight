@@ -21,6 +21,8 @@ export const CHANNELS = {
   updateConfig: 'starlight:updateConfig',
   // Phase 5.2
   pickExecutable: 'starlight:pickExecutable',
+  // Phase 5.3
+  rebindHotkey: 'starlight:rebindHotkey',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -43,6 +45,20 @@ export type LoadTrainerResult =
 export type PickExecutableResult =
   | { ok: true; path: string }
   | { ok: false; error: 'cancelled' | 'unknown'; message?: string };
+
+export type HotkeySlot = 'toggle' | 'inc' | 'dec';
+
+export interface RebindHotkeyRequest {
+  trainerId: string;
+  cheatId: string;
+  slot: HotkeySlot;
+  /** Electron accelerator string, or `null` to explicitly clear the hotkey (no binding). */
+  accelerator: string | null;
+}
+
+export type RebindHotkeyResult =
+  | { ok: true }
+  | { ok: false; error: 'no-active-trainer' | 'conflict' | 'invalid' | 'unknown'; message?: string };
 
 export type CatalogResult =
   | { ok: true; index: CatalogIndex }
@@ -108,6 +124,8 @@ export interface StarlightApi {
   updateConfig(req: UpdateConfigRequest): Promise<UserConfig>;
   // Phase 5.2
   pickExecutable(): Promise<PickExecutableResult>;
+  // Phase 5.3
+  rebindHotkey(req: RebindHotkeyRequest): Promise<RebindHotkeyResult>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;

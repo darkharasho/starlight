@@ -150,6 +150,10 @@ app.whenReady().then(async () => {
     return { ok: true as const, path: result.filePaths[0]! };
   });
 
+  // TODO(phase-5.3 task 4): placeholder — replaced in task 4
+  ipcMain.handle(CHANNELS.rebindHotkey, async () =>
+    ({ ok: false, error: 'unknown' as const, message: 'rebindHotkey not yet wired' }));
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);

@@ -16,6 +16,7 @@ const api: StarlightApi = {
   getConfig:    ()    => ipcRenderer.invoke(CHANNELS.getConfig),
   updateConfig: (req) => ipcRenderer.invoke(CHANNELS.updateConfig, req),
   pickExecutable: () => ipcRenderer.invoke(CHANNELS.pickExecutable),
+  rebindHotkey: (req) => ipcRenderer.invoke(CHANNELS.rebindHotkey, req),
   onEvent: (listener) => {
     const handler = (_evt: unknown, e: StarlightEvent): void => listener(e);
     ipcRenderer.on(CHANNELS.event, handler);
