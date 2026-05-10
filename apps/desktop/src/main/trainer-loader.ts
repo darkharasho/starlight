@@ -9,6 +9,14 @@ import { registerForTrainer } from './hotkey-host.js';
 import { processHost } from './process-host-singleton.js';
 import { getConfig, updateConfig } from './user-config.js';
 
+async function applyProcessNameOverride(trainer: StarlightTrainer): Promise<void> {
+  const cfg = await getConfig();
+  const override = cfg.processNameOverrides[trainer.id];
+  if (override && override.length > 0) {
+    trainer.game = { ...trainer.game, processName: override };
+  }
+}
+
 async function pushRecent(trainer: StarlightTrainer, source: 'catalog' | 'file'): Promise<void> {
   const entry = {
     id: trainer.id,
@@ -54,6 +62,7 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
       platform: ['linux'],
     });
     await cancelAllFreezes();
+    await applyProcessNameOverride(out.trainer);
     setActiveTrainer(out.trainer);
     registerForTrainer(out.trainer);
     processHost.setTrainerProcessNames(out.trainer.game.processName);
@@ -67,6 +76,7 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
 export async function setTrainerFromCatalog(trainer: StarlightTrainer): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     await cancelAllFreezes();
+    await applyProcessNameOverride(trainer);
     setActiveTrainer(trainer);
     registerForTrainer(trainer);
     processHost.setTrainerProcessNames(trainer.game.processName);
