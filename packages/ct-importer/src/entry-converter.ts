@@ -27,8 +27,9 @@ function asArray<T>(v: T | T[] | undefined): T[] {
 }
 
 export function convertEntry(entry: CtEntry): ConvertedEntry {
+  const children = asArray(entry.CheatEntries?.CheatEntry);
+
   if (entry.GroupHeader === 1) {
-    const children = asArray(entry.CheatEntries?.CheatEntry);
     return { kind: 'category', name: entryName(entry), children };
   }
 
@@ -36,6 +37,14 @@ export function convertEntry(entry: CtEntry): ConvertedEntry {
     ...(entry.LuaScript !== undefined ? { luaScript: entry.LuaScript } : {}),
     ...(entry.AssemblerScript !== undefined ? { assemblerScript: entry.AssemblerScript } : {}),
   });
+  // A script-bearing parent with nested children is acting as a section header
+  // (Cheat Engine's pattern: the script registers symbols / patches code, the
+  // children expose the resulting addresses). The script body itself is CE
+  // machinery and not directly playable; we drop it but recurse into the kids
+  // so leaf entries with literal addresses remain reachable.
+  if (!script.supported && children.length > 0) {
+    return { kind: 'category', name: entryName(entry), children };
+  }
   if (!script.supported) {
     return {
       kind: 'cheat',
@@ -53,6 +62,12 @@ export function convertEntry(entry: CtEntry): ConvertedEntry {
 
   const valueType = entry.VariableType ? mapCtType(entry.VariableType) : undefined;
   if (!valueType || !entry.Address) {
+    // Pointer-base entries often look like this: an address (e.g. `pSelectedCharacter`)
+    // but no VariableType because they're meant to be the parent of nested
+    // offset-relative children. Surface as a section so children remain reachable.
+    if (children.length > 0) {
+      return { kind: 'category', name: entryName(entry), children };
+    }
     return {
       kind: 'cheat',
       cheat: {
@@ -70,6 +85,9 @@ export function convertEntry(entry: CtEntry): ConvertedEntry {
   const address = parseAddress(entry.Address, offsets.length > 0 ? offsets : undefined);
 
   if (!address) {
+    if (children.length > 0) {
+      return { kind: 'category', name: entryName(entry), children };
+    }
     return {
       kind: 'cheat',
       cheat: {

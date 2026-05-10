@@ -17,9 +17,9 @@ function LuaHeavyBanner({ supported, total, sourceUrl }: { supported: number; to
   const pct = total > 0 ? Math.round((supported / total) * 100) : 0;
   return (
     <div className="text-xs text-neon-cyan border border-neon-cyan/40 bg-neon-cyan/[0.06] rounded-sm px-3 py-2">
-      <div className="font-semibold mb-1">Mostly Lua-driven trainer</div>
+      <div className="font-semibold mb-1">Limited cheat support</div>
       <div className="text-muted">
-        Only {supported}/{total} entries ({pct}%) are statically supported. The rest rely on Cheat Engine&apos;s Lua runtime, which Starlight can&apos;t evaluate yet.
+        {supported}/{total} entries ({pct}%) have literal addresses Starlight can read directly. The rest rely on Cheat Engine&apos;s assembler-script and Lua runtime — entries appear here for navigation but won&apos;t toggle correctly.
       </div>
       {sourceUrl && (
         <div className="mt-2">

@@ -5,8 +5,12 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": "./dist/index.js" },
-  "bin": { "starlight-import-ct": "./dist/cli.js" },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "starlight-import-ct": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",

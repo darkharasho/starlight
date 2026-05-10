@@ -83,6 +83,53 @@ describe('convertEntry', () => {
     expect(r.children).toHaveLength(1);
   });
 
+  it('treats a script-bearing entry with children as a category, not an unsupported leaf', () => {
+    // Real-world pattern: a parent entry has an AssemblerScript that registers
+    // symbols / patches code, and its children expose the resulting addresses.
+    // The parent should surface as a section so children remain reachable.
+    const entry: CtEntry = {
+      ID: 100,
+      Description: '"[X] <- Find Selected Character"',
+      AssemblerScript: '[ENABLE]\naobscanmodule(...)\n[DISABLE]',
+      CheatEntries: { CheatEntry: [{
+        ID: 101, Description: '"Health"', VariableType: '4 Bytes', Address: '"x.exe"+1234',
+      }] },
+    };
+    const r = convertEntry(entry);
+    expect(r.kind).toBe('category');
+    if (r.kind !== 'category') return;
+    expect(r.name).toBe('[X] <- Find Selected Character');
+    expect(r.children).toHaveLength(1);
+  });
+
+  it('treats a parent without VariableType but with children as a category', () => {
+    // Pointer-base entries: address points to a struct, children offset off it.
+    const entry: CtEntry = {
+      ID: 200,
+      Description: '"Selected Character"',
+      Address: 'pSelectedCharacter',
+      CheatEntries: { CheatEntry: [{
+        ID: 201, Description: '"Gold"', VariableType: '8 Bytes', Address: '"x.exe"+5678',
+      }] },
+    };
+    const r = convertEntry(entry);
+    expect(r.kind).toBe('category');
+    if (r.kind !== 'category') return;
+    expect(r.children).toHaveLength(1);
+  });
+
+  it('still flags a script-bearing leaf (no children) as unsupported', () => {
+    const entry: CtEntry = {
+      ID: 99,
+      Description: '"Asm cheat"',
+      AssemblerScript: '[ENABLE]\nfoo:\n  ret\n[DISABLE]',
+    };
+    const r = convertEntry(entry);
+    expect(r.kind).toBe('cheat');
+    if (r.kind !== 'cheat') return;
+    expect(r.cheat.unsupported).toBe(true);
+  });
+
   it('flags Lua scripts as unsupported', () => {
     const entry: CtEntry = {
       ID: 5,
