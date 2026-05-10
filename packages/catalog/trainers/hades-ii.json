@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "hades-ii",
+  "game": {
+    "name": "Hades II",
+    "steamAppId": 1145350,
+    "processName": ["Hades2.exe"],
+    "platform": ["windows"]
+  },
+  "metadata": {
+    "author": "Starlight community",
+    "source": {
+      "url": "https://fearlessrevolution.com/viewtopic.php?t=25202",
+      "convertedFrom": ".CT"
+    },
+    "convertedAt": "2026-05-09T00:00:00.000Z"
+  },
+  "categories": [
+    {
+      "name": "Player",
+      "cheats": [
+        {
+          "id": "hades-ii-godmode",
+          "name": "God Mode",
+          "type": "toggle",
+          "valueType": "uint32",
+          "address": { "kind": "absolute", "address": "0x0" },
+          "hotkeys": { "toggle": "F1" }
+        }
+      ]
+    }
+  ]
+}

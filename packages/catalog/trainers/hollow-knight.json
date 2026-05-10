@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "hollow-knight",
+  "game": {
+    "name": "Hollow Knight",
+    "steamAppId": 367520,
+    "processName": ["hollow_knight.exe"],
+    "platform": ["windows"]
+  },
+  "metadata": {
+    "author": "Starlight community",
+    "source": {
+      "url": "https://fearlessrevolution.com/viewtopic.php?t=3804",
+      "convertedFrom": ".CT"
+    },
+    "convertedAt": "2026-05-09T00:00:00.000Z"
+  },
+  "categories": [
+    {
+      "name": "Player",
+      "cheats": [
+        {
+          "id": "hollow-knight-godmode",
+          "name": "God Mode",
+          "type": "toggle",
+          "valueType": "uint32",
+          "address": { "kind": "absolute", "address": "0x0" },
+          "hotkeys": { "toggle": "F1" }
+        }
+      ]
+    }
+  ]
+}

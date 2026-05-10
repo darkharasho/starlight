@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "elden-ring",
+  "game": {
+    "name": "Elden Ring",
+    "steamAppId": 1245620,
+    "processName": ["eldenring.exe"],
+    "platform": ["windows"]
+  },
+  "metadata": {
+    "author": "Starlight community",
+    "source": {
+      "url": "https://fearlessrevolution.com/viewtopic.php?t=17079",
+      "convertedFrom": ".CT"
+    },
+    "convertedAt": "2026-05-09T00:00:00.000Z"
+  },
+  "categories": [
+    {
+      "name": "Player",
+      "cheats": [
+        {
+          "id": "elden-ring-godmode",
+          "name": "God Mode",
+          "type": "toggle",
+          "valueType": "uint32",
+          "address": { "kind": "absolute", "address": "0x0" },
+          "hotkeys": { "toggle": "F1" }
+        }
+      ]
+    }
+  ]
+}
