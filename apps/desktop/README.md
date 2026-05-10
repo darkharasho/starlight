@@ -91,6 +91,13 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 16. **Manual tile boxart:** if your manual entry's exe basename matches a catalog game's `processName[]` (e.g. `eldenring.exe`), Starlight renders that game's Steam CDN cover. Otherwise the tile shows a name-only placeholder (until Phase 5.5 adds SteamGridDB fallback).
 17. **Remove a manual entry:** hover a manual tile and click the `×` in the top-right. Confirms before removing from your config.
 
+## Phase 5.3 demo additions
+
+18. **Rebind a hotkey:** open a trainer → on any cheat card click the ✎ next to a hotkey badge → press your new key combo (e.g. `Ctrl+Shift+G`). The new accelerator binds live. Press Esc to cancel.
+19. **Clear a hotkey:** click the ↺ button to remove the override and (if there was a default) restore it. Click ↺ again to clear the default for that slot.
+20. **Conflict detection:** if your new accelerator is already bound to another cheat in this trainer, an inline error appears and the rebind is rejected before reaching the OS.
+21. **Persistence:** overrides save per-trainer-per-cheat to `<userData>/config.json` and re-apply automatically next time you open that trainer.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
@@ -98,7 +105,7 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 - Catalog repo + community trainer index — DONE — Phase 5.0
 - User config persistence (processName overrides, recents, preferences, manual games, hotkey overrides) — DONE — Phase 5.1
 - Manual library entries UI — DONE — Phase 5.2
-- Hotkey rebinding UI + `HotkeyCapture` — Phase 5.3
+- Hotkey rebinding UI + `HotkeyCapture` — DONE — Phase 5.3
 - Indexer (`packages/indexer/`) — Phase 5.4
 - SteamGridDB boxart fallback — Phase 5.5
 - Epic / Heroic / Lutris scanners (replace 4.5 stubs) — Phase 5.6
