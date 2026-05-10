@@ -113,6 +113,18 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
     `steamAppId` and `tags` are optional but recommended. Direct `.CT` and `.zip`
     (containing one `.CT`) URLs are both supported.
 
+## Phase 5.5 demo additions
+
+25. **SteamGridDB fallback:** non-Steam games (manual entries, future Epic/Heroic/Lutris)
+    that don't have a Steam CDN cover now fall back to SteamGridDB grid art. Set
+    `STEAMGRIDDB_API_KEY=<your-key>` in your environment before launching the app to
+    enable. Without the key, tiles continue to show the existing name-only placeholder.
+26. **Cache:** resolved URLs are cached in `<userData>/boxart-cache.json`. Positive results
+    are cached indefinitely; negative results (no art found) refresh after 24h. Delete the
+    cache file to force a re-resolve.
+27. **Get a key:** sign up at https://www.steamgriddb.com/profile/preferences/api and
+    create an API key. Free, rate-limited (sufficient for personal use).
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
@@ -122,6 +134,6 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 - Manual library entries UI — DONE — Phase 5.2
 - Hotkey rebinding UI + `HotkeyCapture` — DONE — Phase 5.3
 - Periodic indexer — DONE — Phase 5.4
-- SteamGridDB boxart fallback — Phase 5.5
+- SteamGridDB boxart fallback — DONE — Phase 5.5
 - Epic / Heroic / Lutris scanners (replace 4.5 stubs) — Phase 5.6
 - Astro product page real content — Phase 5.7
