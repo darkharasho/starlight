@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, globalShortcut, dialog } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
-import { syncCheatState, unregisterAll as unregisterHotkeys } from './hotkey-host.js';
+import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
@@ -150,9 +150,29 @@ app.whenReady().then(async () => {
     return { ok: true as const, path: result.filePaths[0]! };
   });
 
-  // TODO(phase-5.3 task 4): placeholder — replaced in task 4
-  ipcMain.handle(CHANNELS.rebindHotkey, async () =>
-    ({ ok: false, error: 'unknown' as const, message: 'rebindHotkey not yet wired' }));
+  ipcMain.handle(CHANNELS.rebindHotkey, async (_evt, req: import('../shared/ipc.js').RebindHotkeyRequest):
+    Promise<import('../shared/ipc.js').RebindHotkeyResult> => {
+    const trainer = engineHost.getActiveTrainer();
+    if (!trainer || trainer.id !== req.trainerId) {
+      return { ok: false, error: 'no-active-trainer' };
+    }
+    // Build the new override patch.
+    const cfg = await getConfig();
+    const trainerOverrides = { ...(cfg.hotkeyOverrides[req.trainerId] ?? {}) };
+    const cheatOverride = { ...(trainerOverrides[req.cheatId] ?? {}) };
+    cheatOverride[req.slot] = req.accelerator;        // null clears, string overrides
+    trainerOverrides[req.cheatId] = cheatOverride;
+    const next = await updateConfig({
+      hotkeyOverrides: { ...cfg.hotkeyOverrides, [req.trainerId]: trainerOverrides },
+    });
+    // Re-register live with the merged overrides.
+    registerHotkeysForTrainer(trainer, next.hotkeyOverrides[req.trainerId] ?? {});
+    // Broadcast config:changed so the renderer's config-store updates.
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event, { type: 'config:changed', config: next });
+    }
+    return { ok: true };
+  });
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
