@@ -69,6 +69,26 @@ export function SettingsRoute(): JSX.Element {
           />
         </label>
       </div>
+
+      <div className="mt-8 pt-6 border-t border-line max-w-[480px]">
+        <h2 className="text-[10px] tracking-wider uppercase text-muted mb-2">Attributions</h2>
+        <div className="text-xs text-muted leading-relaxed">
+          Starlight uses{' '}
+          <a href="https://github.com/cheat-engine/cheat-engine" target="_blank" rel="noreferrer"
+             className="text-neon-cyan hover:underline">Cheat Engine</a>{' '}
+          as its trainer engine. Cheat Engine is licensed under the{' '}
+          <a href="https://www.gnu.org/licenses/gpl-2.0.html" target="_blank" rel="noreferrer"
+             className="text-neon-cyan hover:underline">GNU General Public License v2</a>.
+          The Linux build downloaded by Starlight is unmodified from upstream; sources are available at
+          <a href="https://github.com/cheat-engine/cheat-engine" target="_blank" rel="noreferrer"
+             className="text-neon-cyan hover:underline"> github.com/cheat-engine/cheat-engine</a>.
+        </div>
+        <div className="text-[10px] text-muted/80 mt-3">
+          Runtime tarballs hosted at{' '}
+          <a href="https://github.com/darkharasho/starlight-runtimes" target="_blank" rel="noreferrer"
+             className="hover:text-neon-cyan">github.com/darkharasho/starlight-runtimes</a>.
+        </div>
+      </div>
     </>
   );
 }
