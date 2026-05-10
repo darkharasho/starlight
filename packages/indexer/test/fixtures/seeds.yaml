@@ -1,0 +1,12 @@
+games:
+  - url: https://example.com/elden-ring.zip
+    name: Elden Ring
+    steamAppId: 1245620
+    processName: [eldenring.exe]
+    platform: [windows]
+    tags: [souls, rpg]
+  - url: https://example.com/stardew.CT
+    name: Stardew Valley
+    steamAppId: 413150
+    processName: ["Stardew Valley.exe"]
+    platform: [windows]
