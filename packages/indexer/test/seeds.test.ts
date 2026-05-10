@@ -81,4 +81,30 @@ describe('readSeeds', () => {
   it('throws when file does not exist', async () => {
     await expect(readSeeds('/nonexistent/seeds.yaml')).rejects.toThrow();
   });
+
+  it('round-trips optional rawTitle', async () => {
+    const path = join(__dirname, 'fixtures', 'with-raw-title.yaml');
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(path,
+      `games:\n  - url: https://x\n    name: Foo\n    rawTitle: "Foo (Steam) — Cheat Table"\n    processName: [foo.exe]\n    platform: [windows]\n`);
+    try {
+      const seeds = await readSeeds(path);
+      expect(seeds[0]!.rawTitle).toBe('Foo (Steam) — Cheat Table');
+    } finally {
+      await fs.unlink(path);
+    }
+  });
+
+  it('omits rawTitle when not present in YAML', async () => {
+    const path = join(__dirname, 'fixtures', 'without-raw-title.yaml');
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(path,
+      `games:\n  - url: https://x\n    name: Foo\n    processName: [foo.exe]\n    platform: [windows]\n`);
+    try {
+      const seeds = await readSeeds(path);
+      expect(seeds[0]!.rawTitle).toBeUndefined();
+    } finally {
+      await fs.unlink(path);
+    }
+  });
 });

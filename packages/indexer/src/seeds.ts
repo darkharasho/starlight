@@ -8,6 +8,8 @@ export interface SeedEntry {
   processName: string[];
   platform: ('windows' | 'linux' | 'macos')[];
   tags?: string[];
+  /** Original forum thread title before cleanup, when discovered (optional). */
+  rawTitle?: string;
 }
 
 interface RawSeed {
@@ -17,6 +19,7 @@ interface RawSeed {
   processName?: unknown;
   platform?: unknown;
   tags?: unknown;
+  rawTitle?: unknown;
 }
 
 export async function readSeeds(path: string): Promise<SeedEntry[]> {
@@ -54,6 +57,9 @@ function validateEntry(raw: unknown, index: number): SeedEntry {
   };
   if (Array.isArray(r.tags) && r.tags.every(t => typeof t === 'string')) {
     out.tags = r.tags as string[];
+  }
+  if (typeof r.rawTitle === 'string' && r.rawTitle.length > 0) {
+    out.rawTitle = r.rawTitle;
   }
   return out;
 }
