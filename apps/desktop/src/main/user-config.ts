@@ -121,10 +121,10 @@ export async function updateConfigFrom(
 function deepMerge<T>(base: T, patch: unknown): T {
   if (Array.isArray(patch)) return patch as unknown as T;          // arrays replace
   if (patch === null || typeof patch !== 'object') return patch === undefined ? base : (patch as T);
-  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown> | undefined) };
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
-    out[k] = deepMerge((base as Record<string, unknown>)[k], v);
+    out[k] = deepMerge((base as Record<string, unknown> | undefined)?.[k], v);
   }
   return out as T;
 }

@@ -64,7 +64,8 @@ export async function loadTrainer(parentWindow?: BrowserWindow): Promise<LoadTra
     await cancelAllFreezes();
     await applyProcessNameOverride(out.trainer);
     setActiveTrainer(out.trainer);
-    registerForTrainer(out.trainer);
+    const cfg = await getConfig();
+    registerForTrainer(out.trainer, cfg.hotkeyOverrides[out.trainer.id] ?? {});
     processHost.setTrainerProcessNames(out.trainer.game.processName);
     try { await pushRecent(out.trainer, 'file'); } catch { /* ignore — recents push must not break trainer load */ }
     return { ok: true, trainer: out.trainer, stats: out.stats };
@@ -78,7 +79,8 @@ export async function setTrainerFromCatalog(trainer: StarlightTrainer): Promise<
     await cancelAllFreezes();
     await applyProcessNameOverride(trainer);
     setActiveTrainer(trainer);
-    registerForTrainer(trainer);
+    const cfg = await getConfig();
+    registerForTrainer(trainer, cfg.hotkeyOverrides[trainer.id] ?? {});
     processHost.setTrainerProcessNames(trainer.game.processName);
     try { await pushRecent(trainer, 'catalog'); } catch { /* ignore — recents push must not break trainer load */ }
     return { ok: true };
