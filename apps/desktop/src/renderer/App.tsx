@@ -27,6 +27,17 @@ export default function App(): JSX.Element {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    const unsub = window.starlight.onEvent((e) => {
+      if (e.type === 'config:corrupted') {
+        window.alert(
+          `Your Starlight config was unreadable and has been backed up to:\n\n${e.backupPath}\n\nDefault settings have been restored.`,
+        );
+      }
+    });
+    return unsub;
+  }, []);
   return (
     <div className="flex flex-col h-screen">
       <TitleBar />
