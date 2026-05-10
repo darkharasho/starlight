@@ -98,6 +98,21 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 20. **Conflict detection:** if your new accelerator is already bound to another cheat in this trainer, an inline error appears and the rebind is rejected before reaching the OS.
 21. **Persistence:** overrides save per-trainer-per-cheat to `<userData>/config.json` and re-apply automatically next time you open that trainer.
 
+## Phase 5.4 demo additions
+
+22. **Indexer:** `pnpm --filter @starlight/indexer build && node packages/indexer/dist/index.js`
+    reads `packages/indexer/seeds.yaml`, downloads each URL (direct `.CT` or zip-with-CT),
+    runs `@starlight/ct-importer`, writes `packages/catalog/trainers/<id>.json`, and
+    regenerates `packages/catalog/index.json`. Idempotent via SHA-256 cache.
+23. **Cron:** `.github/workflows/indexer.yml` runs the indexer weekly (Sunday 06:00 UTC) +
+    on demand. Opens a PR with the diff via `peter-evans/create-pull-request`. Authorize
+    the action in repo Settings → Actions → "Allow GitHub Actions to create and approve
+    pull requests" before the first run.
+24. **Curate seeds:** edit `packages/indexer/seeds.yaml` with the fearlessrevolution URLs
+    you want indexed. Each entry needs `url`, `name`, `processName[]`, `platform[]`;
+    `steamAppId` and `tags` are optional but recommended. Direct `.CT` and `.zip`
+    (containing one `.CT`) URLs are both supported.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
@@ -106,7 +121,7 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
 - User config persistence (processName overrides, recents, preferences, manual games, hotkey overrides) — DONE — Phase 5.1
 - Manual library entries UI — DONE — Phase 5.2
 - Hotkey rebinding UI + `HotkeyCapture` — DONE — Phase 5.3
-- Indexer (`packages/indexer/`) — Phase 5.4
+- Periodic indexer — DONE — Phase 5.4
 - SteamGridDB boxart fallback — Phase 5.5
 - Epic / Heroic / Lutris scanners (replace 4.5 stubs) — Phase 5.6
 - Astro product page real content — Phase 5.7
