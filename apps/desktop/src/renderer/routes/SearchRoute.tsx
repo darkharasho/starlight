@@ -30,7 +30,7 @@ export function SearchRoute(): JSX.Element {
     : [];
 
   async function onSelect(g: CatalogGame): Promise<void> {
-    const trainer = await fetchTrainer(g.trainerPath);
+    const trainer = await fetchTrainer(g);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);
     navigate('/active');

@@ -71,21 +71,57 @@ describe('catalog-store', () => {
     expect(useCatalogStore.getState().error).toMatch(/boom/);
   });
 
+  const sampleEntry = {
+    id: 'a',
+    name: 'A',
+    steamAppId: null,
+    processName: ['a.exe'],
+    platform: ['windows' as const],
+    trainerPath: 'trainers/a.json',
+  };
+
   it('trainer() returns null on error', async () => {
     setStarlightApi(fakeApi({ fetchTrainer: async () => ({ ok: false, error: 'nope' }) }));
     const { useCatalogStore } = await import('../../src/renderer/stores/catalog-store.js');
     useCatalogStore.setState({ index: null, loading: false, error: null });
-    const t = await useCatalogStore.getState().trainer('trainers/a.json');
+    const t = await useCatalogStore.getState().trainer(sampleEntry);
     expect(t).toBeNull();
   });
 
-  it('trainer() memoizes per trainerPath', async () => {
+  it('trainer() memoizes per entry id', async () => {
     let calls = 0;
     setStarlightApi(fakeApi({ fetchTrainer: async () => { calls++; return { ok: true, trainer: sampleTrainer }; } }));
     const { useCatalogStore } = await import('../../src/renderer/stores/catalog-store.js');
     useCatalogStore.setState({ index: null, loading: false, error: null });
-    await useCatalogStore.getState().trainer('trainers/a.json');
-    await useCatalogStore.getState().trainer('trainers/a.json');
+    await useCatalogStore.getState().trainer(sampleEntry);
+    await useCatalogStore.getState().trainer(sampleEntry);
     expect(calls).toBe(1);
+  });
+
+  it('trainer() returns null when entry has neither trainerPath nor trainerSource', async () => {
+    setStarlightApi(fakeApi({ fetchTrainer: async () => ({ ok: true, trainer: sampleTrainer }) }));
+    const { useCatalogStore } = await import('../../src/renderer/stores/catalog-store.js');
+    useCatalogStore.setState({ index: null, loading: false, error: null });
+    const t = await useCatalogStore.getState().trainer({ ...sampleEntry, id: 'no-source', trainerPath: undefined });
+    expect(t).toBeNull();
+  });
+
+  it('trainer() routes trainerSource entries through fetchTrainer', async () => {
+    let receivedReq: { trainerSource?: string } | null = null;
+    setStarlightApi(fakeApi({
+      fetchTrainer: async (req) => { receivedReq = req as { trainerSource?: string }; return { ok: true, trainer: sampleTrainer }; },
+    }));
+    const { useCatalogStore } = await import('../../src/renderer/stores/catalog-store.js');
+    useCatalogStore.setState({ index: null, loading: false, error: null });
+    const liveEntry = {
+      id: 'live',
+      name: 'Live',
+      steamAppId: null,
+      processName: [],
+      platform: ['windows' as const],
+      trainerSource: 'https://fearlessrevolution.com/viewtopic.php?f=4&t=1',
+    };
+    await useCatalogStore.getState().trainer(liveEntry);
+    expect(receivedReq?.trainerSource).toBe('https://fearlessrevolution.com/viewtopic.php?f=4&t=1');
   });
 });

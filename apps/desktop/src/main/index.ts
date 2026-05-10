@@ -6,6 +6,8 @@ import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer 
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
+import { fetchTrainerLive } from './trainer-live-fetch.js';
+import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { join } from 'node:path';
@@ -119,9 +121,23 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.setTrainerFromCatalog, async (_evt, req: { trainer: import('@starlight/ct-importer').StarlightTrainer }) =>
     setTrainerFromCatalog(req.trainer));
 
-  ipcMain.handle(CHANNELS.fetchTrainer, async (_evt, req: { trainerPath: string }) => {
+  ipcMain.handle(CHANNELS.fetchTrainer, async (_evt, req: FetchTrainerRequest) => {
     try {
-      const trainer = await fetchTrainer(req.trainerPath);
+      let trainer;
+      if (req.trainerPath) {
+        trainer = await fetchTrainer(req.trainerPath);
+      } else if (req.trainerSource) {
+        const liveOpts: Parameters<typeof fetchTrainerLive>[1] = {
+          id: req.id,
+          name: req.name,
+          processName: req.processName,
+          platform: req.platform,
+        };
+        if (req.refresh !== undefined) liveOpts.refresh = req.refresh;
+        trainer = await fetchTrainerLive(req.trainerSource, liveOpts);
+      } else {
+        return { ok: false as const, error: 'fetchTrainer: neither trainerPath nor trainerSource provided' };
+      }
       return { ok: true as const, trainer };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };

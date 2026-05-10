@@ -32,7 +32,7 @@ export function HomeRoute(): JSX.Element {
     if (r.source !== 'catalog' || !index) return;
     const entry = index.games.find(g => g.id === r.id);
     if (!entry) return;
-    const trainer = await fetchTrainer(entry.trainerPath);
+    const trainer = await fetchTrainer(entry);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);
     navigate('/active');
@@ -50,7 +50,7 @@ export function HomeRoute(): JSX.Element {
   const installedCount = installed.length;
 
   async function selectGame(g: CatalogGame): Promise<void> {
-    const trainer = await fetchTrainer(g.trainerPath);
+    const trainer = await fetchTrainer(g);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);
     navigate('/active');

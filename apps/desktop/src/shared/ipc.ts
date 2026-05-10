@@ -81,7 +81,25 @@ export type TrainerResult =
   | { ok: true; trainer: CatalogTrainer }
   | { ok: false; error: string };
 
-export interface FetchTrainerRequest { trainerPath: string }
+/**
+ * Fetch a trainer JSON. The renderer passes the matched catalog entry; the
+ * main process picks the right path:
+ *   - `trainerPath` → static fetch from the catalog CDN (legacy curated entries)
+ *   - `trainerSource` → live fetch from a fearlessrevolution viewtopic URL
+ *     (parses .CT via ct-importer, caches result per-user)
+ *
+ * The hint fields (`name`, `processName`, `platform`) are required for live
+ * fetches because the importer needs them to construct the StarlightTrainer.
+ */
+export interface FetchTrainerRequest {
+  trainerPath?: string;
+  trainerSource?: string;
+  id: string;
+  name: string;
+  processName: string[];
+  platform: ('windows' | 'linux' | 'macos')[];
+  refresh?: boolean;
+}
 
 export type IpcOk<T = void> = T extends void ? { ok: true } : { ok: true; value: T };
 export type IpcErr = { ok: false; error: string };

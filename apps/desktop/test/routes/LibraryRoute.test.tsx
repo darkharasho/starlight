@@ -124,8 +124,8 @@ describe('LibraryRoute', () => {
     let requestedPath: string | null = null;
     const setActive = vi.fn(async () => undefined);
     useCatalogStore.setState({
-      trainer: async (path: string) => {
-        requestedPath = path;
+      trainer: async (entry: { trainerPath?: string }) => {
+        requestedPath = entry.trainerPath ?? null;
         return null;
       },
     } as never);

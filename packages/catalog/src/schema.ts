@@ -8,8 +8,10 @@ export const CatalogIndexEntrySchema = z.object({
   processName: z.array(z.string().min(1)),
   platform: z.array(z.enum(['windows', 'linux', 'macos'])).min(1),
   tags: z.array(z.string()).optional(),
-  trainerPath: z.string().regex(/^trainers\/[a-z0-9-]+\.json$/),
+  /** Static trainer JSON within the catalog package, when pre-built. */
+  trainerPath: z.string().regex(/^trainers\/[a-z0-9-]+\.json$/).optional(),
   trainerUpdatedAt: z.string().optional(),
+  /** Original forum URL — used for live fetching when trainerPath is absent. */
   trainerSource: z.string().url().optional(),
 });
 

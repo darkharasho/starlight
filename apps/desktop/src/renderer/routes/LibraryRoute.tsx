@@ -170,7 +170,7 @@ export function LibraryRoute(): JSX.Element {
   async function openTrainerForGame(g: DetectedGame): Promise<void> {
     const entry = findCatalogEntry(g);
     if (!entry) return;
-    const trainer = await fetchTrainer(entry.trainerPath);
+    const trainer = await fetchTrainer(entry);
     if (!trainer) return;
     await setActiveTrainerFromCatalog(trainer);
     navigate('/active');
