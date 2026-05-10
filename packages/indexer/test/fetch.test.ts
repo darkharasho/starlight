@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { fetchTrainer } from '../src/fetch.js';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -87,5 +88,62 @@ describe('fetchTrainer (zip)', () => {
     serveBytes = Buffer.concat(chunks);
     await start();
     await expect(fetchTrainer(`http://127.0.0.1:${port}/empty.zip`)).rejects.toThrow(/no \.CT/i);
+  });
+});
+
+const VIEWTOPIC_FIXTURE_PATH = join(__dirname, 'fixtures', 'viewtopic-with-attachments.html');
+
+describe('fetchTrainer (viewtopic.php)', () => {
+  it('extracts latest .CT attachment via two-step fetch', async () => {
+    const viewtopicHtml = await readFile(VIEWTOPIC_FIXTURE_PATH, 'utf8');
+    let phase = 'topic';
+    await start((req, res) => {
+      if (phase === 'topic') {
+        if (!req.url || !req.url.includes('viewtopic')) { res.writeHead(400); res.end(); return; }
+        phase = 'attachment';
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(viewtopicHtml);
+      } else {
+        if (!req.url || !req.url.includes('id=75166')) { res.writeHead(400); res.end(); return; }
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(SAMPLE_CT);
+      }
+    });
+    const buf = await fetchTrainer(`http://127.0.0.1:${port}/viewtopic.php?f=4&t=13576`);
+    expect(buf.toString('utf8')).toContain('<CheatTable');
+  });
+
+  it('throws when no attachment is found', async () => {
+    await start((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body><p>No attachments here.</p></body></html>');
+    });
+    await expect(
+      fetchTrainer(`http://127.0.0.1:${port}/viewtopic.php?f=4&t=999`),
+    ).rejects.toThrow(/no \.CT attachment/i);
+  });
+
+  it('prefers .CT over .zip when both present', async () => {
+    const html = `
+      <a class="postlink" href="./download/file.php?id=100">a.ct</a>
+      <a class="postlink" href="./download/file.php?id=200">b.zip</a>
+    `;
+    let phase = 'topic';
+    let pickedId = '';
+    await start((_req, res) => {
+      if (phase === 'topic') {
+        phase = 'attachment';
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(html);
+      } else {
+        const url = _req.url ?? '';
+        pickedId = url.match(/id=(\d+)/)?.[1] ?? '';
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(SAMPLE_CT);
+      }
+    });
+    const buf = await fetchTrainer(`http://127.0.0.1:${port}/viewtopic.php?f=4&t=1`);
+    expect(buf.toString('utf8')).toContain('<CheatTable');
+    expect(pickedId).toBe('100');  // .ct id was chosen
   });
 });

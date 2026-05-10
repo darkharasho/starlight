@@ -3,7 +3,46 @@ import { fromBuffer as openZipFromBuffer, type Entry } from 'yauzl';
 const USER_AGENT = 'starlight-indexer/0.0 (+https://github.com/darkharasho/starlight)';
 const FETCH_TIMEOUT_MS = 30_000;
 
+function isViewtopicUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.pathname.endsWith('/viewtopic.php');
+  } catch {
+    return false;
+  }
+}
+
+async function resolveViewtopicAttachment(topicUrl: string): Promise<string | null> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(topicUrl, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
+      signal: ac.signal,
+      redirect: 'follow',
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) return null;
+  const html = await res.text();
+  const matches = [...html.matchAll(
+    /<a[^>]*href="\.?\/?(download\/file\.php\?id=\d+)"[^>]*>([^<]+\.(?:CT|ct|zip))<\/a>/g,
+  )];
+  if (matches.length === 0) return null;
+  const cts = matches.filter(m => /\.(?:CT|ct)$/.test(m[2]!));
+  const pick = (cts.length > 0 ? cts : matches).at(-1)!;
+  const base = new URL(topicUrl);
+  return new URL(`/${pick[1]}`, `${base.protocol}//${base.host}`).toString();
+}
+
 export async function fetchTrainer(url: string): Promise<Buffer> {
+  if (isViewtopicUrl(url)) {
+    const direct = await resolveViewtopicAttachment(url);
+    if (!direct) throw new Error(`viewtopic ${url}: no .CT attachment found`);
+    return fetchTrainer(direct);
+  }
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
   let res: Response;
