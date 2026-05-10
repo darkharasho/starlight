@@ -56,12 +56,15 @@ engineHost.onDetached((reason) => {
 
 engineHost.onAttachStateChange((attached) => setEngineAttached(attached));
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   setOnCorrupt((backupPath) => {
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.event, { type: 'config:corrupted', backupPath });
     }
   });
+
+  const initialConfig = await getConfig();
+  processHost.setIntervalMs(initialConfig.preferences.pollIntervalMs);
 
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
     loadTrainer(BrowserWindow.getFocusedWindow() ?? undefined));
@@ -121,6 +124,7 @@ app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.getConfig, async () => getConfig());
   ipcMain.handle(CHANNELS.updateConfig, async (_evt, req: { patch: import('../shared/ipc.js').DeepPartial<import('../shared/ipc.js').UserConfig> }) => {
     const next = await updateConfig(req.patch);
+    processHost.setIntervalMs(next.preferences.pollIntervalMs);
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.event, { type: 'config:changed', config: next });
     }

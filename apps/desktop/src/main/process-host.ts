@@ -16,7 +16,7 @@ export class ProcessHost {
   private trainerNames: string[] = [];
   private lastMatchedPid: number | null = null;
 
-  constructor(private readonly opts: ProcessHostOptions) {}
+  constructor(private opts: ProcessHostOptions) {}
 
   start(): void {
     if (this.timer) return;
@@ -31,6 +31,15 @@ export class ProcessHost {
   }
 
   resume(): void { this.start(); }
+
+  setIntervalMs(ms: number): void {
+    if (ms === this.opts.intervalMs) return;
+    this.opts.intervalMs = ms;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = setInterval(() => { void this.tick(); }, this.opts.intervalMs);
+    }
+  }
 
   setTrainerProcessNames(names: string[]): void {
     this.trainerNames = names.map(strip);

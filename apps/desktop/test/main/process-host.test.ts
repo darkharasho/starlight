@@ -86,6 +86,53 @@ describe('ProcessHost', () => {
     host.pause();
   });
 
+  it('setIntervalMs reschedules the timer when running', async () => {
+    const { host, events } = makeHost({
+      psList: async () => [{ pid: 1, name: 'a' }],
+    });
+    host.start();
+    // initial tick fires immediately
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events.filter(e => e.type === 'process:list')).toHaveLength(1);
+
+    // change interval to 500ms; advance 500ms — should fire once more
+    host.setIntervalMs(500);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(events.filter(e => e.type === 'process:list')).toHaveLength(2);
+
+    // advance another 500ms (total 1000ms from reschedule) — third event fires
+    await vi.advanceTimersByTimeAsync(500);
+    expect(events.filter(e => e.type === 'process:list')).toHaveLength(3);
+    host.pause();
+  });
+
+  it('setIntervalMs is a no-op when interval is unchanged', async () => {
+    const { host, events } = makeHost({
+      psList: async () => [{ pid: 1, name: 'a' }],
+    });
+    host.start();
+    await vi.advanceTimersByTimeAsync(0);
+    host.setIntervalMs(1000); // same as construction intervalMs
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(events.filter(e => e.type === 'process:list')).toHaveLength(2);
+    host.pause();
+  });
+
+  it('setIntervalMs while paused takes effect on next start', async () => {
+    const { host, events } = makeHost({
+      psList: async () => [{ pid: 1, name: 'a' }],
+    });
+    host.setIntervalMs(500); // set before start
+    host.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // 500ms interval — fire at 500, not 1000
+    await vi.advanceTimersByTimeAsync(500);
+    expect(events.filter(e => e.type === 'process:list')).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(events.filter(e => e.type === 'process:list')).toHaveLength(3);
+    host.pause();
+  });
+
   it('clearTrainer resets match dedup', async () => {
     let procs: { pid: number; name: string }[] = [{ pid: 1, name: 'target' }];
     const { host, events } = makeHost({ psList: async () => procs });
