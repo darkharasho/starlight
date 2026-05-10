@@ -1,0 +1,16 @@
+---
+import Base from '../layouts/Base.astro';
+
+const baseUrl = import.meta.env.BASE_URL;
+---
+<Base title="Starlight — Not found">
+  <section class="max-w-3xl mx-auto px-6 py-24 text-center flex flex-col items-center gap-4">
+    <div class="text-[10px] tracking-widest uppercase text-neon-pink">404</div>
+    <h1 class="text-3xl font-semibold">Lost in the catalog.</h1>
+    <p class="text-sm text-muted max-w-prose">
+      The page you tried to reach isn't here. The catalog index is at
+      <a href={`${baseUrl}/catalog/index.json`}><code class="text-neon-cyan font-mono">{baseUrl}/catalog/index.json</code></a>;
+      everything else routes from <a href={baseUrl}>the homepage</a>.
+    </p>
+  </section>
+</Base>

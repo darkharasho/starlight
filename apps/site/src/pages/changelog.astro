@@ -1,0 +1,56 @@
+---
+import Base from '../layouts/Base.astro';
+import changelogText from '../content/changelog.md?raw';
+
+interface Block {
+  kind: 'h2' | 'p' | 'ul';
+  text: string;
+  items?: string[];
+}
+
+function parseBlocks(text: string): Block[] {
+  const blocks: Block[] = [];
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    if (line.startsWith('## ')) {
+      blocks.push({ kind: 'h2', text: line.slice(3).trim() });
+      i++;
+    } else if (line.startsWith('- ')) {
+      const items: string[] = [];
+      while (i < lines.length && (lines[i] ?? '').startsWith('- ')) {
+        items.push((lines[i] ?? '').slice(2).trim());
+        i++;
+      }
+      blocks.push({ kind: 'ul', text: '', items });
+    } else if (line.trim().length > 0) {
+      blocks.push({ kind: 'p', text: line.trim() });
+      i++;
+    } else {
+      i++;
+    }
+  }
+  return blocks;
+}
+
+const blocks = parseBlocks(changelogText);
+---
+<Base title="Starlight — Changelog">
+  <section class="max-w-3xl mx-auto px-6 py-16">
+    <h1 class="text-2xl font-semibold mb-8">Changelog</h1>
+    <div class="flex flex-col gap-5">
+      {blocks.map((b) => (
+        b.kind === 'h2' ? (
+          <h2 class="text-[13px] tracking-widest uppercase text-neon-cyan border-b border-line pb-1.5">{b.text}</h2>
+        ) : b.kind === 'p' ? (
+          <p class="text-[13px] text-muted leading-relaxed">{b.text}</p>
+        ) : (
+          <ul class="text-[13px] text-muted leading-relaxed list-disc pl-5">
+            {b.items?.map((it) => (<li>{it}</li>))}
+          </ul>
+        )
+      ))}
+    </div>
+  </section>
+</Base>
