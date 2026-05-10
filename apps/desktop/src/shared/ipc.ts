@@ -23,6 +23,8 @@ export const CHANNELS = {
   pickExecutable: 'starlight:pickExecutable',
   // Phase 5.3
   rebindHotkey: 'starlight:rebindHotkey',
+  // Phase 5.5
+  resolveBoxart: 'starlight:resolveBoxart',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -59,6 +61,15 @@ export interface RebindHotkeyRequest {
 export type RebindHotkeyResult =
   | { ok: true }
   | { ok: false; error: 'no-active-trainer' | 'conflict' | 'invalid' | 'unknown'; message?: string };
+
+export interface ResolveBoxartRequest {
+  name: string;
+  steamAppId?: number;
+}
+
+export interface ResolveBoxartResult {
+  url: string | null;
+}
 
 export type CatalogResult =
   | { ok: true; index: CatalogIndex }
@@ -126,6 +137,8 @@ export interface StarlightApi {
   pickExecutable(): Promise<PickExecutableResult>;
   // Phase 5.3
   rebindHotkey(req: RebindHotkeyRequest): Promise<RebindHotkeyResult>;
+  // Phase 5.5
+  resolveBoxart(req: ResolveBoxartRequest): Promise<ResolveBoxartResult>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;

@@ -174,6 +174,9 @@ app.whenReady().then(async () => {
     return { ok: true };
   });
 
+  // TODO(phase-5.5 task 3): placeholder — replaced in task 3
+  ipcMain.handle(CHANNELS.resolveBoxart, async () => ({ url: null }));
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);
