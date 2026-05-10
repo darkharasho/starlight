@@ -78,12 +78,19 @@ Phase 4.5 adds Library auto-detection, process-picker auto-fill, and Inc/Dec hot
 
 Note: the live catalog URL becomes reachable only after the `Publish Pages` GitHub Actions workflow completes its first run. To enable that workflow on a fresh clone, go to GitHub → repo Settings → Pages → Source: "GitHub Actions" and trigger the workflow (push to main or use Run workflow). Until then, the in-app Browse view will show "Catalog unavailable" with a Retry button.
 
+## Phase 5.1 demo additions
+
+11. **Settings route:** sidebar → Settings → adjust the process-poll interval (500–30000ms) and toggle "Refresh catalog on launch". Changes persist to `<userData>/config.json` and apply live.
+12. **Recently Played:** Home tab now shows the last 6 trainers you opened. Catalog entries are clickable; file-loaded `.CT` entries are display-only.
+13. **Process-name override persistence:** in Active Trainer → Trainer Info, edit the process name. The change is saved per-trainer and re-applied next time you open it.
+14. **Corrupt config recovery:** if `config.json` ever becomes unreadable, Starlight backs it up as `config.json.corrupt-<ts>` and starts fresh.
+
 ## Phase 4.5 / 5 deferred items
 - Library auto-detection (Steam) — DONE — Phase 4.5
 - Process auto-detection — DONE — Phase 4.5
 - Inc/Dec hotkeys for value cheats — DONE — Phase 4.5
 - Catalog repo + community trainer index — DONE — Phase 5.0
-- User config persistence (processName overrides, recents, preferences, manual games, hotkey overrides) — Phase 5.1
+- User config persistence (processName overrides, recents, preferences, manual games, hotkey overrides) — DONE — Phase 5.1
 - Manual library entries UI — Phase 5.2
 - Hotkey rebinding UI + `HotkeyCapture` — Phase 5.3
 - Indexer (`packages/indexer/`) — Phase 5.4
