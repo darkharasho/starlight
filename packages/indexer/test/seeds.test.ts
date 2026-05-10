@@ -45,10 +45,22 @@ describe('readSeeds', () => {
     }
   });
 
-  it('rejects empty processName array', async () => {
-    const bad = join(__dirname, 'fixtures', 'empty-pn.yaml');
+  it('accepts empty processName array (auto-discovered seeds may not know it yet)', async () => {
+    const yaml = join(__dirname, 'fixtures', 'empty-pn.yaml');
     const fs = await import('node:fs/promises');
-    await fs.writeFile(bad, 'games:\n  - url: https://x\n    name: x\n    processName: []\n    platform: [windows]\n');
+    await fs.writeFile(yaml, 'games:\n  - url: https://x\n    name: x\n    processName: []\n    platform: [windows]\n');
+    try {
+      const seeds = await readSeeds(yaml);
+      expect(seeds[0]!.processName).toEqual([]);
+    } finally {
+      await fs.unlink(yaml);
+    }
+  });
+
+  it('rejects processName array with non-string entries', async () => {
+    const bad = join(__dirname, 'fixtures', 'bad-pn.yaml');
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(bad, 'games:\n  - url: https://x\n    name: x\n    processName: [""]\n    platform: [windows]\n');
     try {
       await expect(readSeeds(bad)).rejects.toThrow(/processName/i);
     } finally {

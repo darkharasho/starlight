@@ -42,7 +42,7 @@ function validateEntry(raw: unknown, index: number): SeedEntry {
   if (typeof r.name !== 'string' || r.name.length === 0) {
     throw new Error(`seeds.yaml: entry ${index} missing required "name"`);
   }
-  if (!Array.isArray(r.processName) || r.processName.length === 0 || r.processName.some(p => typeof p !== 'string' || p.length === 0)) {
+  if (!Array.isArray(r.processName) || r.processName.some(p => typeof p !== 'string' || p.length === 0)) {
     throw new Error(`seeds.yaml: entry ${index} ("${r.name}") missing/invalid "processName"`);
   }
   if (!Array.isArray(r.platform) || r.platform.length === 0 || r.platform.some(p => p !== 'windows' && p !== 'linux' && p !== 'macos')) {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer, type Server } from 'node:http';
 import { discover } from '../src/discover.js';
+import { readSeeds } from '../src/seeds.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -119,5 +120,25 @@ describe('discover', () => {
     const text = await readFile(seedsPath, 'utf8');
     expect(text).toContain('Existing');
     expect(text).toContain('https://existing');
+  });
+
+  it('writes seeds.yaml that readSeeds() accepts (round-trip contract)', async () => {
+    const html = await readFile(FORUM_FIXTURE, 'utf8');
+    await startServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
+    });
+    await discover({
+      forumBase: `http://127.0.0.1:${port}/viewforum.php`,
+      forums: [4],
+      seedsPath,
+      sleepMs: 0,
+      pageLimit: 1,
+      loadSteamMap: async () => new Map(),
+    });
+    const seeds = await readSeeds(seedsPath);
+    expect(seeds.length).toBeGreaterThan(0);
+    expect(seeds[0]!.processName).toEqual([]);
+    expect(seeds[0]!.platform).toEqual(['windows']);
   });
 });
