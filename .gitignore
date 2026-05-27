@@ -21,3 +21,4 @@ packages/ct-importer/test/fixtures/real/
 apps/*/out
 apps/*/dist
 package-lock.json
+graphify-out/
