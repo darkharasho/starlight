@@ -12,6 +12,24 @@ export interface DownloadOpts {
   refresh?: boolean;
 }
 
+/**
+ * Highest CheatTable version the bundled Cheat Engine understands. Tables saved
+ * by a newer CE trigger a blocking "made in a newer version" dialog on load,
+ * which stalls the headless session. We currently bundle CE 7.5 (table v45).
+ * (Bundling a newer CE would let us raise/remove this.)
+ */
+const MAX_CT_VERSION = 45;
+
+/**
+ * Clamps CheatEngineTableVersion down to what the bundled CE supports so the
+ * table loads silently. Leaves already-supported tables untouched.
+ */
+export function clampCtVersion(ct: string, maxVersion = MAX_CT_VERSION): string {
+  return ct.replace(/(CheatEngineTableVersion=")(\d+)(")/i, (whole, pre, num, post) => {
+    return Number(num) > maxVersion ? `${pre}${maxVersion}${post}` : whole;
+  });
+}
+
 export async function downloadCtToDisk(opts: DownloadOpts): Promise<{ ctPath: string }> {
   await mkdir(opts.cacheDir, { recursive: true });
   const ctPath = join(opts.cacheDir, `${opts.cacheKey}.ct`);
@@ -20,7 +38,7 @@ export async function downloadCtToDisk(opts: DownloadOpts): Promise<{ ctPath: st
     catch { /* miss — proceed */ }
   }
   const buf = await fetchCtBytes(opts.source);
-  await writeFile(ctPath, buf);
+  await writeFile(ctPath, clampCtVersion(buf.toString('utf8')), 'utf8');
   return { ctPath };
 }
 
