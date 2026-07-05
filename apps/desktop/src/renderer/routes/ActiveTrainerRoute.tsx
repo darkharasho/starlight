@@ -5,7 +5,7 @@ import { useProcessStore, attachProcessEvents } from '../stores/process-store.js
 import { useConfigStore } from '../stores/config-store.js';
 import { useCeSessionStore } from '../stores/ce-session-store.js';
 import { findConflict, resolveCheatHotkeys } from '../lib/accelerator.js';
-import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer, CeSessionRecord } from '../../shared/ipc.js';
+import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer, CeSessionRecord, DetectedProcess } from '../../shared/ipc.js';
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
 import { ValueCheatCard } from '../components/cheat-cards/ValueCheatCard.js';
 import { UnsupportedCheatCard } from '../components/cheat-cards/UnsupportedCheatCard.js';
@@ -59,6 +59,12 @@ export function ActiveTrainerRoute(): JSX.Element {
   const cePending = useCeSessionStore((s) => s.pending);
   const ceSetActive = useCeSessionStore((s) => s.setActive);
   const ceEnd = useCeSessionStore((s) => s.end);
+  const ceAttached = useCeSessionStore((s) => s.attached);
+  const ceProton = useCeSessionStore((s) => s.proton);
+  const ceAttachedTo = useCeSessionStore((s) => s.attachedTo);
+  const ceAttach = useCeSessionStore((s) => s.attach);
+  const ceStarting = useCeSessionStore((s) => s.starting);
+  const ceStartError = useCeSessionStore((s) => s.startError);
 
   const trainer = useTrainerStore((s) => s.trainer);
   const activeCheats = useTrainerStore((s) => s.activeCheats);
@@ -118,7 +124,10 @@ export function ActiveTrainerRoute(): JSX.Element {
   }
 
   if (ceSessionId) {
-    return <CeSessionView records={ceRecords} pending={cePending} setActive={ceSetActive} end={ceEnd} />;
+    return <CeSessionView records={ceRecords} pending={cePending} setActive={ceSetActive} end={ceEnd}
+                          attached={ceAttached} proton={ceProton} attachedTo={ceAttachedTo}
+                          attach={ceAttach} starting={ceStarting} startError={ceStartError}
+                          processes={processes} />;
   }
 
   if (!trainer) {
@@ -416,14 +425,22 @@ function TrainerInfoDisclosure({
   );
 }
 
-function CeSessionView({ records, pending, setActive, end }: {
+function CeSessionView({ records, pending, setActive, end, attached, proton, attachedTo, attach, starting, startError, processes }: {
   records: CeSessionRecord[];
   pending: Set<number>;
   setActive: (id: number, active: boolean) => Promise<void>;
   end: () => Promise<void>;
+  attached: boolean;
+  proton: boolean;
+  attachedTo: { pid: number; name?: string | undefined } | null;
+  attach: (pid: number, name?: string) => Promise<boolean>;
+  starting: boolean;
+  startError: string | null;
+  processes: DetectedProcess[];
 }): JSX.Element {
   const visible = records.filter((r) => !r.isGroupHeader);
   const headers = records.filter((r) => r.isGroupHeader);
+  const [selPid, setSelPid] = useState<number | ''>('');
   return (
     <div className="flex flex-col h-full gap-3">
       <div className="flex items-baseline justify-between">
@@ -436,6 +453,39 @@ function CeSessionView({ records, pending, setActive, end }: {
           End session
         </button>
       </div>
+
+      {/* Attach bar — cheats can't act until CE is attached to the running game. */}
+      {attached ? (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-sm border border-neon-green/50 bg-neon-green/[0.06] text-[11px]">
+          <span className="text-neon-green font-semibold">● Attached</span>
+          <span className="text-muted">
+            {attachedTo?.name ?? 'process'}{attachedTo ? ` (pid ${attachedTo.pid})` : ''}
+            {proton ? ' · Proton (Windows CE in prefix)' : ' · native'}
+          </span>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5 px-3 py-2 rounded-sm border border-neon-pink/40 bg-neon-pink/[0.05]">
+          <div className="text-[11px] text-muted">
+            Not attached — cheats won't apply until you select the running game process.
+          </div>
+          <div className="flex items-center gap-2">
+            <select value={selPid} onChange={(e) => setSelPid(e.target.value ? Number(e.target.value) : '')}
+                    className="flex-1 min-w-0 bg-panel border border-line rounded-sm px-2 py-1 text-[11px] text-muted">
+              <option value="">Select running process…</option>
+              {[...processes].sort((a, b) => a.name.localeCompare(b.name)).map((p) => (
+                <option key={p.pid} value={p.pid}>{p.name} (pid {p.pid})</option>
+              ))}
+            </select>
+            <button type="button" disabled={selPid === '' || starting}
+                    onClick={() => { const p = processes.find((x) => x.pid === selPid); if (p) void attach(p.pid, p.name); }}
+                    className={`px-3 py-1 text-[11px] rounded-sm border ${selPid === '' || starting ? 'border-line text-muted opacity-50' : 'border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]'}`}>
+              {starting ? 'Attaching…' : 'Attach'}
+            </button>
+          </div>
+          {startError && <div className="text-[10px] text-neon-pink">{startError}</div>}
+        </div>
+      )}
+
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
         {records.map((r) => (
           <div key={r.id} className={`flex items-center gap-3 px-3 py-2 rounded-sm border ${r.isGroupHeader ? 'border-line bg-panel/40' : 'border-line bg-panel'} ${r.isActive ? 'border-neon-cyan/60' : ''}`}>

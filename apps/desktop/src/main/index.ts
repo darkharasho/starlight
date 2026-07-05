@@ -228,15 +228,17 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { source: string; cacheKey: string }) => {
+  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { source: string; cacheKey: string; pid?: number; processName?: string }) => {
     try {
       const r = await ceStartSession({
         source: req.source,
         cacheKey: req.cacheKey,
         runtimeRoot: CE_RUNTIME_ROOT,
         ctCacheDir: CT_CACHE_DIR,
+        pid: req.pid,
+        processName: req.processName,
       });
-      return { ok: true as const, sessionId: r.sessionId, records: r.records };
+      return { ok: true as const, sessionId: r.sessionId, records: r.records, proton: r.proton, attached: req.pid !== undefined };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const reason = /not installed/i.test(msg) ? 'runtime-missing' as const :

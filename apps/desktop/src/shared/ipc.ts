@@ -165,10 +165,14 @@ export interface CeSessionRecord {
 export interface CeSessionStartRequest {
   source: string;     // URL of .CT or viewtopic page
   cacheKey: string;   // unique key per catalog entry id
+  /** Target game process (Linux pid). Enables attach + Proton detection. */
+  pid?: number | undefined;
+  /** Target process name (e.g. "9Kings.exe"). Derived from the pid if omitted. */
+  processName?: string | undefined;
 }
 
 export type CeSessionStartResult =
-  | { ok: true; sessionId: string; records: CeSessionRecord[] }
+  | { ok: true; sessionId: string; records: CeSessionRecord[]; proton: boolean; attached: boolean }
   | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'unknown' };
 
 export interface StarlightApi {

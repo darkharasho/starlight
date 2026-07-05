@@ -5,6 +5,7 @@ import { TopBar } from './components/TopBar.js';
 import { TitleBar } from './components/TitleBar.js';
 import { TrainerLoadingOverlay } from './components/TrainerLoadingOverlay.js';
 import { RuntimeSetupModal } from './components/RuntimeSetupModal.js';
+import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { useLatchState } from './stores/latch-store.js';
 import { useConfigStore, attachConfigEvents } from './stores/config-store.js';
 import { useCatalogStore } from './stores/catalog-store.js';
@@ -31,6 +32,10 @@ export default function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (!window.starlight) {
+      console.error('[Starlight] preload bridge (window.starlight) is unavailable — IPC disabled.');
+      return;
+    }
     const unsub = window.starlight.onEvent((e) => {
       if (e.type === 'config:corrupted') {
         window.alert(
@@ -57,14 +62,16 @@ export default function App(): JSX.Element {
         <div className="flex flex-col flex-1 min-w-0">
           <TopBar latchState={latchState} />
           <main className="flex-1 overflow-y-auto p-5">
-            <Routes>
-              <Route path="/"        element={<HomeRoute />} />
-              <Route path="/library" element={<LibraryRoute />} />
-              <Route path="/browse"  element={<BrowseRoute />} />
-              <Route path="/search"  element={<SearchRoute />} />
-              <Route path="/active"  element={<ActiveTrainerRoute />} />
-              <Route path="/settings" element={<SettingsRoute />} />
-            </Routes>
+            <ErrorBoundary area="this view">
+              <Routes>
+                <Route path="/"        element={<HomeRoute />} />
+                <Route path="/library" element={<LibraryRoute />} />
+                <Route path="/browse"  element={<BrowseRoute />} />
+                <Route path="/search"  element={<SearchRoute />} />
+                <Route path="/active"  element={<ActiveTrainerRoute />} />
+                <Route path="/settings" element={<SettingsRoute />} />
+              </Routes>
+            </ErrorBoundary>
           </main>
         </div>
       </div>
