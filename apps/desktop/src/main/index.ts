@@ -4,7 +4,8 @@ import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
-import { processHost, setWindowVisible, setEngineAttached } from './process-host-singleton.js';
+import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
+import { LatchDetector } from './latch-detector.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
 import type { FetchTrainerRequest } from '../shared/ipc.js';
@@ -18,6 +19,26 @@ import { join } from 'node:path';
 
 let lastDetectedGames: import('../shared/ipc.js').DetectedGame[] = [];
 let catalogIndex = new Map<string, CatalogEntry>();
+
+const latchDetector = new LatchDetector({
+  catalogIndex: () => catalogIndex,
+  detectedGames: () => lastDetectedGames,
+  isSessionActive: () => ceGetActiveSession() !== null,
+});
+
+setOnProcessList((processes) => {
+  latchDetector.prune(new Set(processes.map((p) => p.pid)));
+  void latchDetector.detect(processes).then((d) => {
+    if (!d) return;
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.event, {
+        type: 'game:detected',
+        game: { id: d.game.id, name: d.game.name, steamAppId: d.game.steamAppId },
+        pid: d.pid, name: d.name, confidence: d.confidence,
+      });
+    }
+  });
+});
 
 function createWindow(): void {
   const win = new BrowserWindow({
