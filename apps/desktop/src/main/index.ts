@@ -13,7 +13,11 @@ import { resolveBoxart } from './boxart-host.js';
 import { detectCeRuntime } from './ce-runtime-detect.js';
 import { installCeRuntime, installWindowsCe } from './ce-runtime-install.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, getActiveSession as ceGetActiveSession } from './ce-session.js';
+import { buildCatalogIndex, type CatalogEntry } from './game-matcher.js';
 import { join } from 'node:path';
+
+let lastDetectedGames: import('../shared/ipc.js').DetectedGame[] = [];
+let catalogIndex = new Map<string, CatalogEntry>();
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -101,6 +105,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(CHANNELS.scanLibrary, async () => {
     const games = await scanLibrary();
+    lastDetectedGames = games;
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.event, { type: 'library:scanned', games });
     }
@@ -119,6 +124,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.fetchCatalog, async () => {
     try {
       const index = await fetchCatalog();
+      catalogIndex = buildCatalogIndex((index?.games ?? []) as CatalogEntry[]);
       return { ok: true as const, index };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
@@ -245,8 +251,9 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { source: string; cacheKey: string; pid?: number; processName?: string }) => {
+  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { source: string; cacheKey: string; pid?: number; processName?: string; game?: { id: string; name: string; steamAppId?: number | null } }) => {
     try {
+      const processes = await processHost.listOnce();
       const r = await ceStartSession({
         source: req.source,
         cacheKey: req.cacheKey,
@@ -254,11 +261,15 @@ app.whenReady().then(async () => {
         ctCacheDir: CT_CACHE_DIR,
         pid: req.pid,
         processName: req.processName,
+        game: req.game,
+        processes,
+        detectedGames: lastDetectedGames,
       });
-      return { ok: true as const, sessionId: r.sessionId, records: r.records, proton: r.proton, attached: req.pid !== undefined };
+      return { ok: true as const, sessionId: r.sessionId, records: r.records, proton: r.proton, attached: req.pid !== undefined || (r.needsPicker === false && !!req.game), needsPicker: r.needsPicker };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const reason = /not installed/i.test(msg) ? 'runtime-missing' as const :
+                     /not running/i.test(msg) ? 'not-running' as const :
                      /spawn|timed out/i.test(msg) ? 'spawn-failed' as const :
                      'unknown' as const;
       return { ok: false as const, error: msg, reason };
