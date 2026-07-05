@@ -36,7 +36,8 @@ export function HomeRoute(): JSX.Element {
     if (!entry) return;
     if (entry.trainerSource) {
       const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id, game: { id: entry.id, name: entry.name, steamAppId: entry.steamAppId ?? null } });
-      if (ok) navigate('/active');
+      if (ok) { navigate('/active'); return; }
+      if (useCeSessionStore.getState().notRunning) navigate('/active');
       return;
     }
     const trainer = await fetchTrainer(entry);
@@ -59,7 +60,8 @@ export function HomeRoute(): JSX.Element {
   async function selectGame(g: CatalogGame): Promise<void> {
     if (g.trainerSource) {
       const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id, game: { id: g.id, name: g.name, steamAppId: g.steamAppId ?? null } });
-      if (ok) navigate('/active');
+      if (ok) { navigate('/active'); return; }
+      if (useCeSessionStore.getState().notRunning) navigate('/active');
       return;
     }
     const trainer = await fetchTrainer(g);

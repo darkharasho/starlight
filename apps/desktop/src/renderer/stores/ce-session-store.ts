@@ -75,7 +75,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
     // End the current (list-only) session and re-launch targeting the process,
     // so the main process boots the right CE (Windows-in-Proton or native Linux).
     await get().end();
-    return get().start({ source: base.source, cacheKey: base.cacheKey, pid, processName });
+    return get().start({ ...base, pid, processName });
   },
   setActive: async (recordId, active) => {
     const sid = get().sessionId;
@@ -97,8 +97,8 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
   },
   end: async () => {
     const sid = get().sessionId;
-    if (!sid) { set({ attached: false, proton: false, attachedTo: null }); return; }
-    set({ sessionId: null, records: [], pending: new Set(), attached: false, proton: false, attachedTo: null });
+    if (!sid) { set({ attached: false, proton: false, attachedTo: null, notRunning: false, needsPicker: false }); return; }
+    set({ sessionId: null, records: [], pending: new Set(), attached: false, proton: false, attachedTo: null, notRunning: false, needsPicker: false });
     await starlight().ceSessionEnd({ sessionId: sid }).catch(() => {});
   },
 }));

@@ -6,7 +6,19 @@ vi.mock('../../src/renderer/ipc-client.js', () => ({
 }));
 import { useCeSessionStore } from '../../src/renderer/stores/ce-session-store.js';
 
-beforeEach(() => { mockStart.mockReset(); useCeSessionStore.setState({ sessionId: null, notRunning: false, needsPicker: false }); });
+beforeEach(() => {
+  mockStart.mockReset();
+  useCeSessionStore.setState({
+    sessionId: null,
+    starting: false,
+    startError: null,
+    records: [],
+    attached: false,
+    proton: false,
+    notRunning: false,
+    needsPicker: false,
+  });
+});
 
 describe('ce-session-store auto-attach', () => {
   it('sets notRunning when the game is not running', async () => {
