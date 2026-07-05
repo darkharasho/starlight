@@ -108,4 +108,34 @@ describe('ce-session', () => {
     const staged = await readFile(join(installDir, 'windowsbin', 'lua', 'json.lua'), 'utf8');
     expect(staged).toContain('stub json module');
   });
+
+  it('auto-resolves the pid from game identity via the matcher', async () => {
+    await writeFile(binary, '#!/bin/sh\nsleep 30\n'); await chmod(binary, 0o755);
+    const source = await startCtServer();
+    // matcher returns a pid → session proceeds to the (stub) proton launch and times out
+    await mkdir(join(installDir, 'windowsbin', 'autorun'), { recursive: true });
+    await writeFile(join(installDir, 'windowsbin', 'cheatengine-x86_64.exe'), 'stub');
+    await mkdir(join(installDir, 'lua'), { recursive: true });
+    await writeFile(join(installDir, 'lua', 'json.lua'), '--stub');
+    const fakeProton = join(dir, 'proton');
+    await writeFile(fakeProton, '#!/bin/sh\nsleep 30\n'); await chmod(fakeProton, 0o755);
+
+    await expect(startSession({
+      source, cacheKey: 'auto1', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      game: { id: '9-kings', name: '9 Kings', steamAppId: 2784470 },
+      resolveMatch: async () => ({ pid: 4242, name: '9Kings.exe' }),
+      readComm: async () => '9Kings.exe',
+      detectProtonFn: async () => ({ compatDataPath: '/steam/compatdata/2784470', clientInstallPath: '/steam', protonDir: dir, protonBin: fakeProton }),
+    })).rejects.toThrow(/timed out|ping/i);
+  });
+
+  it('throws "game not running" when the matcher finds no process', async () => {
+    await writeFile(binary, '#!/bin/sh\nsleep 30\n'); await chmod(binary, 0o755);
+    const source = await startCtServer();
+    await expect(startSession({
+      source, cacheKey: 'auto2', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      game: { id: '9-kings', name: '9 Kings', steamAppId: null },
+      resolveMatch: async () => null,
+    })).rejects.toThrow(/not running/i);
+  });
 });

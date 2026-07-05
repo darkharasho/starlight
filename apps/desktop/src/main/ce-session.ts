@@ -8,6 +8,8 @@ import { generateControlScript } from './ce-control-script.js';
 import { spawnCeProcess, type CeProcessHandle, type CeProtonLaunch } from './ce-process.js';
 import { downloadCtToDisk } from './ct-cache.js';
 import { detectProton, type ProtonInfo } from './proton-detect.js';
+import { matchGameToProcess, type MatchableGame } from './game-matcher.js';
+import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
 
 /** Path to the Windows CE inside an extracted runtime, relative to installDir. */
 const WIN_CE_RELATIVE = 'windowsbin/cheatengine-x86_64.exe';
@@ -57,6 +59,11 @@ export interface StartSessionOpts {
   pid?: number | undefined;
   /** Target process name (e.g. "9Kings.exe"). Derived from /proc/<pid>/comm if omitted. */
   processName?: string | undefined;
+  // Auto-attach via game identity:
+  game?: MatchableGame | undefined;
+  detectedGames?: DetectedGame[] | undefined;
+  processes?: DetectedProcess[] | undefined;
+  resolveMatch?: typeof matchGameToProcess | undefined;
   // Injectables for tests:
   detectProtonFn?: typeof detectProton;
   readComm?: (pid: number) => Promise<string>;
@@ -66,7 +73,7 @@ async function defaultReadComm(pid: number): Promise<string> {
   return (await readFile(`/proc/${pid}/comm`, 'utf8')).trim();
 }
 
-export async function startSession(opts: StartSessionOpts): Promise<{ sessionId: string; records: CeRecord[]; proton: boolean }> {
+export async function startSession(opts: StartSessionOpts): Promise<{ sessionId: string; records: CeRecord[]; proton: boolean; needsPicker: boolean }> {
   if (active) await endSession({ sessionId: active.sessionId }).catch(() => {});
 
   const detect = await detectCeRuntime({ runtimeRoot: opts.runtimeRoot });
@@ -76,14 +83,27 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
 
   const { ctPath } = await downloadCtToDisk({ source: opts.source, cacheDir: opts.ctCacheDir, cacheKey: opts.cacheKey });
 
+  // Reactive auto-attach: if no explicit pid but a game identity is given, resolve it.
+  let effectivePid = opts.pid;
+  let needsPicker = false;
+  if (effectivePid === undefined && opts.game) {
+    const match = await (opts.resolveMatch ?? matchGameToProcess)(opts.game, {
+      processes: opts.processes ?? [],
+      detectedGames: opts.detectedGames ?? [],
+    });
+    if (match === null) throw new Error('game not running');
+    if (match === 'ambiguous') { needsPicker = true; }
+    else { effectivePid = match.pid; }
+  }
+
   // Resolve the target process name and whether it's a Proton game.
   let processName = opts.processName;
   let proton: ProtonInfo | null = null;
-  if (opts.pid !== undefined) {
+  if (effectivePid !== undefined) {
     if (!processName) {
-      processName = await (opts.readComm ?? defaultReadComm)(opts.pid).catch(() => undefined);
+      processName = await (opts.readComm ?? defaultReadComm)(effectivePid).catch(() => undefined);
     }
-    proton = await (opts.detectProtonFn ?? detectProton)({ pid: opts.pid });
+    proton = await (opts.detectProtonFn ?? detectProton)({ pid: effectivePid });
   }
 
   const bridge = await createBridge();
@@ -145,7 +165,7 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
   const records = reply.records ?? [];
 
   active = { sessionId, ctPath, bridge, ceProcess, records };
-  return { sessionId, records, proton: proton !== null };
+  return { sessionId, records, proton: proton !== null, needsPicker };
 }
 
 export async function setActive(req: { sessionId: string; recordId: number; active: boolean }): Promise<{ ok: boolean; error?: string }> {
