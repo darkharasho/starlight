@@ -1,0 +1,71 @@
+// apps/desktop/test/main/game-matcher.test.ts
+import { describe, it, expect } from 'vitest';
+import { normalizeName, matchGameToProcess } from '../../src/main/game-matcher.js';
+
+const g = (over = {}) => ({ id: '9-kings', name: '9 Kings', steamAppId: null, ...over });
+const proc = (pid: number, name: string) => ({ pid, name });
+const lib = (over = {}) => ({ source: 'steam' as const, appId: '2784470', name: '9 Kings', installDir: '/games/9 Kings', ...over });
+
+describe('normalizeName', () => {
+  it('strips case, spaces, punctuation and .exe', () => {
+    expect(normalizeName('9 Kings')).toBe('9kings');
+    expect(normalizeName('9Kings.exe')).toBe('9kings');
+    expect(normalizeName('Elden Ring™')).toBe('eldenring');
+  });
+});
+
+describe('matchGameToProcess', () => {
+  const readExeNames = async () => ['9Kings.exe', 'crashhandler.exe'];
+  const noAppId = async () => null;
+
+  it('layer 1: matches by install-dir exe name (exact even if title differs)', async () => {
+    const r = await matchGameToProcess(g({ name: 'Nine Kings' }), {
+      processes: [proc(10, 'other.exe'), proc(20, '9Kings.exe')],
+      detectedGames: [lib({ name: 'Nine Kings' })],
+      readExeNames, readProtonAppId: noAppId,
+    });
+    expect(r).toEqual({ pid: 20, name: '9Kings.exe' });
+  });
+
+  it('layer 2: matches by Proton compatdata appid when name/exe do not', async () => {
+    const r = await matchGameToProcess(g({ steamAppId: 2784470 }), {
+      processes: [proc(10, 'launcher.exe'), proc(30, 'Game.exe')],
+      detectedGames: [],
+      readExeNames, readProtonAppId: async (pid) => (pid === 30 ? 2784470 : null),
+    });
+    expect(r).toEqual({ pid: 30, name: 'Game.exe' });
+  });
+
+  it('layer 3: matches by normalized name', async () => {
+    const r = await matchGameToProcess(g(), {
+      processes: [proc(40, '9Kings.exe')],
+      detectedGames: [],
+      readExeNames: async () => [], readProtonAppId: noAppId,
+    });
+    expect(r).toEqual({ pid: 40, name: '9Kings.exe' });
+  });
+
+  it('returns "ambiguous" when a layer yields >1 process', async () => {
+    const r = await matchGameToProcess(g(), {
+      processes: [proc(1, '9Kings.exe'), proc(2, '9Kings.exe')],
+      detectedGames: [], readExeNames: async () => [], readProtonAppId: noAppId,
+    });
+    expect(r).toBe('ambiguous');
+  });
+
+  it('returns null when nothing matches', async () => {
+    const r = await matchGameToProcess(g(), {
+      processes: [proc(1, 'unrelated.exe')],
+      detectedGames: [], readExeNames: async () => [], readProtonAppId: noAppId,
+    });
+    expect(r).toBeNull();
+  });
+
+  it('does not name-match titles under 3 normalized chars', async () => {
+    const r = await matchGameToProcess(g({ name: 'Go' }), {
+      processes: [proc(1, 'Go.exe')],
+      detectedGames: [], readExeNames: async () => [], readProtonAppId: noAppId,
+    });
+    expect(r).toBeNull();
+  });
+});
