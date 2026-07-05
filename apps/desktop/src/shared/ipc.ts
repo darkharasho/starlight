@@ -140,7 +140,8 @@ export type StarlightEvent =
   | { type: 'hotkey:dec';           cheatId: string }
   | { type: 'config:changed';       config: UserConfig }
   | { type: 'config:corrupted';     backupPath: string }
-  | { type: 'hotkeys:unavailable';  message: string };
+  | { type: 'hotkeys:unavailable';  message: string }
+  | { type: 'game:detected'; game: { id: string; name: string; steamAppId?: number | null }; pid: number; name: string; confidence: 'exact' | 'name' };
 
 export interface WindowState { maximized: boolean }
 
@@ -169,11 +170,13 @@ export interface CeSessionStartRequest {
   pid?: number | undefined;
   /** Target process name (e.g. "9Kings.exe"). Derived from the pid if omitted. */
   processName?: string | undefined;
+  /** Game identity so main can auto-resolve the running process (reactive auto-attach). */
+  game?: { id: string; name: string; steamAppId?: number | null } | undefined;
 }
 
 export type CeSessionStartResult =
-  | { ok: true; sessionId: string; records: CeSessionRecord[]; proton: boolean; attached: boolean }
-  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'unknown' };
+  | { ok: true; sessionId: string; records: CeSessionRecord[]; proton: boolean; attached: boolean; needsPicker?: boolean }
+  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'unknown' };
 
 export interface StarlightApi {
   loadTrainer():     Promise<LoadTrainerResult>;
@@ -226,6 +229,7 @@ export interface AppPreferences {
   theme: 'dark';
   pollIntervalMs: number;              // 500–30000; ProcessHost interval
   catalogRefreshOnLaunch: boolean;
+  autoAttachOnDetect: boolean;
 }
 
 export interface ManualGame {
