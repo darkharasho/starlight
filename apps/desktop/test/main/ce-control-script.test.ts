@@ -35,4 +35,46 @@ describe('generateControlScript', () => {
     expect(lua).toMatch(/set_active/);
     expect(lua).toMatch(/ping/);
   });
+
+  it('routes attach and status commands and calls openProcess', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x' });
+    expect(lua).toMatch(/"attach"/);
+    expect(lua).toMatch(/"status"/);
+    expect(lua).toMatch(/openProcess/);
+  });
+
+  it('opens the target process on boot when openProcessName is given', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x', openProcessName: '9Kings.exe' });
+    expect(lua).toContain('local OPEN_PROCESS_NAME = "9Kings.exe"');
+    expect(lua).toMatch(/if OPEN_PROCESS_NAME then attachTo\(OPEN_PROCESS_NAME\)/);
+  });
+
+  it('leaves OPEN_PROCESS_NAME nil when no target is given', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x' });
+    expect(lua).toContain('local OPEN_PROCESS_NAME = nil');
+  });
+
+  it('set_active refuses when unattached and verifies the enable stuck', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x' });
+    expect(lua).toMatch(/not attached to a game process/);
+    expect(lua).toMatch(/local got = r\.Active/);
+  });
+
+  it('mutes dialogs so a community table cannot pop a window', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x' });
+    expect(lua).toMatch(/messageDialog = function\(\) return 0 end/);
+    expect(lua).toMatch(/shellExecute = function\(\) end/);
+    expect(lua).toMatch(/hideAllCEWindows/);
+  });
+
+  it('loads the CT itself (not via argv) when a ctPath is given', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x', ctPath: 'Z:\\tmp\\t.ct' });
+    expect(lua).toContain('local CT_PATH = "Z:\\\\tmp\\\\t.ct"');
+    expect(lua).toMatch(/loadTable\(CT_PATH, false\)/);
+  });
+
+  it('leaves CT_PATH nil when no table path is given', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x' });
+    expect(lua).toContain('local CT_PATH = nil');
+  });
 });

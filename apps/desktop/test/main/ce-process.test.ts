@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe('spawnCeProcess', () => {
-  it('writes the autorun script, spawns the binary with the CT path, and triggers onExit', async () => {
+  it('writes the autorun script, spawns the binary (no CT on argv), and triggers onExit', async () => {
     let exitCode: number | null = -1;
     const exited = new Promise<void>((resolve) => {
       const onExit = (code: number | null): void => { exitCode = code; resolve(); };
@@ -45,9 +45,10 @@ describe('spawnCeProcess', () => {
     });
     await exited;
     expect(exitCode).toBe(0);
-    // Probe shows the binary received the .CT path as argv[1].
+    // The CT is NOT passed on argv anymore — the control script loads it after
+    // muting dialogs. argv[1] is empty.
     const probe = await readFile('/tmp/starlight-fake-ce-probe', 'utf8');
-    expect(probe.trim()).toBe(ctPath);
+    expect(probe.trim()).toBe('');
   });
 
   it('removes the autorun script after the child exits', async () => {

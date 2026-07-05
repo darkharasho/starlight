@@ -19,25 +19,25 @@ export interface InstallOpts {
   binaryRelative?: string;
 }
 
-export async function installCeRuntime(opts: InstallOpts): Promise<void> {
-  await mkdir(opts.runtimeRoot, { recursive: true });
-  const tmpZip = join(opts.runtimeRoot, `.download-${process.pid}-${Date.now()}.zip`);
-
+/** Streams a URL to disk, verifying its sha256, and returns the bytes. */
+async function downloadVerified(
+  url: string, sha256: string, tmpPath: string, onProgress: (e: ProgressEvent) => void,
+): Promise<Buffer> {
   let res: Response;
   try {
-    res = await fetch(opts.url);
+    res = await fetch(url);
   } catch (err) {
-    await rm(tmpZip, { force: true });
+    await rm(tmpPath, { force: true });
     throw new Error(`runtime download failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) {
-    await rm(tmpZip, { force: true });
-    throw new Error(`HTTP ${res.status} fetching ${opts.url}`);
+    await rm(tmpPath, { force: true });
+    throw new Error(`HTTP ${res.status} fetching ${url}`);
   }
   const total = Number(res.headers.get('content-length') ?? 0);
   if (!res.body) throw new Error('no response body');
 
-  const out = createWriteStream(tmpZip);
+  const out = createWriteStream(tmpPath);
   const hasher = createHash('sha256');
   let received = 0;
   const reader = (res.body as unknown as ReadableStream<Uint8Array>).getReader();
@@ -47,25 +47,54 @@ export async function installCeRuntime(opts: InstallOpts): Promise<void> {
     if (done) break;
     hasher.update(value);
     received += value.length;
-    opts.onProgress({ phase: 'downloading', current: received, total });
+    onProgress({ phase: 'downloading', current: received, total });
     await new Promise<void>((resolve, reject) => out.write(value, (err) => err ? reject(err) : resolve()));
   }
   await new Promise<void>((resolve, reject) => out.end((err: unknown) => err ? reject(err as Error) : resolve()));
 
-  opts.onProgress({ phase: 'verifying' });
+  onProgress({ phase: 'verifying' });
   const got = hasher.digest('hex');
-  if (got.toLowerCase() !== opts.sha256.toLowerCase()) {
-    await rm(tmpZip, { force: true });
-    throw new Error(`sha256 mismatch: expected ${opts.sha256}, got ${got}`);
+  if (got.toLowerCase() !== sha256.toLowerCase()) {
+    await rm(tmpPath, { force: true });
+    throw new Error(`sha256 mismatch: expected ${sha256}, got ${got}`);
   }
+  return readFile(tmpPath);
+}
 
-  const buf = await readFile(tmpZip);
+export async function installCeRuntime(opts: InstallOpts): Promise<void> {
+  await mkdir(opts.runtimeRoot, { recursive: true });
+  const tmpZip = join(opts.runtimeRoot, `.download-${process.pid}-${Date.now()}.zip`);
+
+  const buf = await downloadVerified(opts.url, opts.sha256, tmpZip, opts.onProgress);
   await extractZipTo(buf, opts.runtimeRoot, opts.onProgress);
   await rm(tmpZip, { force: true });
 
   const binaryRel = opts.binaryRelative ?? 'CheatEngineLinux766-4/cheatengine-x86_64';
   await chmod(join(opts.runtimeRoot, binaryRel), 0o755).catch(() => {});
 
+  opts.onProgress({ phase: 'done' });
+}
+
+export interface InstallWindowsCeOpts {
+  url: string;
+  sha256: string;
+  /** The Linux CE install dir (…/CheatEngineLinux766-4); the zip extracts into its windowsbin/. */
+  installDir: string;
+  onProgress: (e: ProgressEvent) => void;
+}
+
+/**
+ * Downloads + extracts the Windows Cheat Engine build into `<installDir>/windowsbin/`
+ * so Proton games can be cheated by running Windows CE inside their prefix. The
+ * zip is expected to contain the CE app files at its root (incl. lua/json.lua).
+ */
+export async function installWindowsCe(opts: InstallWindowsCeOpts): Promise<void> {
+  const windowsbin = join(opts.installDir, 'windowsbin');
+  await mkdir(windowsbin, { recursive: true });
+  const tmpZip = join(opts.installDir, `.wince-${process.pid}-${Date.now()}.zip`);
+  const buf = await downloadVerified(opts.url, opts.sha256, tmpZip, opts.onProgress);
+  await extractZipTo(buf, windowsbin, opts.onProgress);
+  await rm(tmpZip, { force: true });
   opts.onProgress({ phase: 'done' });
 }
 

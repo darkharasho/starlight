@@ -11,6 +11,30 @@ function strip(name: string): string {
   return name.toLowerCase().replace(/\.exe$/, '');
 }
 
+/**
+ * Wine/Proton/Steam infrastructure and Windows system processes that show up
+ * as ".exe" but are never the game the user wants to latch. Hiding these keeps
+ * the attach picker to a short list of real candidates.
+ */
+const NOISE_PROCESSES = new Set([
+  // Wine / Windows system
+  'services', 'winedevice', 'plugplay', 'rpcss', 'svchost', 'conhost', 'explorer',
+  'wineboot', 'winemenubuilder', 'start', 'rundll32', 'dllhost', 'csrss', 'wininit',
+  'winlogon', 'lsass', 'spoolsv', 'cmd', 'iexplore', 'tabtip', 'wine', 'wineserver',
+  // Steam / Proton overlay + helpers
+  'steam', 'steamwebhelper', 'gameoverlayui', 'steamerrorreporter', 'xalia', 'crashpad_handler',
+]);
+
+/** True for processes that are clearly not a game the user would latch. */
+export function isNoiseProcess(name: string): boolean {
+  return NOISE_PROCESSES.has(strip(name));
+}
+
+/** Filters out infrastructure noise so the picker shows real game candidates. */
+export function filterCandidates(procs: DetectedProcess[]): DetectedProcess[] {
+  return procs.filter((p) => !isNoiseProcess(p.name));
+}
+
 export class ProcessHost {
   private timer: ReturnType<typeof setInterval> | null = null;
   private trainerNames: string[] = [];
@@ -53,7 +77,7 @@ export class ProcessHost {
 
   async listOnce(): Promise<DetectedProcess[]> {
     const procs = await this.opts.psList();
-    return procs.map(p => ({ pid: p.pid, name: p.name }));
+    return filterCandidates(procs.map(p => ({ pid: p.pid, name: p.name })));
   }
 
   private async tick(): Promise<void> {
@@ -63,7 +87,7 @@ export class ProcessHost {
     catch { return; }
     this.opts.emit({
       type: 'process:list',
-      processes: procs.map(p => ({ pid: p.pid, name: p.name })),
+      processes: filterCandidates(procs.map(p => ({ pid: p.pid, name: p.name }))),
     });
     if (this.trainerNames.length === 0) return;
     const match = procs.find(p => {
