@@ -34,6 +34,10 @@ export function SettingsRoute(): JSX.Element {
     await update({ preferences: { catalogRefreshOnLaunch: !config!.preferences.catalogRefreshOnLaunch } });
   }
 
+  async function toggleAutoAttach(): Promise<void> {
+    await update({ preferences: { autoAttachOnDetect: !config!.preferences.autoAttachOnDetect } });
+  }
+
   return (
     <>
       <PageHeader title="Settings" />
@@ -65,6 +69,19 @@ export function SettingsRoute(): JSX.Element {
             type="checkbox"
             checked={config.preferences.catalogRefreshOnLaunch}
             onChange={() => void toggleRefresh()}
+            className="accent-neon-cyan size-4"
+          />
+        </label>
+        <label className="flex items-center justify-between gap-3 text-xs">
+          <span>
+            <div className="text-ink">Auto-attach on game detect</div>
+            <div className="text-[10px] text-muted">Auto-attach when a game is detected (skips the "Latch" click)</div>
+          </span>
+          <input
+            aria-label="Auto-attach when a game is detected"
+            type="checkbox"
+            checked={config.preferences.autoAttachOnDetect}
+            onChange={() => void toggleAutoAttach()}
             className="accent-neon-cyan size-4"
           />
         </label>

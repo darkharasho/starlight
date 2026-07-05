@@ -15,10 +15,12 @@ const AppPreferencesSchema = z.object({
   theme: z.enum(['dark']).default('dark'),
   pollIntervalMs: z.number().int().min(500).max(30000).default(2000),
   catalogRefreshOnLaunch: z.boolean().default(true),
+  autoAttachOnDetect: z.boolean().default(false),
 }).default({
   theme: 'dark',
   pollIntervalMs: 2000,
   catalogRefreshOnLaunch: true,
+  autoAttachOnDetect: false,
 });
 
 const ManualGameSchema = z.object({
@@ -48,7 +50,7 @@ export const UserConfigSchema = z.object({
   schemaVersion: 1,
   processNameOverrides: {},
   recents: [],
-  preferences: { theme: 'dark', pollIntervalMs: 2000, catalogRefreshOnLaunch: true },
+  preferences: { theme: 'dark', pollIntervalMs: 2000, catalogRefreshOnLaunch: true, autoAttachOnDetect: false },
   manualGames: [],
   hotkeyOverrides: {},
 });

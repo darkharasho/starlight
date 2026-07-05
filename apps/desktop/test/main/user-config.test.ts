@@ -122,3 +122,10 @@ describe('user-config updateConfigFrom', () => {
     expect(round.hotkeyOverrides['trainer-x']!['cheat-y']!.toggle).toBe('F5');
   });
 });
+
+describe('user-config autoAttachOnDetect', () => {
+  it('defaults autoAttachOnDetect to false', async () => {
+    const cfg = await getConfigFrom(join(dir, 'config.json'));
+    expect(cfg.preferences.autoAttachOnDetect).toBe(false);
+  });
+});
