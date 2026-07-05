@@ -30,11 +30,23 @@ export async function spawnTarget(): Promise<SpawnedTarget> {
 
   await new Promise<void>((resolveReady, rejectReady) => {
     let buf = '';
+    let gotStats = false;
+
+    // Ready only once we have BOTH the pid (from the shell wrapper) and the
+    // target's stats. Their stdout lines interleave, and on a fast machine the
+    // target can print its stats before the shell echoes TARGET_PID.
+    const finishIfReady = (): void => {
+      if (!targetPid || !gotStats) return;
+      clearTimeout(timer);
+      shell.stdout!.off('data', onData);
+      shell.off('error', onErr);
+      resolveReady();
+    };
 
     const timer = setTimeout(() => {
       shell.stdout!.off('data', onData);
       shell.off('error', onErr);
-      rejectReady(new Error('spawnTarget: timed out after 5 s waiting for hp_in_stats from target binary'));
+      rejectReady(new Error('spawnTarget: timed out after 5 s waiting for pid + hp_in_stats from target binary'));
     }, 5000);
 
     const onErr = (e: NodeJS.ErrnoException) => {
@@ -57,19 +69,13 @@ export async function spawnTarget(): Promise<SpawnedTarget> {
         buf = buf.slice(nl + 1);
         if (line === 'READY') continue;
         const pidMatch = line.match(/^TARGET_PID:(\d+)$/);
-        if (pidMatch) { targetPid = parseInt(pidMatch[1]!); continue; }
+        if (pidMatch) { targetPid = parseInt(pidMatch[1]!); finishIfReady(); continue; }
         const a = line.match(/^addr (\w+)=(0x[0-9a-fA-F]+)$/);
         if (a) { addresses[a[1]!] = a[2]!.toLowerCase(); continue; }
         const o = line.match(/^offset (\w+)=(\d+)$/);
         if (o) {
           offsets[o[1]!] = Number(o[2]);
-          if (o[1] === 'hp_in_stats') {
-            clearTimeout(timer);
-            shell.stdout!.off('data', onData);
-            shell.off('error', onErr);
-            resolveReady();
-            return;
-          }
+          if (o[1] === 'hp_in_stats') { gotStats = true; finishIfReady(); }
         }
       }
     };
