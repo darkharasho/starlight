@@ -18,7 +18,7 @@ export function TopBar({ latchState }: Props): JSX.Element {
   const handleLatch = useCallback(async () => {
     if (!detected) return;
     const entry = useCatalogStore.getState().index?.games.find((g) => g.id === detected.game.id);
-    const source = entry?.trainerSource ?? entry?.trainerPath;
+    const source = entry?.trainerPath ?? entry?.trainerSource;
     if (!source) {
       // Catalog not loaded or no entry — clear the pill and bail gracefully
       useDetectionStore.getState().clear();

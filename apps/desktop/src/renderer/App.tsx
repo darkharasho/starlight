@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { TitleBar } from './components/TitleBar.js';
@@ -9,6 +9,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { useLatchState } from './stores/latch-store.js';
 import { useConfigStore, attachConfigEvents } from './stores/config-store.js';
 import { useCatalogStore } from './stores/catalog-store.js';
+import { useCeSessionStore } from './stores/ce-session-store.js';
 
 import { HomeRoute } from './routes/HomeRoute.js';
 import { LibraryRoute } from './routes/LibraryRoute.js';
@@ -19,6 +20,10 @@ import { SettingsRoute } from './routes/SettingsRoute.js';
 
 export default function App(): JSX.Element {
   const latchState = useLatchState((s) => s.state);
+  const ceSessionId = useCeSessionStore((s) => s.sessionId);
+  const navigate = useNavigate();
+
+  useEffect(() => { if (ceSessionId) navigate('/active'); }, [ceSessionId, navigate]);
 
   useEffect(() => {
     attachConfigEvents();

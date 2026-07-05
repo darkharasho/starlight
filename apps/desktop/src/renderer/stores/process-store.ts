@@ -43,7 +43,7 @@ export function attachProcessEvents(): void {
         e.confidence === 'exact'
       ) {
         const entry = useCatalogStore.getState().index?.games.find((g) => g.id === e.game.id);
-        const source = entry?.trainerSource ?? entry?.trainerPath;
+        const source = entry?.trainerPath ?? entry?.trainerSource;
         if (source) {
           void useCeSessionStore.getState().start({
             source,
@@ -51,11 +51,8 @@ export function attachProcessEvents(): void {
             pid: e.pid,
             processName: e.name,
             game: e.game,
-          }).then(() => {
+          }).finally(() => {
             useDetectionStore.getState().clear();
-            // Navigation is not available in a store; the app routes to /active
-            // when sessionId becomes non-null (ActiveTrainerRoute is the target).
-            // Components observing sessionId should redirect accordingly.
           });
         }
       }
