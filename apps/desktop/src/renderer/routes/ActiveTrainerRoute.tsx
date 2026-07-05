@@ -65,6 +65,7 @@ export function ActiveTrainerRoute(): JSX.Element {
   const ceAttach = useCeSessionStore((s) => s.attach);
   const ceStarting = useCeSessionStore((s) => s.starting);
   const ceStartError = useCeSessionStore((s) => s.startError);
+  const ceNotRunning = useCeSessionStore((s) => s.notRunning);
 
   const trainer = useTrainerStore((s) => s.trainer);
   const activeCheats = useTrainerStore((s) => s.activeCheats);
@@ -133,6 +134,11 @@ export function ActiveTrainerRoute(): JSX.Element {
   if (!trainer) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted">
+        {ceNotRunning && (
+          <div className="text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-4 self-stretch">
+            Game isn&apos;t running. Start it, then click the tile again — Starlight will attach automatically.
+          </div>
+        )}
         <p className="text-sm">No trainer loaded.</p>
         <p className="text-xs mt-2">Go to Home and click "Load Trainer (.CT)".</p>
       </div>

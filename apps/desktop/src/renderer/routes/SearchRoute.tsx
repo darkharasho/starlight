@@ -33,7 +33,7 @@ export function SearchRoute(): JSX.Element {
 
   async function onSelect(g: CatalogGame): Promise<void> {
     if (g.trainerSource) {
-      const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id });
+      const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id, game: { id: g.id, name: g.name, steamAppId: g.steamAppId ?? null } });
       if (ok) navigate('/active');
       return;
     }

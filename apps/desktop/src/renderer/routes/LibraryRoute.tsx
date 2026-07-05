@@ -174,7 +174,7 @@ export function LibraryRoute(): JSX.Element {
     const entry = findCatalogEntry(g);
     if (!entry) return;
     if (entry.trainerSource) {
-      const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id });
+      const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id, game: { id: entry.id, name: entry.name, steamAppId: entry.steamAppId ?? null } });
       if (ok) navigate('/active');
       return;
     }

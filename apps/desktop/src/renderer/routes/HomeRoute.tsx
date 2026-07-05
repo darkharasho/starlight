@@ -35,7 +35,7 @@ export function HomeRoute(): JSX.Element {
     const entry = index.games.find(g => g.id === r.id);
     if (!entry) return;
     if (entry.trainerSource) {
-      const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id });
+      const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id, game: { id: entry.id, name: entry.name, steamAppId: entry.steamAppId ?? null } });
       if (ok) navigate('/active');
       return;
     }
@@ -58,7 +58,7 @@ export function HomeRoute(): JSX.Element {
 
   async function selectGame(g: CatalogGame): Promise<void> {
     if (g.trainerSource) {
-      const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id });
+      const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id, game: { id: g.id, name: g.name, steamAppId: g.steamAppId ?? null } });
       if (ok) navigate('/active');
       return;
     }

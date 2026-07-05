@@ -2,7 +2,13 @@ import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
 import type { CeSessionRecord } from '../../shared/ipc.js';
 
-interface StartReq { source: string; cacheKey: string; pid?: number | undefined; processName?: string | undefined }
+interface StartReq {
+  source: string;
+  cacheKey: string;
+  pid?: number | undefined;
+  processName?: string | undefined;
+  game?: { id: string; name: string; steamAppId?: number | null } | undefined;
+}
 
 interface CeSessionState {
   sessionId: string | null;
@@ -19,6 +25,10 @@ interface CeSessionState {
   lastReq: StartReq | null;
   /** record id → in-flight toggle pending (renderer-side optimistic state). */
   pending: Set<number>;
+  /** True when the IPC result indicates the game isn't currently running. */
+  notRunning: boolean;
+  /** True when the session found multiple candidate processes (picker needed). */
+  needsPicker: boolean;
 
   start: (req: StartReq) => Promise<boolean>;
   /** Re-launch the current session targeting a running process (boots Windows CE if Proton). */
@@ -37,11 +47,13 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
   attachedTo: null,
   lastReq: null,
   pending: new Set(),
+  notRunning: false,
+  needsPicker: false,
   start: async (req) => {
-    set({ starting: true, startError: null, lastReq: req });
+    set({ starting: true, startError: null, lastReq: req, notRunning: false, needsPicker: false });
     try {
       const r = await starlight().ceSessionStart(req);
-      if (!r.ok) { set({ starting: false, startError: r.error }); return false; }
+      if (!r.ok) { set({ starting: false, startError: r.error, notRunning: r.reason === 'not-running' }); return false; }
       set({
         starting: false,
         sessionId: r.sessionId,
@@ -49,6 +61,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
         attached: r.attached,
         proton: r.proton,
         attachedTo: req.pid !== undefined ? { pid: req.pid, name: req.processName } : null,
+        needsPicker: r.needsPicker ?? false,
       });
       return true;
     } catch (err) {
