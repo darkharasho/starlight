@@ -87,7 +87,10 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
   }
 
   const bridge = await createBridge();
-  const controlScript = generateControlScript({ bridgeUrl: bridge.url, openProcessName: processName });
+  // The control script loads the table itself (dialogs muted first). Windows CE
+  // needs the Wine `Z:\…` path; native Linux CE takes the Linux path.
+  const ceCtPath = proton ? toWinePath(ctPath) : ctPath;
+  const controlScript = generateControlScript({ bridgeUrl: bridge.url, openProcessName: processName, ctPath: ceCtPath });
   const sessionId = randomUUID();
 
   let protonLaunch: CeProtonLaunch | undefined;

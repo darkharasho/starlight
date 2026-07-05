@@ -59,4 +59,22 @@ describe('generateControlScript', () => {
     expect(lua).toMatch(/not attached to a game process/);
     expect(lua).toMatch(/local got = r\.Active/);
   });
+
+  it('mutes dialogs so a community table cannot pop a window', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x' });
+    expect(lua).toMatch(/messageDialog = function\(\) return 0 end/);
+    expect(lua).toMatch(/shellExecute = function\(\) end/);
+    expect(lua).toMatch(/hideAllCEWindows/);
+  });
+
+  it('loads the CT itself (not via argv) when a ctPath is given', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x', ctPath: 'Z:\\tmp\\t.ct' });
+    expect(lua).toContain('local CT_PATH = "Z:\\\\tmp\\\\t.ct"');
+    expect(lua).toMatch(/loadTable\(CT_PATH, false\)/);
+  });
+
+  it('leaves CT_PATH nil when no table path is given', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x' });
+    expect(lua).toContain('local CT_PATH = nil');
+  });
 });

@@ -11,7 +11,7 @@ import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { detectCeRuntime } from './ce-runtime-detect.js';
-import { installCeRuntime } from './ce-runtime-install.js';
+import { installCeRuntime, installWindowsCe } from './ce-runtime-install.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, getActiveSession as ceGetActiveSession } from './ce-session.js';
 import { join } from 'node:path';
 
@@ -214,7 +214,12 @@ app.whenReady().then(async () => {
     try {
       const manifestRes = await fetch(CE_MANIFEST_URL);
       if (!manifestRes.ok) return { ok: false as const, error: `manifest HTTP ${manifestRes.status}` };
-      const manifest = await manifestRes.json() as { cheatEngine: { platforms: { 'linux-x64': { url: string; sha256: string } } } };
+      const manifest = await manifestRes.json() as {
+        cheatEngine: {
+          platforms: { 'linux-x64': { url: string; sha256: string; extractedDir?: string } };
+          windows?: { url: string; sha256: string };
+        };
+      };
       const linux = manifest.cheatEngine.platforms['linux-x64'];
       await installCeRuntime({
         url: linux.url,
@@ -222,6 +227,18 @@ app.whenReady().then(async () => {
         runtimeRoot: CE_RUNTIME_ROOT,
         onProgress: (e) => evt.sender.send(CHANNELS.ceRuntimeProgress, e),
       });
+      // Also fetch the Windows CE build (for cheating Proton games) when the
+      // manifest provides it. Optional so a linux-only manifest still works.
+      const win = manifest.cheatEngine.windows;
+      if (win) {
+        const installDir = join(CE_RUNTIME_ROOT, linux.extractedDir ?? 'CheatEngineLinux766-4');
+        await installWindowsCe({
+          url: win.url,
+          sha256: win.sha256,
+          installDir,
+          onProgress: (e) => evt.sender.send(CHANNELS.ceRuntimeProgress, e),
+        });
+      }
       return { ok: true as const };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };

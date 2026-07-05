@@ -22,3 +22,6 @@ apps/*/out
 apps/*/dist
 package-lock.json
 graphify-out/
+
+# Prepared runtime artifacts (host in starlight-runtimes, don't commit)
+dist-runtimes/

@@ -7,6 +7,12 @@ export interface ControlScriptOpts {
    * host can send an `attach` command later.
    */
   openProcessName?: string | undefined;
+  /**
+   * CE-openable path to the .CT to load (Linux path for native CE, `Z:\…` Wine
+   * path for Windows CE). Loaded by the script AFTER dialogs are muted, so a
+   * community table can't pop a window. When omitted, no table is loaded here.
+   */
+  ctPath?: string | undefined;
 }
 
 /**
@@ -31,10 +37,41 @@ export function generateControlScript(opts: ControlScriptOpts): string {
   // (escapes \n, \", \\, etc.) for any string the caller throws at us.
   const url = JSON.stringify(opts.bridgeUrl);
   const openName = opts.openProcessName ? JSON.stringify(opts.openProcessName) : 'nil';
+  const ctPath = opts.ctPath ? JSON.stringify(opts.ctPath) : 'nil';
   return `\
 -- Starlight CE control script. Auto-generated; do not edit by hand.
+
+-- Keep CE fully invisible. Hide the window as the very first thing we do —
+-- before requiring modules — to minimise any flash of the CE main form.
+local function hideCE()
+  pcall(function() getMainForm():hide() end)
+  pcall(function() hideAllCEWindows() end)
+end
+local function muteDialogs()
+  -- messageDialog returns mrNone(0) so a table's \`== mrYes\` branch never fires.
+  pcall(function() messageDialog = function() return 0 end end)
+  pcall(function() showMessage = function() end end)
+  pcall(function() shellExecute = function() end end)  -- never open a browser
+end
+hideCE()
+muteDialogs()
+
+-- CE creates and shows its main form during startup, which can flash on screen
+-- before the autorun runs. Hammer hide() on a fast timer for the first few
+-- seconds so the form is re-hidden the instant it appears (imperceptible).
+local _hideTimer = createTimer(nil, false)
+_hideTimer.Interval = 5
+local _hideTicks = 0
+_hideTimer.OnTimer = function()
+  hideCE()
+  _hideTicks = _hideTicks + 1
+  if _hideTicks > 800 then _hideTimer.Enabled = false end  -- ~4s
+end
+_hideTimer.Enabled = true
+
 local BRIDGE_URL = ${url}
 local OPEN_PROCESS_NAME = ${openName}
+local CT_PATH = ${ctPath}
 local TRACE_PATH = "/tmp/starlight-ce.log"
 
 local json = require("json")
@@ -128,15 +165,23 @@ local function dispatch(cmd)
 end
 
 local boot = createTimer(nil, false)
-boot.Interval = 200
+boot.Interval = 50
 boot.OnTimer = function()
   boot.Enabled = false
   trace("boot timer fired")
 
-  pcall(function() getMainForm():hide() end)
-  pcall(function() hideAllCEWindows() end)
+  hideCE()
+  muteDialogs()
 
   if OPEN_PROCESS_NAME then attachTo(OPEN_PROCESS_NAME) end
+
+  -- Load the table ourselves (dialogs already muted) instead of via argv, so a
+  -- table's embedded LuaScript can't pop a window before we suppress it.
+  if CT_PATH then
+    local ok, err = pcall(function() loadTable(CT_PATH, false) end)
+    trace("loadTable ok=" .. tostring(ok) .. " err=" .. tostring(err))
+    hideCE()  -- a table load can re-show the form; hide again
+  end
 
   local internet = getInternet("starlight")
   if not internet then trace("no internet client"); return end

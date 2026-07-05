@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { createServer, type Server } from 'node:http';
 import { createHash } from 'node:crypto';
 import yazl from 'yazl';
-import { installCeRuntime } from '../../src/main/ce-runtime-install.js';
+import { installCeRuntime, installWindowsCe } from '../../src/main/ce-runtime-install.js';
 
 let dir: string;
 let server: Server;
@@ -84,5 +84,54 @@ describe('installCeRuntime', () => {
       runtimeRoot: dir,
       onProgress: () => {},
     })).rejects.toThrow(/HTTP 404/);
+  });
+});
+
+async function makeWindowsCeZip(): Promise<Buffer> {
+  const z = new yazl.ZipFile();
+  // CE app files at zip root -> extract into windowsbin/
+  z.addBuffer(Buffer.from('MZ...winpe'), 'cheatengine-x86_64.exe');
+  z.addBuffer(Buffer.from('-- json module'), 'lua/json.lua');
+  z.end();
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    z.outputStream.on('data', (c: Buffer) => chunks.push(c));
+    z.outputStream.on('end', () => resolve());
+    z.outputStream.on('error', reject);
+  });
+  return Buffer.concat(chunks);
+}
+
+describe('installWindowsCe', () => {
+  it('extracts the Windows CE (incl. lua/json.lua) into installDir/windowsbin', async () => {
+    const zipBytes = await makeWindowsCeZip();
+    const sha = createHash('sha256').update(zipBytes).digest('hex');
+    await startServer((_req, res) => {
+      res.writeHead(200, { 'Content-Length': String(zipBytes.length) });
+      res.end(zipBytes);
+    });
+    const installDir = join(dir, 'CheatEngineLinux766-4');
+    await mkdir(installDir, { recursive: true });
+    await installWindowsCe({
+      url: `http://127.0.0.1:${port}/win.zip`,
+      sha256: sha,
+      installDir,
+      onProgress: () => {},
+    });
+    await stat(join(installDir, 'windowsbin', 'cheatengine-x86_64.exe'));
+    await stat(join(installDir, 'windowsbin', 'lua', 'json.lua'));
+  });
+
+  it('rejects on SHA256 mismatch', async () => {
+    const zipBytes = await makeWindowsCeZip();
+    await startServer((_req, res) => { res.writeHead(200); res.end(zipBytes); });
+    const installDir = join(dir, 'CheatEngineLinux766-4');
+    await mkdir(installDir, { recursive: true });
+    await expect(installWindowsCe({
+      url: `http://127.0.0.1:${port}/win.zip`,
+      sha256: 'deadbeef'.repeat(8),
+      installDir,
+      onProgress: () => {},
+    })).rejects.toThrow(/sha256/i);
   });
 });

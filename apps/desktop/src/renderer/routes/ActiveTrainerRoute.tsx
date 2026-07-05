@@ -425,6 +425,17 @@ function TrainerInfoDisclosure({
   );
 }
 
+/**
+ * Narrows the process list to likely game targets for the attach picker.
+ * On Linux the user's games run under Proton, so they appear as `*.exe`; when
+ * any exist we show just those (sorted). Otherwise we fall back to everything.
+ */
+export function gameCandidates(processes: DetectedProcess[]): DetectedProcess[] {
+  const exes = processes.filter((p) => /\.exe$/i.test(p.name));
+  const pool = exes.length > 0 ? exes : processes;
+  return [...pool].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function CeSessionView({ records, pending, setActive, end, attached, proton, attachedTo, attach, starting, startError, processes }: {
   records: CeSessionRecord[];
   pending: Set<number>;
@@ -471,8 +482,8 @@ function CeSessionView({ records, pending, setActive, end, attached, proton, att
           <div className="flex items-center gap-2">
             <select value={selPid} onChange={(e) => setSelPid(e.target.value ? Number(e.target.value) : '')}
                     className="flex-1 min-w-0 bg-panel border border-line rounded-sm px-2 py-1 text-[11px] text-muted">
-              <option value="">Select running process…</option>
-              {[...processes].sort((a, b) => a.name.localeCompare(b.name)).map((p) => (
+              <option value="">Select running game…</option>
+              {gameCandidates(processes).map((p) => (
                 <option key={p.pid} value={p.pid}>{p.name} (pid {p.pid})</option>
               ))}
             </select>

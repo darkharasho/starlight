@@ -54,9 +54,10 @@ export async function spawnCeProcess(opts: CeProcessOpts): Promise<CeProcessHand
 
   let child: ChildProcess;
   if (opts.proton) {
+    // No CT on argv — the control script loads it after muting dialogs.
     child = spawn(
       opts.proton.protonBin,
-      ['run', opts.proton.winCeExe, opts.proton.ctWinPath],
+      ['run', opts.proton.winCeExe],
       {
         cwd: opts.proton.winCeDir,
         detached: false,
@@ -69,7 +70,8 @@ export async function spawnCeProcess(opts: CeProcessOpts): Promise<CeProcessHand
       },
     );
   } else {
-    child = spawn(opts.binaryPath, [opts.ctPath], {
+    // No CT on argv — the control script loads it after muting dialogs.
+    child = spawn(opts.binaryPath, [], {
       cwd: opts.installDir,
       detached: false,
       stdio: ['ignore', 'pipe', 'pipe'],
