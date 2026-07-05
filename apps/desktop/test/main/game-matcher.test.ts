@@ -1,6 +1,6 @@
 // apps/desktop/test/main/game-matcher.test.ts
 import { describe, it, expect } from 'vitest';
-import { normalizeName, matchGameToProcess, identifyProcess } from '../../src/main/game-matcher.js';
+import { normalizeName, matchGameToProcess, identifyProcess, buildCatalogIndex } from '../../src/main/game-matcher.js';
 
 const g = (over = {}) => ({ id: '9-kings', name: '9 Kings', steamAppId: null, ...over });
 const proc = (pid: number, name: string) => ({ pid, name });
@@ -95,5 +95,26 @@ describe('identifyProcess', () => {
       catalogIndex: index, detectedGames: [], readProtonAppId: async () => null,
     });
     expect(r).toBeNull();
+  });
+});
+
+describe('buildCatalogIndex', () => {
+  it('indexes only trainer-bearing entries by normalized name', () => {
+    const idx = buildCatalogIndex([
+      { id: 'a', name: '9 Kings', steamAppId: null, trainerSource: 'http://x' },
+      { id: 'b', name: 'No Trainer', steamAppId: null },            // excluded
+      { id: 'c', name: 'Go', steamAppId: null, trainerSource: 'http://y' }, // excluded: <3
+    ]);
+    expect(idx.get('9kings')?.id).toBe('a');
+    expect(idx.has('notrainer')).toBe(false);
+    expect(idx.has('go')).toBe(false);
+  });
+
+  it('keeps the first entry on a normalized-name collision', () => {
+    const idx = buildCatalogIndex([
+      { id: 'first', name: 'Game X', steamAppId: null, trainerSource: 'http://x' },
+      { id: 'second', name: 'gamex', steamAppId: null, trainerSource: 'http://y' },
+    ]);
+    expect(idx.get('gamex')?.id).toBe('first');
   });
 });

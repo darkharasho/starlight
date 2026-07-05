@@ -88,6 +88,17 @@ export async function identifyProcess(proc: DetectedProcess, deps: IdentifyDeps)
   return deps.catalogIndex.get(normalizeName(proc.name)) ?? null;
 }
 
+export function buildCatalogIndex(entries: CatalogEntry[]): Map<string, CatalogEntry> {
+  const idx = new Map<string, CatalogEntry>();
+  for (const e of entries) {
+    if (!e.trainerSource) continue;
+    const key = normalizeName(e.name);
+    if (key.length < 3) continue;
+    if (!idx.has(key)) idx.set(key, e);
+  }
+  return idx;
+}
+
 async function defaultReadExeNames(installDir: string): Promise<string[]> {
   const out: string[] = [];
   const top = await readdir(installDir, { withFileTypes: true }).catch(() => []);
