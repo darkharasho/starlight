@@ -7,6 +7,7 @@ import type { StarlightEvent, DetectedProcess } from '../shared/ipc.js';
 
 let onProcessListHook: ((processes: DetectedProcess[]) => void) | null = null;
 
+// Single subscriber by design (last-write-wins).
 export function setOnProcessList(cb: (processes: DetectedProcess[]) => void): void {
   onProcessListHook = cb;
 }

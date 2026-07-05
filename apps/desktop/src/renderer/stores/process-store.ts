@@ -51,9 +51,7 @@ export function attachProcessEvents(): void {
             pid: e.pid,
             processName: e.name,
             game: e.game,
-          }).finally(() => {
-            useDetectionStore.getState().clear();
-          });
+          }).then((ok) => { if (ok) useDetectionStore.getState().clear(); }).catch(() => {});
         }
       }
     }

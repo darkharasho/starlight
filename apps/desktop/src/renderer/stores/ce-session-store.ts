@@ -27,7 +27,12 @@ interface CeSessionState {
   pending: Set<number>;
   /** True when the IPC result indicates the game isn't currently running. */
   notRunning: boolean;
-  /** True when the session found multiple candidate processes (picker needed). */
+  /**
+   * True when the session found multiple candidate processes (picker needed).
+   * Reserved for a future attach-bar pre-highlight of the best-guess process; the manual picker
+   * currently covers the ambiguous case (attached:false already renders the manual attach bar).
+   * DEFERRED — no component consumes this yet.
+   */
   needsPicker: boolean;
 
   start: (req: StartReq) => Promise<boolean>;

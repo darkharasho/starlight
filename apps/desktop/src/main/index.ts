@@ -37,7 +37,7 @@ setOnProcessList((processes) => {
         pid: d.pid, name: d.name, confidence: d.confidence,
       });
     }
-  });
+  }).catch(() => {});
 });
 
 function createWindow(): void {
@@ -145,6 +145,9 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.fetchCatalog, async () => {
     try {
       const index = await fetchCatalog();
+      // A game running before the catalog loads is re-evaluated each poll (LatchDetector.reported
+      // only records matched pids), so it will be detected once the index populates — don't
+      // "optimize" the re-evaluation away.
       catalogIndex = buildCatalogIndex((index?.games ?? []) as CatalogEntry[]);
       return { ok: true as const, index };
     } catch (err) {
