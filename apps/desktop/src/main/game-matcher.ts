@@ -1,5 +1,8 @@
 // apps/desktop/src/main/game-matcher.ts
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { DetectedProcess, DetectedGame } from '../shared/ipc.js';
+import { detectProton } from './proton-detect.js';
 
 export function normalizeName(s: string): string {
   return s.toLowerCase().replace(/\.exe$/, '').replace(/[^a-z0-9]/g, '');
@@ -62,7 +65,45 @@ export async function matchGameToProcess(game: MatchableGame, deps: MatchDeps): 
   return null;
 }
 
-// Default signal readers (Task 2 fills these in). Placeholders throw so tests
-// that forget to inject a reader fail loudly rather than hit the real system.
-async function defaultReadExeNames(_installDir: string): Promise<string[]> { return []; }
-async function defaultReadProtonAppId(_pid: number): Promise<number | null> { return null; }
+export interface CatalogEntry { id: string; name: string; steamAppId: number | null; trainerSource?: string | undefined }
+
+export interface IdentifyDeps {
+  catalogIndex: Map<string, CatalogEntry>;
+  detectedGames: DetectedGame[];
+  readProtonAppId?: (pid: number) => Promise<number | null>;
+}
+
+export async function identifyProcess(proc: DetectedProcess, deps: IdentifyDeps): Promise<CatalogEntry | null> {
+  const readAppId = deps.readProtonAppId ?? defaultReadProtonAppId;
+
+  const appId = await readAppId(proc.pid);
+  if (appId != null) {
+    const lib = deps.detectedGames.find((g) => g.appId === String(appId));
+    if (lib) {
+      const e = deps.catalogIndex.get(normalizeName(lib.name));
+      if (e) return e;
+    }
+    for (const e of deps.catalogIndex.values()) if (e.steamAppId === appId) return e;
+  }
+  return deps.catalogIndex.get(normalizeName(proc.name)) ?? null;
+}
+
+async function defaultReadExeNames(installDir: string): Promise<string[]> {
+  const out: string[] = [];
+  const top = await readdir(installDir, { withFileTypes: true }).catch(() => []);
+  for (const e of top) {
+    if (e.isFile() && /\.exe$/i.test(e.name)) out.push(e.name);
+    else if (e.isDirectory()) {
+      const sub = await readdir(join(installDir, e.name)).catch(() => []);
+      for (const f of sub) if (/\.exe$/i.test(f)) out.push(f);
+    }
+  }
+  return out;
+}
+
+async function defaultReadProtonAppId(pid: number): Promise<number | null> {
+  const info = await detectProton({ pid });
+  if (!info) return null;
+  const m = info.compatDataPath.match(/compatdata\/(\d+)/);
+  return m ? Number(m[1]) : null;
+}

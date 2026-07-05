@@ -1,6 +1,6 @@
 // apps/desktop/test/main/game-matcher.test.ts
 import { describe, it, expect } from 'vitest';
-import { normalizeName, matchGameToProcess } from '../../src/main/game-matcher.js';
+import { normalizeName, matchGameToProcess, identifyProcess } from '../../src/main/game-matcher.js';
 
 const g = (over = {}) => ({ id: '9-kings', name: '9 Kings', steamAppId: null, ...over });
 const proc = (pid: number, name: string) => ({ pid, name });
@@ -65,6 +65,34 @@ describe('matchGameToProcess', () => {
     const r = await matchGameToProcess(g({ name: 'Go' }), {
       processes: [proc(1, 'Go.exe')],
       detectedGames: [], readExeNames: async () => [], readProtonAppId: noAppId,
+    });
+    expect(r).toBeNull();
+  });
+});
+
+describe('identifyProcess', () => {
+  const entry = (over = {}) => ({ id: '9-kings', name: '9 Kings', steamAppId: null, trainerSource: 'http://x', ...over });
+  const index = new Map([['9kings', entry()]]);
+
+  it('identifies a process by normalized name against the catalog index', async () => {
+    const r = await identifyProcess({ pid: 5, name: '9Kings.exe' }, {
+      catalogIndex: index, detectedGames: [], readProtonAppId: async () => null,
+    });
+    expect(r?.id).toBe('9-kings');
+  });
+
+  it('identifies by Proton appid -> Steam game -> catalog name', async () => {
+    const r = await identifyProcess({ pid: 5, name: 'Game.exe' }, {
+      catalogIndex: index,
+      detectedGames: [{ source: 'steam', appId: '2784470', name: '9 Kings', installDir: '/g' }],
+      readProtonAppId: async () => 2784470,
+    });
+    expect(r?.id).toBe('9-kings');
+  });
+
+  it('returns null when the process maps to no trainer-bearing entry', async () => {
+    const r = await identifyProcess({ pid: 5, name: 'random.exe' }, {
+      catalogIndex: index, detectedGames: [], readProtonAppId: async () => null,
     });
     expect(r).toBeNull();
   });
