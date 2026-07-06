@@ -50,6 +50,7 @@ function createWindow(): void {
     show: false,
     frame: false,
     autoHideMenuBar: true,
+    icon: join(app.getAppPath(), 'build', 'icon.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       sandbox: true,

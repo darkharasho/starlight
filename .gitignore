@@ -25,3 +25,7 @@ graphify-out/
 
 # Prepared runtime artifacts (host in starlight-runtimes, don't commit)
 dist-runtimes/
+
+# Keep the desktop app icon resources (the broad "build" rule above ignores them)
+!apps/desktop/build/
+!apps/desktop/build/**
