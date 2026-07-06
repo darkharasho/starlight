@@ -1,10 +1,11 @@
 import { useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { LatchPill } from './LatchPill.js';
 import type { LatchState } from '../stores/latch-store.js';
 import { useDetectionStore } from '../stores/detection-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useCeSessionStore } from '../stores/ce-session-store.js';
+import { useSearchStore } from '../stores/search-store.js';
 
 interface Props {
   latchState: LatchState;
@@ -12,8 +13,17 @@ interface Props {
 
 export function TopBar({ latchState }: Props): JSX.Element {
   const navigate = useNavigate();
+  const location = useLocation();
   const detected = useDetectionStore((s) => s.detected);
   const start = useCeSessionStore((s) => s.start);
+  const query = useSearchStore((s) => s.query);
+  const setQuery = useSearchStore((s) => s.setQuery);
+
+  const onSearchChange = useCallback((value: string) => {
+    setQuery(value);
+    // Jump to the results view as soon as the user starts searching.
+    if (value && location.pathname !== '/search') navigate('/search');
+  }, [setQuery, location.pathname, navigate]);
 
   const handleLatch = useCallback(async () => {
     if (!detected) return;
@@ -43,10 +53,12 @@ export function TopBar({ latchState }: Props): JSX.Element {
     <header className="h-[52px] shrink-0 border-b border-line bg-panel/60 backdrop-blur flex items-center px-4 gap-3">
       <input
         type="text"
-        placeholder="⌕  Search games or trainers… (use Search tab)"
-        disabled
-        title="Use the Search tab in the sidebar"
-        className="flex-1 max-w-[420px] h-[30px] rounded bg-panel border border-line px-2.5 text-xs text-muted placeholder:text-muted/60 focus:outline-none cursor-not-allowed opacity-70"
+        placeholder="⌕  Search games or trainers…"
+        aria-label="Search games or trainers"
+        value={query}
+        onChange={(e) => onSearchChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && query.trim() && location.pathname !== '/search') navigate('/search'); }}
+        className="flex-1 max-w-[420px] h-[30px] rounded bg-panel border border-line px-2.5 text-xs text-ink placeholder:text-muted/60 focus:outline-none focus:border-neon-cyan"
       />
       <div className="ml-auto">
         <LatchPill

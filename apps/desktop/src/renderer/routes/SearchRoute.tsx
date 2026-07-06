@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BoxartShelf } from '../components/BoxartShelf.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { useSearchStore } from '../stores/search-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
@@ -10,7 +11,7 @@ import type { CatalogGame } from '../types/catalog-game.js';
 
 export function SearchRoute(): JSX.Element {
   const navigate = useNavigate();
-  const [query, setQuery] = useState('');
+  const query = useSearchStore((s) => s.query);
   const index = useCatalogStore((s) => s.index);
   const load = useCatalogStore((s) => s.load);
   const fetchTrainer = useCatalogStore((s) => s.trainer);
@@ -47,16 +48,10 @@ export function SearchRoute(): JSX.Element {
   return (
     <>
       <PageHeader title="Search" />
-      <input
-        autoFocus
-        type="text"
-        placeholder="Type a game name…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        className="w-full max-w-[480px] h-9 rounded bg-panel border border-line px-3 text-sm text-ink placeholder:text-muted/80 focus:outline-none focus:border-neon-cyan mb-4"
-      />
-      {query.trim() && matches.length === 0 ? (
-        <div className="text-xs text-muted">No games match.</div>
+      {!query.trim() ? (
+        <div className="text-xs text-muted">Type in the search bar above to find a game or trainer.</div>
+      ) : matches.length === 0 ? (
+        <div className="text-xs text-muted">No games match “{query.trim()}”.</div>
       ) : (
         <BoxartShelf games={matches} onSelect={(g) => void onSelect(g)} limit={120} />
       )}
