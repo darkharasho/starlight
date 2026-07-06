@@ -13,6 +13,14 @@ import { readFile } from 'node:fs/promises';
 
 const COMM_MAX = 15; // TASK_COMM_LEN - 1
 
+/**
+ * Matches a Windows exe process name, including the comm-truncated tails
+ * `.e`/`.ex` that Linux produces when it clips a long name at 15 chars (e.g.
+ * "RSDragonwilds.exe" -> "RSDragonwilds.e"). Used to pick out game exes from the
+ * Wine/Proton wrapper processes (reaper, proton, pv-adverb, …) that never match.
+ */
+export const EXE_SUFFIX = /\.ex?e?$/i;
+
 function basename(p: string): string {
   const parts = p.split(/[/\\]/);
   return parts[parts.length - 1] ?? p;

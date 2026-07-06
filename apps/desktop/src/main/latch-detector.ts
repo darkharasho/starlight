@@ -2,14 +2,7 @@
 import type { DetectedProcess, DetectedGame } from '../shared/ipc.js';
 import { identifyProcess, normalizeName, type CatalogEntry } from './game-matcher.js';
 import { filterCandidates } from './process-host.js';
-import { readExeName } from './proc-exe-name.js';
-
-// Windows/Proton exe candidates. Linux truncates `comm` to 15 chars, so a long
-// exe name like "RSDragonwilds.exe" arrives as "RSDragonwilds.e" — the `.exe`
-// suffix itself gets clipped. Accept the truncated tails `.e`/`.ex` too so those
-// processes still reach identifyProcess (which then confirms via the compatdata
-// appid). The real exe name is recovered from cmdline before matching.
-const EXE_SUFFIX = /\.ex?e?$/i;
+import { readExeName, EXE_SUFFIX } from './proc-exe-name.js';
 
 export interface LatchDetectorOpts {
   catalogIndex: () => Map<string, CatalogEntry>;

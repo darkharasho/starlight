@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DetectedProcess, DetectedGame } from '../shared/ipc.js';
 import { detectProton } from './proton-detect.js';
+import { EXE_SUFFIX } from './proc-exe-name.js';
 
 export function normalizeName(s: string): string {
   return s.toLowerCase().replace(/\.exe$/, '').replace(/[^a-z0-9]/g, '');
@@ -36,23 +37,33 @@ export async function matchGameToProcess(game: MatchableGame, deps: MatchDeps): 
   const readAppId = deps.readProtonAppId ?? defaultReadProtonAppId;
   const gnorm = normalizeName(game.name);
 
-  // Layer 1: Steam install-dir exe names (exact even for odd exe names)
+  // The installed game this catalog entry maps to. Matched by Steam id when the
+  // catalog carries one, else by normalized name. Its `appId` is the exact Steam
+  // app id even when the catalog's steamAppId is null.
   const linked = deps.detectedGames.find((g) =>
     (game.steamAppId != null && g.appId === String(game.steamAppId)) ||
     normalizeName(g.name) === gnorm);
-  if (linked) {
-    const exeNorms = (await readExe(linked.installDir)).map(normalizeName);
-    const hit = resolve(deps.processes.filter((p) => exeNorms.includes(normalizeName(p.name))));
+
+  // Layer 1: Proton compatdata appid. This is the most reliable signal and, via
+  // the linked installed game's appId, works even when the catalog has no
+  // steamAppId. Restrict to exe-like processes so the Wine/Proton wrapper
+  // processes (reaper, proton, pv-adverb, …) that share the same compatdata
+  // prefix don't turn a clean match into a false "ambiguous".
+  const appId = game.steamAppId ?? (linked?.appId != null ? Number(linked.appId) : null);
+  if (appId != null && Number.isFinite(appId)) {
+    const hits: DetectedProcess[] = [];
+    for (const p of deps.processes) {
+      if (!EXE_SUFFIX.test(p.name)) continue;
+      if ((await readAppId(p.pid)) === appId) hits.push(p);
+    }
+    const hit = resolve(hits);
     if (hit) return hit;
   }
 
-  // Layer 2: Proton compatdata appid
-  if (game.steamAppId != null) {
-    const hits: DetectedProcess[] = [];
-    for (const p of deps.processes) {
-      if ((await readAppId(p.pid)) === game.steamAppId) hits.push(p);
-    }
-    const hit = resolve(hits);
+  // Layer 2: Steam install-dir exe names (exact even for odd exe names).
+  if (linked) {
+    const exeNorms = (await readExe(linked.installDir)).map(normalizeName);
+    const hit = resolve(deps.processes.filter((p) => exeNorms.includes(normalizeName(p.name))));
     if (hit) return hit;
   }
 
