@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
+  "build": {
+    "appId": "com.darkharasho.starlight",
+    "productName": "Starlight",
+    "directories": { "buildResources": "build" },
+    "files": ["out/**/*", "package.json"],
+    "linux": { "icon": "build/icons", "category": "Game" },
+    "win": { "icon": "build/icon.ico" },
+    "mac": { "icon": "build/icon.icns" }
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
