@@ -108,6 +108,20 @@ app.whenReady().then(async () => {
   const initialConfig = await getConfig();
   processHost.setIntervalMs(initialConfig.preferences.pollIntervalMs);
 
+  // Populate the installed-game list up front. The latch detector bridges a
+  // running process's Proton compatdata appid to a catalog entry *through* this
+  // list, so without it a game already running at launch (before the user opens
+  // the Library tab) can't be identified. Fire-and-forget: each poll re-evaluates
+  // unmatched processes, so detection catches up once the scan resolves.
+  void scanLibrary()
+    .then((games) => {
+      lastDetectedGames = games;
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send(CHANNELS.event, { type: 'library:scanned', games });
+      }
+    })
+    .catch(() => {});
+
   ipcMain.handle(CHANNELS.loadTrainer, async (): Promise<LoadTrainerResult> =>
     loadTrainer(BrowserWindow.getFocusedWindow() ?? undefined));
 

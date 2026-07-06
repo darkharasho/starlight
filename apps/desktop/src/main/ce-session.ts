@@ -8,6 +8,7 @@ import { generateControlScript } from './ce-control-script.js';
 import { spawnCeProcess, type CeProcessHandle, type CeProtonLaunch } from './ce-process.js';
 import { downloadCtToDisk } from './ct-cache.js';
 import { detectProton, type ProtonInfo } from './proton-detect.js';
+import { readExeName } from './proc-exe-name.js';
 import { matchGameToProcess, type MatchableGame } from './game-matcher.js';
 import { listCtRecords } from '@starlight/ct-importer';
 import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
@@ -78,7 +79,11 @@ export interface StartSessionOpts {
 }
 
 async function defaultReadComm(pid: number): Promise<string> {
-  return (await readFile(`/proc/${pid}/comm`, 'utf8')).trim();
+  // Prefer the full exe name from cmdline: Windows CE's openProcess needs the
+  // untruncated name (e.g. "RSDragonwilds.exe"), but /proc/<pid>/comm is clipped
+  // to 15 chars ("RSDragonwilds.e"), which CE can't match. Fall back to comm.
+  const comm = (await readFile(`/proc/${pid}/comm`, 'utf8')).trim();
+  return (await readExeName(pid, comm)) ?? comm;
 }
 
 export async function startSession(opts: StartSessionOpts): Promise<{ sessionId: string; records: CeRecord[]; proton: boolean; needsPicker: boolean }> {
