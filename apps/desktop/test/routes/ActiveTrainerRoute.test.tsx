@@ -57,6 +57,11 @@ describe('ActiveTrainerRoute', () => {
     expect(screen.getByText('Stats')).toBeInTheDocument();
   });
 
+  it('shows a Back button', () => {
+    render(<MemoryRouter><ActiveTrainerRoute /></MemoryRouter>);
+    expect(screen.getByRole('button', { name: /back/i })).toBeInTheDocument();
+  });
+
   it('shows toggle, value, and unsupported variants in the Player category', () => {
     render(<MemoryRouter><ActiveTrainerRoute /></MemoryRouter>);
     expect(screen.getByText('Infinite HP')).toBeInTheDocument();          // toggle

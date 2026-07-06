@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useLatchState } from '../stores/latch-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
@@ -53,6 +54,7 @@ function ErrorBanner({ message }: { message: string }): JSX.Element {
 
 export function ActiveTrainerRoute(): JSX.Element {
   useEffect(() => { attachProcessEvents(); }, []);
+  const navigate = useNavigate();
 
   const ceSessionId = useCeSessionStore((s) => s.sessionId);
   const ceRecords = useCeSessionStore((s) => s.records);
@@ -124,28 +126,22 @@ export function ActiveTrainerRoute(): JSX.Element {
     }
   }
 
-  if (ceSessionId) {
-    return <CeSessionView records={ceRecords} pending={cePending} setActive={ceSetActive} end={ceEnd}
-                          attached={ceAttached} proton={ceProton} attachedTo={ceAttachedTo}
-                          attach={ceAttach} starting={ceStarting} startError={ceStartError}
-                          processes={processes} />;
-  }
-
-  if (!trainer) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-muted">
-        {ceNotRunning && (
-          <div className="text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-4 self-stretch">
-            Game isn&apos;t running. Start it, then click the tile again — Starlight will attach automatically.
-          </div>
-        )}
-        <p className="text-sm">No trainer loaded.</p>
-        <p className="text-xs mt-2">Go to Home and click "Load Trainer (.CT)".</p>
-      </div>
-    );
-  }
-
-  return (
+  const content: JSX.Element = ceSessionId ? (
+    <CeSessionView records={ceRecords} pending={cePending} setActive={ceSetActive} end={ceEnd}
+                   attached={ceAttached} proton={ceProton} attachedTo={ceAttachedTo}
+                   attach={ceAttach} starting={ceStarting} startError={ceStartError}
+                   processes={processes} />
+  ) : !trainer ? (
+    <div className="flex flex-col items-center justify-center h-full text-muted">
+      {ceNotRunning && (
+        <div className="text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-4 self-stretch">
+          Game isn&apos;t running. Start it, then click the tile again — Starlight will attach automatically.
+        </div>
+      )}
+      <p className="text-sm">No trainer loaded.</p>
+      <p className="text-xs mt-2">Go to Home and click "Load Trainer (.CT)".</p>
+    </div>
+  ) : (
     <TrainerView
       trainer={trainer}
       activeCheats={activeCheats}
@@ -167,6 +163,19 @@ export function ActiveTrainerRoute(): JSX.Element {
       handleRebind={handleRebind}
       handleReset={handleReset}
     />
+  );
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <button
+        type="button"
+        onClick={() => navigate(-1)}
+        className="shrink-0 self-start mb-3 flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan"
+      >
+        <span aria-hidden="true">←</span> Back
+      </button>
+      <div className="flex-1 min-h-0">{content}</div>
+    </div>
   );
 }
 
