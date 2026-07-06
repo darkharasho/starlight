@@ -36,6 +36,20 @@ describe('matchGameToProcess', () => {
     expect(r).toEqual({ pid: 30, name: 'Game.exe' });
   });
 
+  it('appid via linked install: matches a Proton game whose catalog steamAppId is null and whose process name is comm-truncated, ignoring wrapper processes sharing the compatdata', async () => {
+    const r = await matchGameToProcess(
+      { id: 'runescape-dragonwilds', name: 'RuneScape Dragonwilds', steamAppId: null },
+      {
+        processes: [proc(1, 'reaper'), proc(2, 'RSDragonwilds.e'), proc(3, 'pv-adverb')],
+        detectedGames: [{ source: 'steam', appId: '1374490', name: 'RuneScape: Dragonwilds', installDir: '/g' }],
+        readExeNames: async () => ['RSDragonwilds.exe'],
+        // reaper + pv-adverb share the same compatdata appid but are not exes.
+        readProtonAppId: async () => 1374490,
+      },
+    );
+    expect(r).toEqual({ pid: 2, name: 'RSDragonwilds.e' });
+  });
+
   it('layer 3: matches by normalized name', async () => {
     const r = await matchGameToProcess(g(), {
       processes: [proc(40, '9Kings.exe')],
