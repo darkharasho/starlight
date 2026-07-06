@@ -16,6 +16,8 @@ export function TopBar({ latchState }: Props): JSX.Element {
   const location = useLocation();
   const detected = useDetectionStore((s) => s.detected);
   const start = useCeSessionStore((s) => s.start);
+  const ceAttached = useCeSessionStore((s) => s.attached);
+  const ceSessionId = useCeSessionStore((s) => s.sessionId);
   const query = useSearchStore((s) => s.query);
   const setQuery = useSearchStore((s) => s.setQuery);
 
@@ -45,8 +47,12 @@ export function TopBar({ latchState }: Props): JSX.Element {
     navigate('/active');
   }, [detected, navigate, start]);
 
-  // When a detection is pending, show the armed pill regardless of the legacy latch state.
-  const effectiveState: LatchState = detected ? 'detected' : latchState;
+  // Pill priority: an attached Cheat Engine session wins (it's the strongest
+  // "we're live" signal), then a pending detection (armed), then the legacy
+  // latch state. Without the session check the pill sat on "Waiting for game"
+  // even while a session was attached and running.
+  const effectiveState: LatchState =
+    ceAttached && ceSessionId ? 'latched' : detected ? 'detected' : latchState;
   const detectedLabel = detected ? `${detected.name} detected — Latch` : undefined;
 
   return (

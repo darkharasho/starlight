@@ -185,11 +185,30 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
     throw new Error('CE process spawned but timed out waiting for ping');
   }
 
-  const reply = await bridge.send({ method: 'list_records' }) as { records?: CeRecord[] };
+  // Bounded: if the table's load-time script wedges CE the poll loop stops
+  // answering, and an unbounded wait here would hang the session start forever.
+  const reply = await sendWithTimeout(bridge, { method: 'list_records' }, 10_000).catch(() => ({})) as { records?: CeRecord[] };
   const records = reply.records ?? [];
 
   active = { sessionId, ctPath, bridge, ceProcess, records };
   return { sessionId, records, proton: proton !== null, needsPicker };
+}
+
+/**
+ * Races a bridge command against a timeout. Without this a wedged Cheat Engine
+ * (e.g. blocked on a table's load-time script) would leave the caller — and the
+ * renderer button that awaits it — hanging forever with no feedback.
+ */
+async function sendWithTimeout(bridge: Bridge, cmd: { method: string; params?: unknown }, ms: number): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Cheat Engine did not respond (timed out)')), ms);
+  });
+  try {
+    return await Promise.race([bridge.send(cmd), timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
 }
 
 export async function setActive(req: { sessionId: string; recordId: number; active: boolean }): Promise<{ ok: boolean; error?: string }> {
@@ -200,7 +219,7 @@ export async function setActive(req: { sessionId: string; recordId: number; acti
     return { ok: false, error: 'not attached to a game process' };
   }
   try {
-    const r = await active.bridge.send({ method: 'set_active', params: { id: req.recordId, active: req.active } }) as { ok?: boolean; error?: string };
+    const r = await sendWithTimeout(active.bridge, { method: 'set_active', params: { id: req.recordId, active: req.active } }, 8000) as { ok?: boolean; error?: string };
     if (r.ok) {
       const rec = active.records.find((x) => x.id === req.recordId);
       if (rec) rec.isActive = req.active;
