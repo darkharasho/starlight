@@ -14,6 +14,7 @@ import { resolveBoxart } from './boxart-host.js';
 import { detectCeRuntime } from './ce-runtime-detect.js';
 import { installCeRuntime, installWindowsCe } from './ce-runtime-install.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, getActiveSession as ceGetActiveSession } from './ce-session.js';
+import { killStaleCeProcesses } from './ce-process.js';
 import { buildCatalogIndex, type CatalogEntry } from './game-matcher.js';
 import { join } from 'node:path';
 
@@ -107,6 +108,13 @@ app.whenReady().then(async () => {
 
   const initialConfig = await getConfig();
   processHost.setIntervalMs(initialConfig.preferences.pollIntervalMs);
+
+  // Reap Cheat Engine processes orphaned by a previous crash (which bypasses the
+  // before-quit cleanup). Leftover CE holds the game open and makes the next
+  // attach time out ("spawned but timed out waiting for ping").
+  void killStaleCeProcesses(CE_RUNTIME_ROOT)
+    .then((n) => { if (n > 0) console.log(`[startup] reaped ${n} orphaned Cheat Engine process(es)`); })
+    .catch(() => {});
 
   // Populate the installed-game list up front. The latch detector bridges a
   // running process's Proton compatdata appid to a catalog entry *through* this

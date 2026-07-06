@@ -131,6 +131,28 @@ export async function killWineProcess(winCeExe: string): Promise<void> {
   }
 }
 
+/**
+ * Kills any orphaned Cheat Engine processes left behind by a previous run that
+ * exited without cleaning up (e.g. a crash, which bypasses the before-quit
+ * handler). Matches CE processes (comm starts with "cheatengine") whose command
+ * line references the Starlight runtime directory, so unrelated CE instances the
+ * user launched themselves are never touched. Safe to call on startup.
+ */
+export async function killStaleCeProcesses(runtimeRoot: string): Promise<number> {
+  const { readdir, readFile } = await import('node:fs/promises');
+  const pids = (await readdir('/proc').catch(() => [] as string[])).filter((d) => /^\d+$/.test(d));
+  let killed = 0;
+  await Promise.all(pids.map(async (pid) => {
+    try {
+      const comm = (await readFile(`/proc/${pid}/comm`, 'utf8')).trim();
+      if (!comm.startsWith('cheatengine')) return;
+      const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8');
+      if (cmdline.includes(runtimeRoot)) { process.kill(Number(pid), 'SIGKILL'); killed++; }
+    } catch { /* process gone or unreadable — ignore */ }
+  }));
+  return killed;
+}
+
 function hookLines(stream: NodeJS.ReadableStream | null | undefined, cb: (line: string) => void): void {
   if (!stream) return;
   let buffer = '';

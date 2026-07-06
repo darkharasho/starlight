@@ -86,7 +86,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
     const sid = get().sessionId;
     if (!sid) return;
     const pending = new Set(get().pending); pending.add(recordId);
-    set({ pending });
+    set({ pending, startError: null });
     try {
       const r = await starlight().ceSessionSetActive({ sessionId: sid, recordId, active });
       if (r.ok) {

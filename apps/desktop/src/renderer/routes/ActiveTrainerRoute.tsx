@@ -512,6 +512,15 @@ function CeSessionView({ records, pending, setActive, end, attached, proton, att
         </div>
       )}
 
+      {/* A failed toggle (bridge error, AOB/version mismatch, timeout) sets
+          startError. When attached the attach bar is hidden, so surface it here
+          — otherwise a cheat that won't enable looks like a dead button. */}
+      {attached && startError && (
+        <div className="px-3 py-2 rounded-sm border border-neon-pink/40 bg-neon-pink/[0.06] text-[11px] text-neon-pink">
+          {startError}
+        </div>
+      )}
+
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
         {records.map((r) => (
           <div key={r.id} className={`flex items-center gap-3 px-3 py-2 rounded-sm border ${r.isGroupHeader ? 'border-line bg-panel/40' : 'border-line bg-panel'} ${r.isActive ? 'border-neon-cyan/60' : ''}`}>
