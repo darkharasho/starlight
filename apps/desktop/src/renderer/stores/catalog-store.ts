@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
 import type { CatalogIndex, FetchTrainerRequest } from '../../shared/ipc.js';
 import type { CatalogIndexEntry, StarlightTrainer } from '@starlight/catalog/schema';
+import { dedupeGames } from '../lib/dedupe-games.js';
 
 interface CatalogState {
   index: CatalogIndex | null;
@@ -44,8 +45,13 @@ export const useCatalogStore = create<CatalogState>((set) => ({
     set({ loading: true, error: null });
     try {
       const r = await starlight().fetchCatalog();
-      if (r.ok) set({ index: r.index, loading: false });
-      else      set({ loading: false, error: r.error });
+      if (r.ok) {
+        // Collapse title-variant duplicates for display.
+        const index = { ...r.index, games: dedupeGames(r.index.games) };
+        set({ index, loading: false });
+      } else {
+        set({ loading: false, error: r.error });
+      }
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : String(err) });
     }

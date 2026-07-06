@@ -45,27 +45,45 @@ export function GameTile({ game, onClick }: Props): JSX.Element {
       onClick={() => onClick?.(game)}
       className="relative w-full aspect-[2/3] rounded-sm overflow-hidden border border-neon-cyan/60 glow-cyan transition-transform duration-150 hover:-translate-y-0.5 hover:border-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan bg-[#1a1a22]"
     >
-      <span className="absolute inset-0 flex items-center justify-center text-[10px] text-muted px-2 text-center pointer-events-none">
-        {game.name}
-      </span>
+      {/* No-art placeholder: the name centered, shown only until art loads. */}
+      {shownSrc === null && (
+        <span className="absolute inset-0 flex items-center justify-center text-[10px] text-muted px-2 text-center pointer-events-none">
+          {game.name}
+        </span>
+      )}
       {shownSrc !== null && (
-        <img
-          key={shownSrc}
-          src={shownSrc}
-          alt=""
-          className="absolute inset-0 w-full h-full object-cover"
-          onError={() => void onImgError()}
-          loading="lazy"
-        />
+        <>
+          {/* Blurred fill so non-2:3 art fills the tile instead of being cropped
+              or leaving empty bars. */}
+          <img
+            src={shownSrc}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 w-full h-full object-cover scale-110 blur-xl opacity-50"
+          />
+          {/* The actual cover, contained so it is never cut off. */}
+          <img
+            key={shownSrc}
+            src={shownSrc}
+            alt=""
+            className="absolute inset-0 w-full h-full object-contain"
+            onError={() => void onImgError()}
+            loading="lazy"
+          />
+        </>
       )}
       {game.installed && (
         <span className="absolute top-1.5 left-1.5 text-[8px] tracking-wider text-neon-pink bg-bg/70 px-1.5 py-[2px] rounded-sm z-10">
           ● INSTALLED
         </span>
       )}
-      <span className="absolute bottom-1.5 right-1.5 text-[8px] tracking-wider text-neon-cyan bg-bg/70 px-1.5 py-[2px] rounded-sm uppercase z-10">
+      <span className="absolute top-1.5 right-1.5 text-[8px] tracking-wider text-neon-cyan bg-bg/70 px-1.5 py-[2px] rounded-sm uppercase z-10">
         Trainer
       </span>
+      {/* Always-visible title so tiles are identifiable regardless of the art. */}
+      <div className="absolute inset-x-0 bottom-0 z-10 px-2 pt-6 pb-1.5 bg-gradient-to-t from-bg via-bg/85 to-transparent pointer-events-none">
+        <span className="block text-[10px] leading-tight text-white/90 line-clamp-2">{game.name}</span>
+      </div>
       <span className="sr-only">{game.name}</span>
     </button>
   );
