@@ -10,3 +10,4 @@ export {
 } from './starlight-format.js';
 export { importCt, type ImportOptions, type ImportResult } from './ct-importer.js';
 export { type ImportStats } from './stats.js';
+export { parseCt, listCtRecords, type CtRecord } from './xml-parser.js';

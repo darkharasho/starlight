@@ -9,6 +9,7 @@ import { spawnCeProcess, type CeProcessHandle, type CeProtonLaunch } from './ce-
 import { downloadCtToDisk } from './ct-cache.js';
 import { detectProton, type ProtonInfo } from './proton-detect.js';
 import { matchGameToProcess, type MatchableGame } from './game-matcher.js';
+import { listCtRecords } from '@starlight/ct-importer';
 import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
 
 /** Path to the Windows CE inside an extracted runtime, relative to installDir. */
@@ -42,9 +43,16 @@ export interface CeRecord {
 export interface SessionState {
   sessionId: string;
   ctPath: string;
-  bridge: Bridge;
-  ceProcess: CeProcessHandle;
+  /** null in a preview session (records parsed from the CT, no CE launched). */
+  bridge: Bridge | null;
+  ceProcess: CeProcessHandle | null;
   records: CeRecord[];
+}
+
+/** Reads the cheat list straight from the .CT — no Cheat Engine needed. */
+async function recordsFromCt(ctPath: string): Promise<CeRecord[]> {
+  const xml = await readFile(ctPath, 'utf8');
+  return listCtRecords(xml).map((r) => ({ ...r, isActive: false }));
 }
 
 let active: SessionState | null = null;
@@ -94,6 +102,17 @@ export async function startSession(opts: StartSessionOpts): Promise<{ sessionId:
     if (match === null) throw new Error('game not running');
     if (match === 'ambiguous') { needsPicker = true; }
     else { effectivePid = match.pid; }
+  }
+
+  // No attach target (ambiguous match, or a plain load with no process): show
+  // the cheat list parsed straight from the .CT and DON'T launch Cheat Engine.
+  // Booting CE just to preview would pop the Linux CE Patreon nag; the user
+  // attaches (which re-runs this with a pid) when they pick a process.
+  if (effectivePid === undefined) {
+    const sessionId = randomUUID();
+    const records = await recordsFromCt(ctPath);
+    active = { sessionId, ctPath, bridge: null, ceProcess: null, records };
+    return { sessionId, records, proton: false, needsPicker: true };
   }
 
   // Resolve the target process name and whether it's a Proton game.
@@ -172,6 +191,9 @@ export async function setActive(req: { sessionId: string; recordId: number; acti
   if (!active || active.sessionId !== req.sessionId) {
     return { ok: false, error: 'session not active' };
   }
+  if (!active.bridge) {
+    return { ok: false, error: 'not attached to a game process' };
+  }
   try {
     const r = await active.bridge.send({ method: 'set_active', params: { id: req.recordId, active: req.active } }) as { ok?: boolean; error?: string };
     if (r.ok) {
@@ -189,8 +211,8 @@ export async function endSession(req: { sessionId: string }): Promise<{ ok: bool
   const s = active;
   if (!s || s.sessionId !== req.sessionId) return { ok: true };
   active = null;
-  try { await s.bridge.close(); } catch { /* ignore */ }
-  try { await s.ceProcess.kill('SIGTERM'); } catch { /* ignore */ }
+  try { await s.bridge?.close(); } catch { /* ignore */ }
+  try { await s.ceProcess?.kill('SIGTERM'); } catch { /* ignore */ }
   return { ok: true };
 }
 

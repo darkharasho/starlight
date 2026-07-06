@@ -54,3 +54,37 @@ export function parseCt(xml: string): CtRoot {
   }
   return parsed as CtRoot;
 }
+
+/** A flattened cheat-table record, mirroring Cheat Engine's own record list. */
+export interface CtRecord {
+  /** The table's numeric `<ID>` (falls back to flat position, matching CE's `r.ID or idx`). */
+  id: number;
+  name: string;
+  isGroupHeader: boolean;
+}
+
+function asArray<T>(v: T | T[] | undefined): T[] {
+  return v === undefined ? [] : Array.isArray(v) ? v : [v];
+}
+
+/**
+ * Flattens a parsed .CT into the same depth-first (parent-then-children) order
+ * Cheat Engine's `getAddressList()` produces, so records can be listed for the
+ * UI without launching CE — and the `id`s still line up with CE's `set_active`.
+ */
+export function listCtRecords(xml: string): CtRecord[] {
+  const root = parseCt(xml);
+  const out: CtRecord[] = [];
+  const walk = (entries: CtEntry[]): void => {
+    for (const e of entries) {
+      out.push({
+        id: e.ID ?? out.length,                                 // CE uses `r.ID or idx`
+        name: (e.Description ?? 'Unnamed').replace(/^"+|"+$/g, ''),
+        isGroupHeader: e.GroupHeader === 1,
+      });
+      walk(asArray(e.CheatEntries?.CheatEntry));
+    }
+  };
+  walk(asArray(root.CheatTable.CheatEntries?.CheatEntry));
+  return out;
+}

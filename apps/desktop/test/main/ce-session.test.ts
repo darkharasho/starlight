@@ -53,8 +53,11 @@ describe('ce-session', () => {
 
   it('times out cleanly when CE never responds to ping', async () => {
     const source = await startCtServer();
+    // A pid forces an actual CE launch (the "stuck" binary); native (non-Proton)
+    // so it uses the Linux CE path and hangs → ping timeout.
     await expect(startSession({
       source, cacheKey: 'k2', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game',
     })).rejects.toThrow(/timed out|ping/i);
     expect(getActiveSession()).toBeNull();
   });
@@ -62,6 +65,35 @@ describe('ce-session', () => {
   it('endSession is idempotent and tolerates missing session', async () => {
     const r = await endSession({ sessionId: 'nonexistent' });
     expect(r.ok).toBe(true);
+  });
+
+  it('previews records from the .CT without launching CE when there is no attach target', async () => {
+    // A CT the fake server returns, with a group header + two cheats.
+    const ct = '<CheatTable><CheatEntries>'
+      + '<CheatEntry><ID>1</ID><Description>"== Player =="</Description><GroupHeader>1</GroupHeader>'
+      + '<CheatEntries><CheatEntry><ID>2</ID><Description>"Infinite HP"</Description></CheatEntry></CheatEntries></CheatEntry>'
+      + '</CheatEntries></CheatTable>';
+    const ctSrv = createServer((_req, res) => { res.writeHead(200); res.end(ct); });
+    const url = await new Promise<string>((resolve) => {
+      ctSrv.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(ctSrv.address() as { port: number }).port}/x.CT`));
+    });
+    try {
+      // No pid and no game → preview mode. The binary is the "stuck" sleeper;
+      // if CE were launched this would hang, so a fast return proves it wasn't.
+      const r = await startSession({
+        source: url, cacheKey: 'preview1', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      });
+      expect(r.needsPicker).toBe(true);
+      expect(r.proton).toBe(false);
+      expect(r.records.map((x) => x.name)).toEqual(['== Player ==', 'Infinite HP']);
+      expect(r.records[0]).toMatchObject({ id: 1, isGroupHeader: true });
+      // No CE was launched → toggling reports "not attached".
+      const t = await setActive({ sessionId: r.sessionId, recordId: 2, active: true });
+      expect(t.ok).toBe(false);
+      expect(t.error).toMatch(/not attached/i);
+    } finally {
+      await new Promise<void>((res) => ctSrv.close(() => res()));
+    }
   });
 
   it('toWinePath maps a Linux path to the Wine Z: drive', () => {
