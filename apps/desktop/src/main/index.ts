@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
-import { configureStarlightdHost, getEngineClient, engineNeedsPtraceGrant, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
+import { configureStarlightdHost, getEngineClient, engineNeedsPtraceGrant, enginePid, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setAgentHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
@@ -40,6 +40,7 @@ import { discoveryTools } from './agent/tools-discovery.js';
 import { modifyTools } from './agent/tools-modify.js';
 import { libraryTools } from './agent/tools-library.js';
 import { createAgentSession } from './agent/session.js';
+import { checkAttachTarget, procTargetDeps } from './agent/target-guard.js';
 import { listModules as engineListModules } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
 import { detectAntiCheat } from './anti-cheat.js';
@@ -114,8 +115,10 @@ const agentPrompts = createPlayerPrompts({
   notifier: electronNotifier(), focusAgentView, onChange: broadcastAgentState,
   hotkeys: { set: setAgentHotkeys }, prefs: async () => (await getConfig()).agent,
 });
+const attachTargetDeps = procTargetDeps({ daemonPid: enginePid });
 const agentSession = createAgentSession({
   getClient: getEngineClient,
+  checkTarget: (pid) => checkAttachTarget(pid, attachTargetDeps),
   identify: (pid) => identifyGame(pid, { catalogIndex: () => catalogIndex, detectedGames: () => lastDetectedGames }),
   owner: gameOwner,
   prompts: agentPrompts,

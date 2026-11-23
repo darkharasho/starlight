@@ -46,6 +46,11 @@ export interface AgentSessionDeps {
   getClient(): Promise<EngineClient>;
   engine?: Partial<Pick<EngineApi, 'attach' | 'listModules' | 'setSpeed' | 'pointerEnd'>>;
   detectAntiCheatFn?(pid: number): Promise<AntiCheatHit | null>;
+  /**
+   * I5: a refusal when `pid` isn't the player's own program (another user's or root's,
+   * or Starlight itself), else null. Checked before asking and again before attaching.
+   */
+  checkTarget(pid: number): Promise<string | null>;
   identify(pid: number): Promise<GameIdentity>;
   owner: GameOwner;
   prompts: PlayerPrompts;
@@ -276,7 +281,9 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
       throw new ToolError('An attach request is already waiting for the player.');
     }
 
-    // 2. Anti-cheat: refuse without asking.
+    // 2. Only the player's own programs, never Starlight itself (I5), and no anti-cheat: refuse without asking.
+    const notTarget = await deps.checkTarget(pid);
+    if (notTarget) throw new ToolError(notTarget);
     const hit = await checkAntiCheat(pid);
     if (hit) throw new ToolError(antiCheatMessage(hit));
     if (cur || asking) return attach(pid, client);  // raced with another attach
@@ -313,7 +320,9 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
     if (answer === 'timeout') { abandon(); throw new ToolError(NO_ANSWER(timeoutSec)); }
     changed();
 
-    // 4. Anti-cheat again, right before attaching.
+    // 4. The target and anti-cheat again, right before attaching (the pid may have been reused).
+    const lateTarget = await deps.checkTarget(pid).catch(() => null);
+    if (lateTarget) { abandon(); throw new ToolError(lateTarget); }
     const late = await checkAntiCheat(pid);
     if (late) { abandon(); throw new ToolError(antiCheatMessage(late)); }
     if (!stillMine()) throw new ToolError(STOPPED_MIDWAY);

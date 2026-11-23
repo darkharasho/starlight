@@ -127,6 +127,11 @@ export async function engineNeedsPtraceGrant(hasCap: (pid: number) => Promise<bo
   return engine ? !(await hasCap(engine.pid)) : false;
 }
 
+/** The running daemon's pid, or null. */
+export function enginePid(): number | null {
+  return running?.pid ?? null;
+}
+
 export async function stopEngine(): Promise<void> {
   if (starting) await starting.catch(() => undefined);
   const engine = running;

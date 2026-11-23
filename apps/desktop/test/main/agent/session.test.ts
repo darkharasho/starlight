@@ -10,6 +10,7 @@ import {
   DECLINED, MODIFY_OFF, NOT_ATTACHED, NO_ANSWER, OTHER_AGENT, STOPPED_MIDWAY, type AgentClient,
 } from '../../../src/main/agent/tools.js';
 import type { GameIdentity } from '../../../src/main/game-identity.js';
+import { IS_STARLIGHT, NOT_YOURS, checkAttachTarget, procTargetDeps } from '../../../src/main/agent/target-guard.js';
 import { DEFAULT_AGENT_PREFS } from '../../../src/shared/ipc.js';
 
 const PID = 42;
@@ -67,6 +68,7 @@ function setup(o: {
   ceSession?: { sessionId: string } | null;
   prompts?: Partial<PlayerPrompts>;
   attachFails?: boolean;
+  checkTarget?: (pid: number) => Promise<string | null>;
 } = {}) {
   const log: string[] = [];
   const client = fakeClient();
@@ -98,6 +100,7 @@ function setup(o: {
     getClient: async () => client,
     engine,
     detectAntiCheatFn: o.antiCheat ?? (async () => null),
+    checkTarget: o.checkTarget ?? (async () => null),
     identify: async () => identity,
     owner,
     prompts,
@@ -126,6 +129,40 @@ async function attached(s: Setup, client = CLAUDE): Promise<void> {
 }
 
 describe('agent session', () => {
+  it('attach refuses a process owned by another user without asking the player (I5)', async () => {
+    const s = setup({ checkTarget: async (pid) => (pid === 7 ? NOT_YOURS : null) });
+    await expect(s.agent.attach(7, CLAUDE)).rejects.toThrow(NOT_YOURS);
+    expect(s.requestApproval).not.toHaveBeenCalled();
+    expect(s.engine.attach).not.toHaveBeenCalled();
+    expect(s.agent.snapshot().status).toBe('idle');
+  });
+
+  it("attach refuses Starlight's own process without asking (I5)", async () => {
+    const s = setup({ checkTarget: (pid) => checkAttachTarget(pid, procTargetDeps({ daemonPid: () => null })) });
+    await expect(s.agent.attach(process.pid, CLAUDE)).rejects.toThrow(IS_STARLIGHT);
+    expect(s.requestApproval).not.toHaveBeenCalled();
+  });
+
+  it('attach checks the target again after approval (the pid may have been reused)', async () => {
+    let calls = 0;
+    const s = setup({ checkTarget: async () => (++calls > 1 ? NOT_YOURS : null) });
+    const p = s.agent.attach(PID, CLAUDE);
+    await approve(s);
+    await expect(p).rejects.toThrow(NOT_YOURS);
+    expect(s.engine.attach).not.toHaveBeenCalled();
+    expect(s.owner.ownerOf(PID)).toBeNull();
+    expect(s.agent.snapshot().status).toBe('idle');
+  });
+
+  it('the approval request carries the pid', async () => {
+    const s = setup();
+    const p = s.agent.attach(PID, CLAUDE);
+    await vi.waitFor(() => expect(s.prompts.approval()).not.toBeNull());
+    expect(s.prompts.approval()).toMatchObject({ pid: PID });
+    s.prompts.respondApproval(s.prompts.approval()!.id, false);
+    await expect(p).rejects.toThrow(DECLINED);
+  });
+
   it('attach refuses a game with anti-cheat loaded without asking the player', async () => {
     const s = setup({ antiCheat: async () => EAC });
     await expect(s.agent.attach(PID, CLAUDE)).rejects.toThrow(antiCheatMessage(EAC));

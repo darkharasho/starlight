@@ -13,10 +13,11 @@ export function ApprovalCard(): JSX.Element | null {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div role="alertdialog" aria-label="Agent attach request" className="w-[440px] max-w-[90vw] rounded-2xl border border-neon-cyan/40 bg-panel p-6 shadow-2xl animate-rise">
         <h2 className="text-base font-semibold text-ink">{`${approval.label} wants to attach to ${approval.game} — Allow?`}</h2>
+        <p className="mt-1 text-[13px] text-muted">{`Process ${approval.pid}`}</p>
         {approval.closesCeTable && (
           <p className="mt-2 text-[13px] text-neon-amber">This closes the current Cheat Engine table.</p>
         )}
-        <p className="mt-2 text-xs text-muted">Asking again in {countdown(approval.expiresAt - now)}</p>
+        <p className="mt-2 text-xs text-muted">Denied automatically in {countdown(approval.expiresAt - now)}</p>
         <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"

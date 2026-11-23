@@ -135,6 +135,7 @@ async function realSession() {
       pointerEnd: async () => {},
     },
     detectAntiCheatFn: async () => null,
+    checkTarget: async () => null,
     identify: async () => identity,
     owner: createGameOwner({ ceSessionFor: () => null, releaseCe: async () => {} }),
     prompts, hotkeys,

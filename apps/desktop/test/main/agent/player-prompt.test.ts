@@ -42,7 +42,7 @@ describe('player prompts: attach approval', () => {
     const p = createPlayerPrompts({ ...base(), notifier, focusAgentView: () => {}, onChange, now: () => 1000 });
     void p.requestApproval(req);
     expect(shown).toHaveLength(1);
-    expect(shown[0]).toMatchObject({ title: 'Claude wants to attach to 9Kings.exe', body: 'Allow it in Starlight.' });
+    expect(shown[0]).toMatchObject({ title: 'Claude wants to attach to 9Kings.exe (process 42)', body: 'Allow it in Starlight.' });
     expect(p.approval()).toEqual({ id: expect.any(String), label: 'Claude', game: '9Kings.exe', pid: 42, closesCeTable: false, expiresAt: 121_000 });
     expect(onChange).toHaveBeenCalled();
 

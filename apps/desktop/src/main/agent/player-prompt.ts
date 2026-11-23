@@ -49,7 +49,7 @@ export interface PlayerPromptsDeps {
   now?(): number;
 }
 
-export const approvalTitle = (label: string, game: string): string => `${label} wants to attach to ${game}`;
+export const approvalTitle = (label: string, game: string, pid: number): string => `${label} wants to attach to ${game} (process ${pid})`;
 export const approvalBody = (closesCeTable: boolean): string =>
   `Allow it in Starlight.${closesCeTable ? ' This closes the current Cheat Engine table.' : ''}`;
 
@@ -179,7 +179,7 @@ export function createPlayerPrompts(deps: PlayerPromptsDeps): PlayerPrompts {
         pending = p;
         try {
           note = deps.notifier.show({
-            title: approvalTitle(a.label, a.game),
+            title: approvalTitle(a.label, a.game, a.pid),
             body: approvalBody(a.closesCeTable),
             onClick: () => deps.focusAgentView(),
           });
