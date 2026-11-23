@@ -13,10 +13,10 @@ export interface SpawnedTarget {
   kill(): Promise<void>;
 }
 
-export async function spawnTarget(opts: { map?: string } = {}): Promise<SpawnedTarget> {
+export async function spawnTarget(opts: { map?: string; args?: string[] } = {}): Promise<SpawnedTarget> {
   // The shell is the direct child; the actual target binary is the grandchild.
   // Target args go through positional parameters so paths need no shell quoting.
-  const targetArgs = opts.map ? ['--map', opts.map] : [];
+  const targetArgs = [...(opts.map ? ['--map', opts.map] : []), ...(opts.args ?? [])];
   const shell: ChildProcess = spawn(
     '/bin/sh',
     ['-c', '"$0" "$@" & PID=$!; echo "TARGET_PID:$PID"; wait', TARGET_BINARY, ...targetArgs],

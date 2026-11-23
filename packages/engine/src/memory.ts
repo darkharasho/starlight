@@ -80,3 +80,15 @@ export async function write(
   const bytes = encodeValue(type, value).toString('hex');
   await session.client.call('write', { handle: session.handle, address, bytes });
 }
+
+/** Reads many ranges in one round trip (at most 4096 items of at most 4096 bytes). `null` means unreadable. */
+export async function readMany(
+  session: Session,
+  items: Array<{ address: string; length: number }>,
+): Promise<Array<Buffer | null>> {
+  const res = await session.client.call<{ values: Array<string | null> }>('read_many', {
+    handle: session.handle,
+    items,
+  });
+  return res.values.map((v) => (v === null ? null : Buffer.from(v, 'hex')));
+}
