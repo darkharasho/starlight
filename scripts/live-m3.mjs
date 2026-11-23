@@ -114,6 +114,27 @@ function killOwn(pid, start, sig = 'SIGKILL') {
   if (!pid || start === undefined || statOf(pid)?.start !== start) return false;
   try { process.kill(pid, sig); return true; } catch { return false; }
 }
+/** Mount points under `dir` (from our own mount table). */
+function mountsUnder(dir) {
+  return readFileSync('/proc/self/mounts', 'utf8').split('\n')
+    .map((l) => l.split(' ')[1]?.replace(/\\040/g, ' ')).filter((mp) => mp && mp.startsWith(dir + '/'));
+}
+/** Unmounts what is mounted under a temp dir, then removes it; if anything stays mounted, the dir is kept. */
+function removeTmp(dir) {
+  for (const mp of mountsUnder(dir)) {
+    const r = spawnSync('fusermount3', ['-uz', mp], { stdio: 'ignore' });
+    if (r.status !== 0) spawnSync('fusermount', ['-uz', mp], { stdio: 'ignore' });
+    info(`unmounted ${mp}`);
+  }
+  const left = mountsUnder(dir);
+  if (left.length) {
+    failures++;
+    results.push({ name: 'temp dir unmounted before removal', status: 'FAIL', detail: left.join(', ') });
+    console.log(`FAIL still mounted, NOT removing ${dir}: ${left.join(', ')}`);
+    return;
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const alive = (pid, start) => { const st = statOf(pid); return !!st && st.state !== 'Z' && (start === undefined || st.start === start); };
 
@@ -143,19 +164,44 @@ for (const ev of ['uncaughtException', 'unhandledRejection']) {
   process.on(ev, (e) => { console.log(`FAIL ${ev}: ${e?.stack ?? e}`); cleanupSync(); process.exit(1); });
 }
 
-// PR_SET_CHILD_SUBREAPER, run argv, reap every orphan until none is left.
-const SUBREAPER = [
-  'import ctypes, os, subprocess, sys',
-  'ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)',
-  'subprocess.Popen(sys.argv[1:])',
-  'while True:',
-  '    try: os.wait()',
-  '    except ChildProcessError: break',
-].join('\n');
+// PR_SET_CHILD_SUBREAPER, run argv, reap every orphan until none is left. PR_SET_PDEATHSIG: if this
+// script dies (even by SIGKILL), the wrapper gets SIGUSR1 and SIGKILLs its own descendants (found by
+// the ppid walk below it, so nothing else), then exits.
+const SUBREAPER = `
+import ctypes, os, signal, subprocess, sys
+libc = ctypes.CDLL(None)
+libc.prctl(36, 1, 0, 0, 0)
+def descendants():
+    kids = {}
+    for e in os.listdir('/proc'):
+        if not e.isdigit(): continue
+        try:
+            s = open('/proc/%s/stat' % e).read()
+            kids.setdefault(int(s[s.rindex(')') + 2:].split()[1]), []).append(int(e))
+        except Exception: pass
+    out, q = [], [os.getpid()]
+    while q:
+        for c in kids.get(q.pop(), []):
+            out.append(c); q.append(c)
+    return out
+def on_parent_death(*_):
+    for _ in range(3):
+        for p in descendants():
+            try: os.kill(p, signal.SIGKILL)
+            except Exception: pass
+    os._exit(1)
+signal.signal(signal.SIGUSR1, on_parent_death)
+libc.prctl(1, signal.SIGUSR1, 0, 0, 0)
+if os.getppid() != int(os.environ.get('LIVE_M3_PARENT', os.getppid())): on_parent_death()
+subprocess.Popen(sys.argv[1:])
+while True:
+    try: os.wait()
+    except ChildProcessError: break
+`;
 
 /** Spawns argv under a subreaper and tracks the whole tree. */
 function spawnTree(name, argv, opts) {
-  const child = spawn('python3', ['-I', '-c', SUBREAPER, ...argv], opts);
+  const child = spawn('python3', ['-I', '-c', SUBREAPER, ...argv], { ...opts, env: { ...(opts.env ?? process.env), LIVE_M3_PARENT: String(process.pid) } });
   const rootStart = child.pid ? statOf(child.pid)?.start : undefined;
   const owned = new Map();
   if (rootStart !== undefined) owned.set(child.pid, rootStart);
@@ -386,18 +432,10 @@ async function startApp(label) {
   const app = { tree: t, tmp, cfg, notifyLog, appLog, label, cdp: null, quitted: false };
   cleanups.push(() => {
     if (!app.quitted) killTree(t);
-    // dbus may have activated xdg-document-portal, which FUSE-mounts <XDG_RUNTIME_DIR>/doc.
-    for (const line of readFileSync('/proc/self/mounts', 'utf8').split('\n')) {
-      const mp = line.split(' ')[1]?.replace(/\\040/g, ' ');
-      if (mp && mp.startsWith(tmp + '/')) {
-        const r = spawnSync('fusermount3', ['-uz', mp], { stdio: 'ignore' });
-        if (r.status !== 0) spawnSync('fusermount', ['-uz', mp], { stdio: 'ignore' });
-        info(`unmounted ${mp}`);
-      }
-    }
     try { cpSync(appLog, join(LOG_DIR, `live-m3-${label}-app.log`)); } catch { /* no log */ }
     try { cpSync(notifyLog, join(LOG_DIR, `live-m3-${label}-notify.log`)); } catch { /* no log */ }
-    rmSync(tmp, { recursive: true, force: true });
+    // dbus may have activated xdg-document-portal, which FUSE-mounts <XDG_RUNTIME_DIR>/doc.
+    removeTmp(tmp);
   });
   app.cdp = await cdpConnect(CDP_PORT);
   // Wait for the bridge, then make sure nothing auto-attaches and cheat hotkeys stay off.
@@ -624,7 +662,12 @@ async function native() {
   await sleep(300);
   const preTracer = tracerPid(A.pid);
   const preBytes = memRead(A.pid, A.a.bump_counter, 1).toString('hex');
-  info(`before Stop: freeze ${fz.freeze ?? fz.error}, test ${tp2.test ?? tp2.error}, TracerPid ${preTracer}, bump_counter[0] ${preBytes}, heap_value ${readI32(A.pid, A.a.heap_value)}`);
+  writeI32(A.pid, A.a.heap_value, 1);
+  await sleep(300);
+  const preHeld = readI32(A.pid, A.a.heap_value);
+  const pre = `freeze ${fz.freeze ?? fz.error}, test ${tp2.test ?? tp2.error}, TracerPid ${preTracer}, bump_counter[0] ${preBytes}, heap_value after writing 1: ${preHeld}`;
+  check('before Stop: the freeze holds heap_value at 4242, the test patch is on bump_counter, the game is traced',
+    fz.freeze !== undefined && tp2.test !== undefined && preBytes === 'c3' && preHeld === 4242 && preTracer > 0, pre);
   await app.cdp.evaluate(`location.hash = '#/agent'; return true;`);
   await sleep(200);
   const t0 = now();
@@ -635,6 +678,7 @@ async function native() {
   await sleep(400);
   const stuck = readI32(A.pid, A.a.heap_value);
   check('Stop: within 1 s TracerPid is 0, bump_counter bytes are original, a direct write to heap_value sticks',
+    fz.freeze !== undefined && tp2.test !== undefined && preBytes === 'c3' && preHeld === 4242 && preTracer > 0 &&
     clicked === 'clicked' && !!done && elapsed <= 1000 && stuck === 1234,
     `clicked ${clicked}, ${elapsed.toFixed(0)} ms, TracerPid ${tracerPid(A.pid)}, heap_value ${stuck}`);
   writeI32(A.pid, A.a.heap_value, 777);
@@ -794,13 +838,15 @@ async function proton() {
         info(`wineserver -k (own prefix) exit ${ws.status}`);
       });
     }
-    const servers = procTable();
-    const ours = [...servers].filter(([p, st]) => st.comm.startsWith('wineserver') && (() => {
-      try { return readFileSync(`/proc/${p}/environ`, 'utf8').includes(pfx); } catch { return false; }
-    })());
+    // Our prefix's wineserver daemonizes under our subreaper, so it is in our own tracked set.
+    const ours = [];
+    for (const g of golds) {
+      g.tree.track();
+      for (const [p, start] of g.tree.owned) if (alive(p, start) && /^wineserver/.test(statOf(p)?.comm ?? '')) ours.push([p]);
+    }
     info(`wineservers of our prefix left: ${ours.length ? ours.map(([p]) => p).join(', ') : 'none'}`);
     if (ours.length) { failures++; results.push({ name: 'own prefix wineserver gone', status: 'FAIL', detail: ours.map(([p]) => p).join(',') }); }
-    rmSync(tmp, { recursive: true, force: true });
+    removeTmp(tmp);
   });
 
   let g = await runGold(pfx);
@@ -837,7 +883,7 @@ async function proton() {
     count = last.count;
   }
   const found = last?.results?.some((r) => r.address === gaddr);
-  check('scan for 500 and up → ask_player → scan_next increased finds gold', ask.answered === true && !!found,
+  check('scan for 500 and up → ask_player → scan_next increased finds gold', ask.answered === true && ask.answer === true && !!found,
     `${sf.count} → ${count} match(es), gold ${found ? 'among them' : 'missing'}${last?.error ? ' ' + last.error : ''}`);
 
   const ww = await agent.call('watch_writes', { address: gaddr, duration_ms: 2000 });
@@ -949,7 +995,12 @@ async function claudeMode() {
   const transcriptPath = join(LOG_DIR, 'live-m3-claude-transcript.jsonl');
   writeFileSync(transcriptPath, '');
   const ct = spawnTree('claude -p', [claudeBin, '-p', prompt, '--mcp-config', mcpConfig, '--strict-mcp-config',
-    '--allowedTools', 'mcp__starlight', '--model', 'sonnet', '--max-turns', '60', '--output-format', 'stream-json', '--verbose'],
+    '--allowedTools', 'mcp__starlight', 'ToolSearch',
+    // Anything not allowed above is refused without asking, built-in tools are denied outright, and only
+    // the (empty) project's settings load, so the user's own permissions and hooks can't widen this.
+    '--permission-mode', 'dontAsk', '--setting-sources', 'project',
+    '--disallowedTools', 'Bash', 'Edit', 'Write', 'NotebookEdit', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Agent', 'Task', 'Skill',
+    '--model', 'sonnet', '--max-turns', '60', '--output-format', 'stream-json', '--verbose'],
   { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'] });
   cleanups.push(() => killTree(ct));
   let resultMsg = null;
@@ -979,12 +1030,20 @@ async function claudeMode() {
 
   // Play the player: Allow, Yes, and numbers read from /proc.
   const played = [];
+  const wrongAttach = [];
   let running = true;
   const player = (async () => {
     while (running) {
       try {
         const st = await S(app, 'agentGetState()');
-        if (st.approval) { const t = await clickAllow(app); played.push(`allow: ${t}`); }
+        if (st.approval && st.approval.pid === A.pid) { const t = await clickAllow(app); played.push(`allow: ${t}`); }
+        else if (st.approval) {
+          // Never let the agent attach to a process this script didn't spawn (the player's games are listed too).
+          const r = await app.cdp.evaluate(`return $click('Deny', '[role=alertdialog][aria-label="Agent attach request"]');`);
+          if (r !== 'clicked') await S(app, `agentRespondApproval({ id: ${JSON.stringify(st.approval.id)}, allow: false })`);
+          wrongAttach.push(`${st.approval.pid} (${st.approval.game})`);
+          played.push(`DENY: attach to pid ${st.approval.pid} ${st.approval.game}`);
+        }
         for (const q of st.questions) {
           if (q.answer === 'confirm') {
             await app.cdp.evaluate(`location.hash = '#/agent'; return true;`);
@@ -1020,6 +1079,8 @@ async function claudeMode() {
   if (cerr.trim()) info(`claude stderr: ${cerr.replace(/\s+/g, ' ').slice(0, 400)}`);
   const origins = proxy.log.filter((l) => l.origin !== null);
   info(`claude MCP requests: ${proxy.log.length} (${[...new Set(proxy.log.map((l) => l.method))].join(',')}), user-agent ${proxy.log[0]?.ua}, Origin header ${origins.length ? `SENT (${origins[0].origin})` : 'never sent'}, DELETE ${proxy.log.some((l) => l.method === 'DELETE') ? 'sent' : 'not sent'}`);
+  check('claude only asked to attach to the target pid it was given (others are denied)', wrongAttach.length === 0,
+    wrongAttach.length ? `denied ${wrongAttach.join(', ')}` : `target ${A.pid}`);
   check('claude -p runs to the end', code === 0 && resultMsg?.subtype === 'success', `exit ${code}, ${resultMsg?.subtype}`);
   check('claude\'s MCP client never sends an Origin header', proxy.log.length > 0 && origins.length === 0, `${proxy.log.length} requests`);
   check('R18: within 5 s of claude exiting the agent session is idle and TracerPid is 0', !!idle,
