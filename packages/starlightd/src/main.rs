@@ -10,6 +10,7 @@ mod pointer;
 mod process;
 mod regions;
 mod rpc;
+mod signature;
 mod scan;
 mod symbols;
 

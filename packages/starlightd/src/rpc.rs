@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
 use crate::cleanup::{self, Owner};
 use crate::scan::{FirstReq, NextReq, Scans};
-use crate::{aob, disasm, mem, modules, pointer, process::Handles, symbols};
+use crate::{aob, disasm, mem, modules, pointer, process::Handles, signature, symbols};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -321,6 +321,19 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
                 })
                 .collect();
             Ok(json!({ "instructions": instructions }))
+        }
+        "make_signature" => {
+            let t = handles.get(param_handle(params)?)?;
+            let addr = param_addr(params, "address")?;
+            let max_len = match params.get("max_length") {
+                None | Some(Value::Null) => 64,
+                Some(_) => param_u64(params, "max_length")?,
+            };
+            if max_len == 0 || max_len > 4096 {
+                return Err(RpcError::invalid_params("max_length must be 1..=4096"));
+            }
+            let s = signature::build(&t, addr, max_len as usize)?;
+            Ok(json!({ "pattern": s.pattern, "offset": 0, "module": s.module, "length": s.length, "unique": s.unique, "matches": s.matches }))
         }
         "write" => {
             let t = handles.get(param_handle(params)?)?;

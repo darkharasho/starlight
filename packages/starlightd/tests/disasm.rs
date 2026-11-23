@@ -51,3 +51,47 @@ fn hello_lists_disasm_capability() {
     let r = c.call("hello", json!({})).unwrap();
     assert!(r["capabilities"].as_array().unwrap().iter().any(|v| v == "disasm"));
 }
+
+#[test]
+fn signature_for_bump_counter_is_unique_and_scans_back() {
+    let t = Target::spawn(&["--writer"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = c.call("make_signature", json!({"handle": h, "address": t.addr("bump_counter")})).unwrap();
+    assert_eq!(r["unique"], true);
+    assert_eq!(r["matches"], 1);
+    assert_eq!(r["offset"], 0);
+    let pattern = r["pattern"].as_str().unwrap();
+    assert_eq!(pattern.split_whitespace().count() as u64, r["length"].as_u64().unwrap());
+    let s = c.call("aob_scan", json!({"handle": h, "module": r["module"], "pattern": pattern})).unwrap();
+    assert_eq!(s["matches"], json!([t.addr("bump_counter")]));
+}
+
+#[test]
+fn signature_wildcards_the_g_counter_displacement() {
+    let t = Target::spawn(&["--writer"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = c.call("make_signature", json!({"handle": h, "address": t.addr("bump_counter"), "max_length": 64})).unwrap();
+    assert!(r["pattern"].as_str().unwrap().contains("??"), "pattern {}", r["pattern"]);
+}
+
+#[test]
+fn signature_outside_modules_is_32005() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let err = c.call("make_signature", json!({"handle": h, "address": "0x1000"})).unwrap_err();
+    assert_eq!(err.0, -32005);
+}
+
+#[test]
+fn hello_lists_signature_capability() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let r = c.call("hello", json!({})).unwrap();
+    assert!(r["capabilities"].as_array().unwrap().iter().any(|v| v == "signature"));
+}
