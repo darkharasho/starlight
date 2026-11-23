@@ -113,7 +113,8 @@ jobs:
       - name: Check the AppImage bundles starlightd
         working-directory: apps/desktop
         run: |
-          ./dist/Starlight-*.AppImage --appimage-extract resources/starlightd >/dev/null
+          appimage=(./dist/Starlight-*.AppImage)
+          "${appimage[0]}" --appimage-extract resources/starlightd >/dev/null
           test -x squashfs-root/resources/starlightd
 
   # Publishes only once every build has uploaded; a failed build leaves the
