@@ -1,0 +1,4 @@
+[
+  { "name": "Easy Anti-Cheat", "patterns": ["^easyanticheat.*\\.(dll|so)$"] },
+  { "name": "BattlEye", "patterns": ["^beclient.*\\.(dll|so)$"] }
+]

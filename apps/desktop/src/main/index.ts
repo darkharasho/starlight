@@ -362,7 +362,8 @@ app.whenReady().then(async () => {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const reason = isPtraceBlocked(msg) ? 'ptrace' as const :
+      const reason = /anti-cheat|won't attach/i.test(msg) ? 'anti-cheat' as const :
+                     isPtraceBlocked(msg) ? 'ptrace' as const :
                      /still connected/i.test(msg) ? 'busy' as const :
                      /isn't installed|download the trainer engine/i.test(msg) ? 'runtime-missing' as const :
                      /not running/i.test(msg) ? 'not-running' as const :

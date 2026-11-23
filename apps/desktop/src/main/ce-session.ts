@@ -16,6 +16,7 @@ import { listTables, type CtTable } from './ct-tables.js';
 import { detectProton, type ProtonInfo } from './proton-detect.js';
 import { readExeName } from './proc-exe-name.js';
 import { matchGameToProcess, type MatchableGame } from './game-matcher.js';
+import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
 import { listCtRecords } from '@starlight/ct-importer';
 import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
 import { findPrerequisites, isJunk } from '../shared/cheat-list.js';
@@ -171,6 +172,7 @@ export interface StartSessionOpts {
    */
   onGameExit?: ((sessionId: string) => void) | undefined;
   // Injectables for tests:
+  detectAntiCheatFn?: typeof detectAntiCheat | undefined;
   isGameAlive?: ((pid: number) => boolean) | undefined;
   gameWatchMs?: number | undefined;
   detectProtonFn?: typeof detectProton;
@@ -317,6 +319,10 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
       prereqErrors: {}, verdict: 'unknown', attempts: [],
     };
   }
+
+  // Refuse before anything is launched when anti-cheat is loaded in the game.
+  const antiCheat = await (opts.detectAntiCheatFn ?? detectAntiCheat)(effectivePid);
+  if (antiCheat) throw new Error(antiCheatMessage(antiCheat));
 
   // Attaching needs the trainer engine. It's normally downloaded in the
   // background at startup; if that hasn't finished, wait for it here.

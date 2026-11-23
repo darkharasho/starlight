@@ -16,6 +16,7 @@ import {
   WriteError,
 } from '@starlight/engine';
 import { getEngineClient } from './starlightd-host.js';
+import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
 import type {
   StarlightTrainer,
   StarlightSupportedCheat,
@@ -51,8 +52,11 @@ export async function cancelAllFreezes(): Promise<void> {
   lastValues.clear();
 }
 
-export async function attach(pid: number): Promise<AttachResult> {
+export async function attach(pid: number, detectAntiCheatFn: typeof detectAntiCheat = detectAntiCheat): Promise<AttachResult> {
   if (session) await detach();
+  // Checked before the daemon is even started: a refused attach touches nothing.
+  const hit = await detectAntiCheatFn(pid);
+  if (hit) return { ok: false, code: 'anti-cheat', message: antiCheatMessage(hit) };
   try {
     const s = await engineAttach(await getEngineClient(), pid);
     session = s;

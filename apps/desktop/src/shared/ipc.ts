@@ -54,7 +54,7 @@ export const CHANNELS = {
 export interface AttachRequest { pid: number }
 export type AttachResult =
   | { ok: true }
-  | { ok: false; code: 'permission' | 'not-found' | 'unknown'; message: string };
+  | { ok: false; code: 'permission' | 'not-found' | 'anti-cheat' | 'unknown'; message: string };
 
 export interface ToggleCheatRequest { cheatId: string; on: boolean }
 export interface SetValueRequest    { cheatId: string; value: number }
@@ -253,7 +253,7 @@ export type CeSessionStartResult =
       tables: CeTable[];
       process?: { pid: number; name?: string | undefined } | undefined;
     } & CeSessionTableState)
-  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'ptrace' | 'unknown' };
+  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'ptrace' | 'anti-cheat' | 'unknown' };
 
 export interface StarlightApi {
   loadTrainer():     Promise<LoadTrainerResult>;

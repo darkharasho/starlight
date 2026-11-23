@@ -67,6 +67,21 @@ describe('ce-session', () => {
     })).rejects.toThrow(/isn't installed/i);
   });
 
+  it('throws the anti-cheat message before launching CE', async () => {
+    const ensureRuntime = vi.fn();
+    const startCeServerFn = vi.fn();
+    const findWineRunnerFn = vi.fn();
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'k-ac', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      startCeServerFn, findWineRunnerFn, ensureRuntime,
+      detectAntiCheatFn: async () => ({ name: 'Easy Anti-Cheat', module: 'EasyAntiCheat_EOS_x64.dll' }),
+    })).rejects.toThrow(/won't attach/);
+    expect(ensureRuntime).not.toHaveBeenCalled();
+    expect(startCeServerFn).not.toHaveBeenCalled();
+    expect(findWineRunnerFn).not.toHaveBeenCalled();
+  });
+
   it('waits for the trainer engine download before attaching', async () => {
     await rm(join(winCeDir, 'cheatengine-x86_64.exe'), { force: true });
     const progress: string[] = [];
