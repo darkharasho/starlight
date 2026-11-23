@@ -31,6 +31,10 @@ interface CeSessionState {
   records: CeSessionRecord[];
   starting: boolean;
   startError: string | null;
+  /** Why the last start failed ('ptrace' gets an Allow button). */
+  startReason: string | null;
+  /** The permission prompt for native games is open. */
+  allowingAccess: boolean;
   /** True once the session is attached to a running game process. */
   attached: boolean;
   /** True when the attached game runs under Proton (Windows CE in the prefix). */
@@ -65,7 +69,7 @@ interface CeSessionState {
   /** False when the game was looked for and isn't running. */
   running: boolean;
   /** Set while Play is starting the game and waiting for it. */
-  launch: { phase: 'launching' | 'waiting' | 'loading'; title: string } | null;
+  launch: { phase: 'launching' | 'waiting'; title: string } | null;
   /** What the session is doing right now, for the starting screen. */
   progress: string | null;
   /** The tables being checked against the game right now, and how each fared. */
@@ -90,6 +94,8 @@ interface CeSessionState {
   gameExited: (sessionId: string) => Promise<void>;
   /** Start the game (if it isn't running), wait for it, then attach. */
   play: (req?: StartReq) => Promise<boolean>;
+  /** Grants Starlight access to native games' memory (password prompt), then attaches again. */
+  allowMemoryAccess: () => Promise<void>;
   cancelPlay: () => void;
   /** Look again for a table that matches the game. */
   retry: (opts?: { auto?: boolean }) => Promise<void>;
@@ -109,8 +115,6 @@ export const playTiming = {
   pollMs: 2000,
   /** Give up waiting for the game after this long (covers Steam updates and cloud sync). */
   timeoutMs: 5 * 60_000,
-  /** Let a freshly started game load its code before attaching, or tables can't find it. */
-  settleMs: 12_000,
 };
 
 let playToken = 0;
@@ -158,6 +162,8 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
   title: null,
   starting: false,
   startError: null,
+  startReason: null,
+  allowingAccess: false,
   lastReq: null,
   launch: null,
 
@@ -183,7 +189,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
       });
       return false;
     }
-    set({ starting: true, startError: null, lastReq: req, notRunning: false, needsPicker: false, progress: null, pickSteps: [], title: req.title ?? req.game?.name ?? null });
+    set({ starting: true, startError: null, startReason: null, lastReq: req, notRunning: false, needsPicker: false, progress: null, pickSteps: [], title: req.title ?? req.game?.name ?? null });
     try {
       // `launch` and `title` are renderer-side only.
       const { launch: _launch, title: _title, ...ipcReq } = req;
@@ -191,7 +197,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
       // Main ends any previous session before starting, so on failure there is none.
       // Main kept the connected game: leave it on screen, just say why.
       if (!r.ok && r.reason === 'busy') { set({ starting: false, startError: r.error }); return false; }
-      if (!r.ok) { set({ ...CLEARED, starting: false, startError: r.error, notRunning: r.reason === 'not-running' }); return false; }
+      if (!r.ok) { set({ ...CLEARED, starting: false, startError: r.error, startReason: r.reason ?? null, notRunning: r.reason === 'not-running' }); return false; }
       set({
         ...CLEARED,
         starting: false,
@@ -331,7 +337,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
     const find = async (): Promise<{ pid: number; name: string } | null> =>
       req.game ? starlight().findGameProcess({ game: req.game }).catch(() => null) : null;
 
-    set({ launch: { phase: 'launching', title }, startError: null, lastReq: req });
+    set({ launch: { phase: 'launching', title }, startError: null, startReason: null, lastReq: req });
     let proc = await find();
     if (!live()) return false;
     if (!proc) {
@@ -350,13 +356,27 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
         if (!live()) return false;
       }
       if (!proc) { set({ launch: null, startError: `${title} didn't start. Launch it yourself, then attach.` }); return false; }
-      set({ launch: { phase: 'loading', title } });
-      await sleep(playTiming.settleMs);
-      if (!live()) return false;
     }
+    // Attach right away: Cheat Engine starts while the game loads, and main
+    // waits for the game's code before matching a table.
     set({ launch: null });
     // Only the pid: main reads the full (untruncated) process name itself.
     return get().start({ ...req, pid: proc.pid, processName: undefined });
+  },
+
+  allowMemoryAccess: async () => {
+    if (get().allowingAccess) return;
+    set({ allowingAccess: true });
+    const r = await starlight().allowMemoryAccess()
+      .catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }));
+    set({ allowingAccess: false });
+    if (!r.ok) {
+      // A dismissed prompt leaves the original explanation (and its button) up.
+      if (!('cancelled' in r && r.cancelled)) set({ startError: r.error, startReason: null });
+      return;
+    }
+    const req = get().lastReq;
+    if (req) await get().start(req);
   },
 
   cancelPlay: () => {

@@ -4,7 +4,7 @@ import { mkdir, rm, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { connect } from 'node:net';
-import { findProton, findWineRunner, rankProtonDirs, startCeServer } from '../../src/main/ce-native.js';
+import { findProton, findWineRunner, rankProtonDirs, startCeServer, hasPtraceCap, grantPtraceCap } from '../../src/main/ce-native.js';
 
 let dir: string;
 
@@ -93,11 +93,56 @@ require('net').createServer((s) => s.end()).listen(port, '127.0.0.1');
   it('starts on a free port, waits until it accepts connections, and stops it', async () => {
     const srv = await startCeServer({ bin: await fakeServer() });
     expect(await reachable(srv.port)).toBe(true);
+    expect(srv.pid).toBeGreaterThan(0);
     await srv.stop();
     expect(await reachable(srv.port)).toBe(false);
   });
 
   it('fails when ceserver exits instead of listening', async () => {
     await expect(startCeServer({ bin: await fakeServer('process.exit(1);') })).rejects.toThrow(/exited/);
+  });
+});
+
+describe('hasPtraceCap', () => {
+  const status = (capEff: string) => async () => `Name:\tceserver\nCapInh:\t0000000000000000\nCapEff:\t${capEff}\n`;
+
+  it('sees CAP_SYS_PTRACE (bit 19) in the effective set', async () => {
+    expect(await hasPtraceCap(1, status('0000000000080000'))).toBe(true);
+    expect(await hasPtraceCap(1, status('000001ffffffffff'))).toBe(true);   // root
+  });
+
+  it('is false without it, or when the process is gone', async () => {
+    expect(await hasPtraceCap(1, status('0000000000000000'))).toBe(false);
+    expect(await hasPtraceCap(1, async () => { throw new Error('ENOENT'); })).toBe(false);
+  });
+
+  it('reads a real process', async () => {
+    expect(typeof await hasPtraceCap(process.pid)).toBe('boolean');
+  });
+});
+
+describe('grantPtraceCap', () => {
+  const onlyAt = (path: string) => async (p: string) => p === path;
+
+  it('runs setcap on ceserver through pkexec', async () => {
+    const calls: [string, string[]][] = [];
+    const r = await grantPtraceCap({
+      bin: '/rt/ceserver-7.5/ceserver', exists: onlyAt('/usr/bin/setcap'),
+      run: async (cmd, args) => { calls.push([cmd, args]); return { code: 0, stderr: '' }; },
+    });
+    expect(r).toEqual({ ok: true });
+    expect(calls).toEqual([['pkexec', ['/usr/bin/setcap', 'cap_sys_ptrace=ep', '/rt/ceserver-7.5/ceserver']]]);
+  });
+
+  it('reports a dismissed password prompt as cancelled', async () => {
+    const r = await grantPtraceCap({ bin: '/b', exists: onlyAt('/usr/sbin/setcap'), run: async () => ({ code: 126, stderr: '' }) });
+    expect(r).toMatchObject({ ok: false, cancelled: true });
+  });
+
+  it('gives the terminal command when setcap or pkexec is missing', async () => {
+    expect(await grantPtraceCap({ bin: '/b', exists: async () => false, run: async () => ({ code: 0, stderr: '' }) }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('sudo setcap cap_sys_ptrace=ep "/b"') });
+    expect(await grantPtraceCap({ bin: '/b', exists: onlyAt('/sbin/setcap'), run: async () => ({ code: null, stderr: 'spawn pkexec ENOENT' }) }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('sudo setcap') });
   });
 });

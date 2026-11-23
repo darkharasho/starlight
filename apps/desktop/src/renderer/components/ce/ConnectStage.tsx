@@ -1,7 +1,7 @@
 import type { CePickStep } from '../../../shared/ipc.js';
 import { GameCover } from './GameCover.js';
 
-export type ConnectPhase = 'launching' | 'waiting' | 'loading' | 'connecting' | 'matching' | 'matched';
+export type ConnectPhase = 'launching' | 'waiting' | 'connecting' | 'matching' | 'matched';
 
 interface Props {
   title: string;
@@ -14,8 +14,6 @@ interface Props {
   /** A specific line from the session, shown instead of the stock one. */
   progress?: string | null | undefined;
   steps: CePickStep[];
-  /** How long the "let it load" pause lasts, to pace its ring. */
-  loadMs: number;
   onCancel?: (() => void) | undefined;
 }
 
@@ -24,16 +22,15 @@ interface Props {
  * right now, where that sits in the sequence, and — while a table is being
  * matched — each table as it is checked.
  */
-export function ConnectStage({ title, cover, phase, launched, hasTable, progress, steps, loadMs, onCancel }: Props): JSX.Element {
-  const names = [...(launched ? ['Start game', 'Let it load'] : []), 'Connect', ...(hasTable ? ['Match a table'] : [])];
-  const at = { launching: 'Start game', waiting: 'Start game', loading: 'Let it load', connecting: 'Connect', matching: 'Match a table', matched: 'Match a table' }[phase];
+export function ConnectStage({ title, cover, phase, launched, hasTable, progress, steps, onCancel }: Props): JSX.Element {
+  const names = [...(launched ? ['Start game'] : []), 'Connect', ...(hasTable ? ['Match a table'] : [])];
+  const at = { launching: 'Start game', waiting: 'Start game', connecting: 'Connect', matching: 'Match a table', matched: 'Match a table' }[phase];
   const current = Math.max(0, names.indexOf(at));
   const done = phase === 'matched';
 
   const [headline, hint] =
     phase === 'launching' ? [`Starting ${title}…`, 'Handing off to your launcher.']
     : phase === 'waiting' ? [`Waiting for ${title} to start…`, 'This can take a while if the game is updating or syncing saves.']
-    : phase === 'loading' ? [`${title} is running`, 'Giving it a moment to load before connecting.']
     : phase === 'connecting' ? [progress ?? `Connecting to ${title}…`, 'Starting Cheat Engine alongside the game.']
     : phase === 'matched' ? ['Found a matching table', 'Loading your cheats.']
     : ['Finding a table that matches your game', progress ?? 'Checking each table against the game’s code. Nothing is switched on.'];
@@ -43,12 +40,7 @@ export function ConnectStage({ title, cover, phase, launched, hasTable, progress
       <div className="relative grid place-items-center size-[212px]">
         <span className="absolute inset-0 rounded-full border border-line" />
         <span className="absolute inset-[26px] rounded-full border border-dashed border-line/80" />
-        {phase === 'loading' ? (
-          <svg viewBox="0 0 100 100" className="absolute inset-0 -rotate-90" aria-hidden="true">
-            <circle cx="50" cy="50" r="49.5" fill="none" stroke="#3ee0c0" strokeWidth="1" strokeLinecap="round" pathLength="100" strokeDasharray="100"
-                    style={{ animation: `sl-fill ${loadMs}ms linear both` }} />
-          </svg>
-        ) : done ? (
+        {done ? (
           <span className="absolute inset-0 rounded-full border border-neon-cyan animate-lock" />
         ) : (
           <>

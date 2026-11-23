@@ -4,7 +4,7 @@ import { useLatchState } from '../stores/latch-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useConfigStore } from '../stores/config-store.js';
-import { useCeSessionStore, playTiming } from '../stores/ce-session-store.js';
+import { useCeSessionStore } from '../stores/ce-session-store.js';
 import { ConnectStage } from '../components/ce/ConnectStage.js';
 import { useCover } from '../lib/use-cover.js';
 import { findConflict, resolveCheatHotkeys } from '../lib/accelerator.js';
@@ -65,6 +65,9 @@ export function ActiveTrainerRoute(): JSX.Element {
   const ceSessionId = useCeSessionStore((s) => s.sessionId);
   const ceStarting = useCeSessionStore((s) => s.starting);
   const ceStartError = useCeSessionStore((s) => s.startError);
+  const ceStartReason = useCeSessionStore((s) => s.startReason);
+  const ceAllowing = useCeSessionStore((s) => s.allowingAccess);
+  const ceAllowAccess = useCeSessionStore((s) => s.allowMemoryAccess);
   const ceNotRunning = useCeSessionStore((s) => s.notRunning);
   const ceLastReq = useCeSessionStore((s) => s.lastReq);
   const ceStart = useCeSessionStore((s) => s.start);
@@ -155,6 +158,18 @@ export function ActiveTrainerRoute(): JSX.Element {
             ? <button type="button" className="underline hover:text-ink" onClick={() => void ceStart(ceLastReq)}>try again</button>
             : 'open it again'}
           {' '}— Starlight attaches automatically.
+        </div>
+      ) : ceStartError && ceStartReason === 'ptrace' ? (
+        <div role="alert" className="w-full rounded-xl border border-neon-cyan/40 bg-neon-cyan/[0.06] px-4 py-3 text-[13px] text-ink animate-rise">
+          <div className="font-semibold mb-1">Allow Starlight to cheat native Linux games</div>
+          <div className="text-soft">
+            Linux keeps programs from reading each other&apos;s memory. Allowing it once gives that permission to
+            Starlight&apos;s memory reader only, and it stays allowed after a restart.
+          </div>
+          <button type="button" disabled={ceAllowing} onClick={() => void ceAllowAccess()}
+                  className="mt-3 rounded-full px-4 py-1.5 text-[13px] font-semibold text-[#06231d] bg-neon-cyan hover:brightness-110 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan/50">
+            {ceAllowing ? 'Waiting for your password…' : 'Allow'}
+          </button>
         </div>
       ) : ceStartError ? (
         <div role="alert" className="w-full rounded-xl border border-neon-pink/40 bg-neon-pink/[0.06] px-4 py-2.5 text-[13px] text-neon-pink animate-rise">
@@ -248,7 +263,7 @@ function StartingStage({ title, game, progress, hasTable }: {
   return (
     <div className="mx-auto flex min-h-full w-full max-w-[700px] flex-col justify-center pb-[6vh]">
       <ConnectStage title={title} cover={cover} phase={steps.length > 0 ? 'matching' : 'connecting'} launched={false} hasTable={hasTable}
-                    progress={progress} steps={steps} loadMs={playTiming.settleMs} />
+                    progress={progress} steps={steps} />
     </div>
   );
 }

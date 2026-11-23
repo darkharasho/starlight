@@ -7,15 +7,15 @@ import type { CePickStep } from '../../src/shared/ipc.js';
 const cover = { src: null, onError: () => {} };
 
 function stage(phase: ConnectPhase, over: Partial<Parameters<typeof ConnectStage>[0]> = {}): void {
-  render(<ConnectStage title="9 Kings" cover={cover} phase={phase} launched hasTable steps={[]} loadMs={1000} {...over} />);
+  render(<ConnectStage title="9 Kings" cover={cover} phase={phase} launched hasTable steps={[]} {...over} />);
 }
 
 describe('ConnectStage', () => {
   it('says what is happening and marks where that is in the sequence', () => {
-    stage('loading');
-    expect(screen.getByText('9 Kings is running')).toBeInTheDocument();
+    stage('connecting', { progress: 'Waiting for the game to finish loading…' });
+    expect(screen.getByText('Waiting for the game to finish loading…')).toBeInTheDocument();
     const steps = within(screen.getByRole('list', { name: 'Progress' })).getAllByRole('listitem');
-    expect(steps.map((s) => s.textContent)).toEqual(['Start game', 'Let it load', 'Connect', 'Match a table']);
+    expect(steps.map((s) => s.textContent)).toEqual(['Start game', 'Connect', 'Match a table']);
     expect(steps[1]).toHaveAttribute('aria-current', 'step');
   });
 

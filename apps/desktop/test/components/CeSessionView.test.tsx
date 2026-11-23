@@ -214,7 +214,7 @@ describe('CeSessionView', () => {
 
     it('Play launches the game, waits for it and attaches', async () => {
       const { playTiming } = await import('../../src/renderer/stores/ce-session-store.js');
-      Object.assign(playTiming, { pollMs: 5, settleMs: 5 });
+      Object.assign(playTiming, { pollMs: 5 });
       findGameProcess.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue({ pid: 77, name: '9Kings.exe' });
       launchGame.mockResolvedValue({ ok: true });
       start.mockResolvedValue({ ok: true, sessionId: 's2', records: [], proton: true, attached: true, running: true, tables: TABLES, tableId: 30, hiddenIds: [], prereqErrors: {}, verdict: 'works', attempts: [], process: { pid: 77, name: '9Kings.exe' } });

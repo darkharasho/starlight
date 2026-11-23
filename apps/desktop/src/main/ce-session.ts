@@ -2,15 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { readFile, copyFile, mkdir, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
-import { detectCeRuntime } from './ce-runtime-detect.js';
+import { detectCeRuntime, type DetectResult } from './ce-runtime-detect.js';
 import { createBridge, type Bridge } from './ce-bridge.js';
 import { generateControlScript } from './ce-control-script.js';
 import { spawnCeProcess, type CeProcessHandle, type CeWineLaunch } from './ce-process.js';
 import {
-  findWineRunner, findSteamRoot, readPtraceScope, startCeServer, NO_WINE_MESSAGE, PTRACE_MESSAGE,
+  findWineRunner, findSteamRoot, readPtraceScope, startCeServer, hasPtraceCap, NO_WINE_MESSAGE, PTRACE_MESSAGE, PTRACE_LOCKED_MESSAGE,
   type CeServerHandle, type WineRunner,
 } from './ce-native.js';
 import { downloadCtToDisk } from './ct-cache.js';
+import { referencedModules, waitForGameReady } from './game-ready.js';
 import { listTables, type CtTable } from './ct-tables.js';
 import { detectProton, type ProtonInfo } from './proton-detect.js';
 import { readExeName } from './proc-exe-name.js';
@@ -178,6 +179,14 @@ export interface StartSessionOpts {
   findWineRunnerFn?: (() => Promise<WineRunner | null>) | undefined;
   startCeServerFn?: ((opts: { bin: string }) => Promise<CeServerHandle>) | undefined;
   readPtraceScopeFn?: (() => Promise<number>) | undefined;
+  hasPtraceCapFn?: ((pid: number) => Promise<boolean>) | undefined;
+  /** Waits until a just-started game has loaded what the table needs. */
+  waitForGameFn?: ((pid: number, modules: string[]) => Promise<unknown>) | undefined;
+  /**
+   * Makes sure the trainer engine is installed, downloading what's missing
+   * (default: only checks). Only an attach needs it; a preview doesn't.
+   */
+  ensureRuntime?: (() => Promise<{ ok: true; status: Extract<DetectResult, { status: 'ready' }> } | { ok: false; error: string }>) | undefined;
 }
 
 function defaultIsGameAlive(pid: number): boolean {
@@ -258,6 +267,16 @@ async function resolveTable(opts: StartSessionOpts): Promise<{ ctPath: string | 
   return { ctPath, tables, tableId: null };
 }
 
+async function ensureRuntime(opts: StartSessionOpts): Promise<Extract<DetectResult, { status: 'ready' }>> {
+  const now = await detectCeRuntime({ runtimeRoot: opts.runtimeRoot });
+  if (now.status === 'ready') return now;
+  if (!opts.ensureRuntime) throw new Error('The trainer engine isn\'t installed yet.');
+  opts.onProgress?.('Downloading the trainer engine…');
+  const r = await opts.ensureRuntime();
+  if (!r.ok) throw new Error(`Couldn't download the trainer engine: ${r.error}`);
+  return r.status;
+}
+
 export async function startSession(opts: StartSessionOpts): Promise<StartSessionResult> {
   // One game at a time: a game Cheat Engine is connected to is only replaced by
   // reconnecting to that same game; it ends when the game quits.
@@ -265,11 +284,6 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     throw new Error('Another game is still connected. Quit it first.');
   }
   if (active) await endSession({ sessionId: active.sessionId }).catch(() => {});
-
-  const detect = await detectCeRuntime({ runtimeRoot: opts.runtimeRoot });
-  if (detect.status !== 'ready') {
-    throw new Error('CE runtime not installed');
-  }
 
   const { ctPath, tables, tableId } = await resolveTable(opts);
 
@@ -304,6 +318,10 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     };
   }
 
+  // Attaching needs the trainer engine. It's normally downloaded in the
+  // background at startup; if that hasn't finished, wait for it here.
+  const detect = await ensureRuntime(opts);
+
   // Resolve the target process name and whether it's a Proton game.
   let processName = opts.processName;
   let proton: ProtonInfo | null = null;
@@ -317,8 +335,10 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   // Every game is cheated by Windows CE: inside the game's prefix for a Proton
   // game, or in Starlight's own prefix connected to ceserver for a native one.
   let runner: WineRunner | null = null;
+  let ptraceScope = 0;
   if (!proton) {
-    if (await (opts.readPtraceScopeFn ?? readPtraceScope)() > 0) throw new Error(PTRACE_MESSAGE);
+    ptraceScope = await (opts.readPtraceScopeFn ?? readPtraceScope)();
+    if (ptraceScope >= 3) throw new Error(PTRACE_LOCKED_MESSAGE);
     runner = await (opts.findWineRunnerFn ?? (async () => findWineRunner({
       prefixRoot: join(opts.runtimeRoot, 'prefix'),
       steamRoot: await findSteamRoot(),
@@ -350,6 +370,12 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   } else {
     try {
       ceServer = await (opts.startCeServerFn ?? startCeServer)({ bin: detect.ceserver });
+      // With ptrace restricted, ceserver can only read the game with
+      // CAP_SYS_PTRACE (granted once from the UI).
+      if (ptraceScope > 0 && !(ceServer.pid !== undefined && await (opts.hasPtraceCapFn ?? hasPtraceCap)(ceServer.pid))) {
+        await ceServer.stop();
+        throw new Error(PTRACE_MESSAGE);
+      }
     } catch (err) {
       await bridge.close().catch(() => {});
       throw err;
@@ -439,6 +465,17 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     void ceProcess.kill('SIGTERM').catch(() => {});
     opts.onGameExit?.(sessionId);
   });
+
+  // Cheat Engine booted while the game was loading. Before matching a table,
+  // let the game finish loading the modules the table points at.
+  if (ctPath) {
+    const modules = referencedModules(await readFile(ctPath, 'utf8').catch(() => ''));
+    const waitFn = opts.waitForGameFn ?? ((pid: number, mods: string[]) => waitForGameReady({ pid, modules: mods }));
+    // Only say so when it's noticeable (an already-loaded game returns at once).
+    const slow = setTimeout(() => opts.onProgress?.('Waiting for the game to finish loading…'), 800);
+    try { await waitFn(effectivePid, modules); } finally { clearTimeout(slow); }
+    if (active !== session) throw new Error('The game closed while it was loading.');
+  }
 
   const status = await sendWithTimeout(bridge, { method: 'status' }, 5000).catch(() => ({})) as { attached?: boolean };
   const attached = status.attached !== false;

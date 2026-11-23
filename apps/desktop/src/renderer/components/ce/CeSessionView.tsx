@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useCeSessionStore, playTiming } from '../../stores/ce-session-store.js';
+import { useCeSessionStore } from '../../stores/ce-session-store.js';
 import { useConfigStore } from '../../stores/config-store.js';
 import type { CeSessionRecord, DetectedProcess } from '../../../shared/ipc.js';
 import { buildCheatList, type CheatItem } from '../../../shared/cheat-list.js';
@@ -170,7 +170,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
         <CoverWash src={cover.src} />
         <div className="relative mx-auto flex min-h-full w-full max-w-[700px] flex-col justify-center px-2 pb-[6vh]">
           <ConnectStage title={title} cover={cover} phase={phase} launched={everLaunched.current} hasTable={hasTable}
-                        progress={s.progress} steps={s.pickSteps} loadMs={playTiming.settleMs}
+                        progress={s.progress} steps={s.pickSteps}
                         onCancel={s.launch ? () => s.cancelPlay() : undefined} />
         </div>
       </div>
