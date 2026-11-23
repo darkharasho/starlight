@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, writeFile, stat, rm } from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtemp, readFile, writeFile, stat, rm, mkdir, symlink, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,8 +7,15 @@ import {
 } from '../../src/main/starlightd-host.js';
 
 let dir: string;
-beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'sl-host-')); });
-afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'sl-host-'));
+  // getEngineClient picks the socket from the environment: keep it in here.
+  vi.stubEnv('XDG_RUNTIME_DIR', dir);
+});
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await rm(dir, { recursive: true, force: true });
+});
 
 async function bundle(bytes = 'daemon-v1'): Promise<string> {
   const p = join(dir, 'bundled');
@@ -51,9 +58,30 @@ describe('paths', () => {
     expect((await stat(join(xdg, 'starlight'))).mode & 0o777).toBe(0o700);
   });
 
-  it('socketPath falls back to the temp dir', () => {
-    const p = socketPath({}, 4242);
-    expect(p).toBe(join(tmpdir(), 'starlight-4242', 'starlightd.sock'));
+  it('socketPath falls back to a private dir under the temp dir', async () => {
+    const uid = process.getuid!();
+    const p = socketPath({}, uid, dir);
+    expect(p).toBe(join(dir, `starlight-${uid}`, 'starlightd.sock'));
+    expect((await stat(join(dir, `starlight-${uid}`))).mode & 0o777).toBe(0o700);
+  });
+
+  it('socketPath refuses a fallback dir that is a symlink', async () => {
+    const uid = process.getuid!();
+    await mkdir(join(dir, 'elsewhere'), { mode: 0o700 });
+    await symlink(join(dir, 'elsewhere'), join(dir, `starlight-${uid}`));
+    expect(() => socketPath({}, uid, dir)).toThrow(/not a private directory/);
+  });
+
+  it('socketPath refuses a fallback dir others can open', async () => {
+    const uid = process.getuid!();
+    await mkdir(join(dir, `starlight-${uid}`), { mode: 0o700 });
+    await chmod(join(dir, `starlight-${uid}`), 0o755);
+    expect(() => socketPath({}, uid, dir)).toThrow(/not a private directory/);
+  });
+
+  it('socketPath refuses a fallback dir owned by someone else', () => {
+    const uid = process.getuid!() + 1;   // the dir gets created as us, not as uid
+    expect(() => socketPath({}, uid, dir)).toThrow(/not a private directory/);
   });
 
   it('bundledBinaryPath dev vs packaged', () => {
@@ -89,6 +117,22 @@ describe('getEngineClient', () => {
     const b = await getEngineClient();
     expect(b).not.toBe(a);
     expect(starts).toBe(2);
+  });
+});
+
+describe('getEngineClient: dropped connection', () => {
+  it('stops the daemon when its connection closes', async () => {
+    await writeFile(join(dir, 'starlightd'), 'daemon');
+    let close: () => void = () => {};
+    const stop = vi.fn(async () => undefined);
+    const start = (async () => ({
+      client: { closed: false, onClose(cb: () => void) { close = cb; } },
+      pid: 1, stop,
+    })) as never;
+    configureStarlightdHost({ runtimeRoot: join(dir, 'rt'), isPackaged: true, resourcesPath: dir, appPath: dir, start });
+    await getEngineClient();
+    close();
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 });
 

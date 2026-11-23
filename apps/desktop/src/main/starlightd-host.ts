@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, readFile, rename, rm } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { lstatSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startEngine, type EngineClient, type StartedEngine } from '@starlight/engine';
@@ -41,11 +41,20 @@ export async function installDaemon(opts: { bundled: string; runtimeRoot: string
   return { path, changed: true };
 }
 
-export function socketPath(env: NodeJS.ProcessEnv = process.env, uid: number = process.getuid!()): string {
-  const dir = env.XDG_RUNTIME_DIR
-    ? join(env.XDG_RUNTIME_DIR, 'starlight')
-    : join(tmpdir(), `starlight-${uid}`);
+export function socketPath(env: NodeJS.ProcessEnv = process.env, uid: number = process.getuid!(), tmp: string = tmpdir()): string {
+  if (env.XDG_RUNTIME_DIR) {
+    const dir = join(env.XDG_RUNTIME_DIR, 'starlight');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return join(dir, 'starlightd.sock');
+  }
+  // The temp dir is shared with every user: only use a directory that is
+  // really ours, so nobody can plant the socket path or a symlink there.
+  const dir = join(tmp, `starlight-${uid}`);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = lstatSync(dir);
+  if (!st.isDirectory() || st.uid !== uid || (st.mode & 0o777) !== 0o700) {
+    throw new Error(`${dir} is not a private directory (it must be a real directory owned by you with mode 700). Remove it or set XDG_RUNTIME_DIR.`);
+  }
   return join(dir, 'starlightd.sock');
 }
 
@@ -90,7 +99,11 @@ export async function getEngineClient(): Promise<EngineClient> {
       const binary = await installedDaemonPath();
       const engine = await c.start({ binary, socketPath: socketPath() });
       running = engine;
-      engine.client.onClose(() => { if (running === engine) running = null; });
+      engine.client.onClose(() => {
+        if (running === engine) running = null;
+        // The connection is gone, so the daemon is no use: don't leave it running.
+        void engine.stop().catch(() => undefined);
+      });
       return engine.client;
     } finally {
       starting = null;
