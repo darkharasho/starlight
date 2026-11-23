@@ -122,11 +122,14 @@ User chose **1**.
 ### Source & distribution
 `starlightd`'s Rust source lives in this repo (`packages/starlightd`, a Cargo
 crate alongside the pnpm workspace). 
-It ships the way ceserver does today: built in CI,
-released as an asset, listed in the runtime
-manifest with url + sha256, downloaded into Starlight's writable runtime
-directory. It can't live inside the AppImage, because `setcap` doesn't work on
-the read-only squashfs. Ptrace permission reuses `grantPtraceCap` (pkexec +
+CI builds it (with the Rust toolchain pinned in `rust-toolchain.toml`, so the
+bytes only change when the code does) and electron-builder bundles it into the
+AppImage through `extraResources`. It isn't run from there, because `setcap`
+doesn't work on the read-only squashfs: at startup Starlight copies it into its
+writable runtime directory (`<runtime>/starlightd/starlightd`), and only when the
+bundled binary's sha256 differs from the installed one. (An earlier draft had it
+released as an asset and downloaded through the runtime manifest like ceserver;
+bundling avoids a manifest update on every release, since the source lives here.) Ptrace permission reuses `grantPtraceCap` (pkexec +
 `setcap cap_sys_ptrace=ep`), now pointed at `starlightd`. Reinstalling drops the
 capability, so an update re-prompts: only reinstall when the binary's sha256
 actually changes, skip the grant entirely when `kernel.yama.ptrace_scope=0`,
