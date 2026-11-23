@@ -6,7 +6,7 @@ TARGET  := build/target
 all: $(TARGET)
 
 $(TARGET): target.c | build
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -pthread -o $@ $<
 
 build:
 	mkdir -p build

@@ -55,7 +55,7 @@ impl Pattern {
     }
 
     /// Whether the pattern matches `window`, which must be exactly `self.len()` bytes.
-    fn matches_window(&self, window: &[u8]) -> bool {
+    pub fn matches_window(&self, window: &[u8]) -> bool {
         self.0.iter().zip(window).all(|(p, b)| p.is_none_or(|p| p == *b))
     }
 }
