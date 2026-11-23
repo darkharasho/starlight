@@ -3,6 +3,7 @@ mod freeze;
 mod maps;
 mod mem;
 mod modules;
+mod peer;
 mod pointer;
 mod process;
 mod rpc;
@@ -63,6 +64,10 @@ fn main() {
 
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
+        if !peer::peer_allowed(peer::peer_pid(&stream), peer::parent_pid()) {
+            // Dropping the stream hangs up on the caller.
+            continue;
+        }
         std::thread::spawn(move || serve(stream));
     }
 }
