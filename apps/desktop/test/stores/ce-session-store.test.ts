@@ -8,10 +8,13 @@ const mockLaunch = vi.fn();
 const mockFind = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockAllow = vi.fn();
+const mockDisable = vi.fn();
+const mockAgentStop = vi.fn();
 vi.mock('../../src/renderer/ipc-client.js', () => ({
   starlight: () => ({
     ceSessionStart: mockStart, ceSessionEnd: vi.fn().mockResolvedValue({ ok: true }), ceSessionSetActive: mockSetActive, ceSessionCall: mockCall,
     ceSessionRetry: mockRetry, launchGame: mockLaunch, findGameProcess: mockFind, updateConfig: mockUpdateConfig, allowMemoryAccess: mockAllow,
+    userCheatsDisableAll: mockDisable, agentStop: mockAgentStop,
   }),
   api: () => ({}),
 }));
@@ -368,5 +371,33 @@ describe('ce-session-store native game permission', () => {
     mockAllow.mockResolvedValueOnce({ ok: false, error: 'setcap failed: boom' });
     await useCeSessionStore.getState().allowMemoryAccess();
     expect(useCeSessionStore.getState()).toMatchObject({ startError: 'setcap failed: boom', startReason: null });
+  });
+});
+
+describe('ce-session-store engine', () => {
+  const ok = { ok: true, sessionId: 's', records: [], proton: true, attached: true, running: true, tables: [], hiddenIds: [], prereqErrors: {} };
+
+  it('takes engine and holders from the start result and from session:engine', async () => {
+    mockStart.mockResolvedValue({ ...ok, engine: 'starlightd', holders: ['user-cheats'] });
+    await useCeSessionStore.getState().start({ source: 'x', cacheKey: 'k' });
+    expect(useCeSessionStore.getState().engine).toBe('starlightd');
+    expect(useCeSessionStore.getState().holders).toEqual(['user-cheats']);
+    useCeSessionStore.getState().setEngine('other', 'ce', []);
+    expect(useCeSessionStore.getState().engine).toBe('starlightd');
+    useCeSessionStore.getState().setEngine('s', 'ce', []);
+    expect(useCeSessionStore.getState().engine).toBe('ce');
+  });
+
+  it('useTableInstead disables user cheats, stops the agent, then starts again', async () => {
+    mockStart.mockResolvedValue({ ...ok, engine: 'starlightd', holders: ['agent'] });
+    mockDisable.mockResolvedValue(undefined); mockAgentStop.mockResolvedValue(undefined);
+    await useCeSessionStore.getState().start({ source: 'x', cacheKey: 'k', pid: 9 });
+    mockStart.mockClear();
+    mockStart.mockResolvedValue({ ...ok, engine: 'ce', holders: [] });
+    await useCeSessionStore.getState().useTableInstead();
+    expect(mockDisable).toHaveBeenCalledWith({ pid: 9 });
+    expect(mockAgentStop).toHaveBeenCalled();
+    expect(mockStart).toHaveBeenCalledWith(expect.objectContaining({ cacheKey: 'k', pid: 9 }));
+    expect(useCeSessionStore.getState().engine).toBe('ce');
   });
 });

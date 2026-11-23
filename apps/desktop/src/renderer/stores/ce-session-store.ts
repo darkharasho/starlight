@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
-import type { CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget } from '../../shared/ipc.js';
+import type { StarlightApi, CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget } from '../../shared/ipc.js';
 import { buildCheatList } from '../../shared/cheat-list.js';
 import { hotkeyPayload } from '../lib/hotkeys.js';
 import { playToggleTone } from '../lib/tone.js';
@@ -78,6 +78,10 @@ interface CeSessionState {
   retrying: boolean;
   /** Automatic retries made so far for this session. */
   retries: number;
+  /** Who runs the game's cheats; starlightd means the Cheat Engine table is paused. */
+  engine: 'ce' | 'starlightd';
+  /** What holds the game when the engine is starlightd. */
+  holders: ('agent' | 'user-cheats')[];
 
   start: (req: StartReq) => Promise<boolean>;
   /** Re-launch the current session targeting a running process (boots Windows CE if Proton). */
@@ -107,6 +111,12 @@ interface CeSessionState {
   resetHotkey: (recordName: string) => Promise<void>;
   /** Push the current hotkey set to Cheat Engine. */
   syncHotkeys: () => Promise<void>;
+  /** `session:engine` arrived. */
+  setEngine: (sessionId: string, engine: 'ce' | 'starlightd', holders: ('agent' | 'user-cheats')[]) => void;
+  /** Turn the player's cheats (and any agent session) off and bring the Cheat Engine table back. */
+  useTableInstead: () => Promise<void>;
+  /** Start the session again so the Cheat Engine table loads (nothing holds the game). */
+  loadTable: () => Promise<void>;
 }
 
 /** Timings for the Play flow (overridable in tests). */
@@ -155,6 +165,8 @@ const CLEARED = {
   pickSteps: [] as CePickStep[],
   retrying: false,
   retries: 0,
+  engine: 'ce' as 'ce' | 'starlightd',
+  holders: [] as ('agent' | 'user-cheats')[],
 };
 
 export const useCeSessionStore = create<CeSessionState>((set, get) => ({
@@ -208,6 +220,8 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
         needsPicker: r.needsPicker ?? false,
         running: r.running !== false,
         tables: r.tables ?? [],
+        engine: r.engine ?? 'ce',
+        holders: r.holders ?? [],
         ...tableState(r),
       });
       if (r.attached) void get().syncHotkeys();
@@ -437,5 +451,26 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
     const items = buildCheatList(s.records, { transparentIds: new Set(s.hiddenIds), revealAll: true }).sections.flatMap((x) => x.items);
     const payload = enabled ? hotkeyPayload(items, overrides) : { bindings: [], replace: [] };
     await starlight().ceSessionCall({ sessionId: sid, method: 'set_hotkeys', params: payload }).catch(() => {});
+  },
+
+  setEngine: (sessionId, engine, holders) => {
+    if (get().sessionId !== sessionId) return;
+    set({ engine, holders });
+  },
+
+  useTableInstead: async () => {
+    const { lastReq, holders, attachedTo } = get();
+    const pid = attachedTo?.pid ?? lastReq?.pid;
+    if (pid !== undefined) await starlight().userCheatsDisableAll({ pid }).catch(() => {});
+    const stop = (starlight() as StarlightApi & { agentStop?: () => Promise<void> }).agentStop;
+    if (holders.includes('agent') && stop) await stop().catch(() => {});
+    await get().loadTable();
+  },
+
+  loadTable: async () => {
+    const { lastReq, attachedTo } = get();
+    // Re-opening an attached game is a no-op for start(), so end the session and re-attach.
+    if (attachedTo) await get().attach(attachedTo.pid, attachedTo.name);
+    else if (lastReq) await get().start(lastReq);
   },
 }));

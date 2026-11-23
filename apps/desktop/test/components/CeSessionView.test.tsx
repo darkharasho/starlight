@@ -6,6 +6,7 @@ import { useCeSessionStore } from '../../src/renderer/stores/ce-session-store.js
 import { useConfigStore } from '../../src/renderer/stores/config-store.js';
 import { useLibraryStore } from '../../src/renderer/stores/library-store.js';
 import { setStarlightApi } from '../../src/renderer/ipc-client.js';
+import { useUserCheatsStore } from '../../src/renderer/stores/user-cheats-store.js';
 import type { StarlightApi } from '../../src/shared/ipc.js';
 
 const call = vi.fn();
@@ -53,6 +54,7 @@ beforeEach(() => {
   } as unknown as StarlightApi);
   useConfigStore.setState({ config: CONFIG });
   useLibraryStore.setState({ games: [] });
+  useUserCheatsStore.setState({ key: null, pid: null, items: [], pending: new Set(), errors: {}, confirm: null });
   seed();
 });
 
@@ -263,6 +265,77 @@ describe('CeSessionView', () => {
     expect(screen.getByText(/No table for this game/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'First scan' })).toBeInTheDocument();
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+  });
+});
+
+describe('CeSessionView with starlightd', () => {
+  const disableAll = vi.fn();
+  const agentStop = vi.fn();
+  const MINE = [{ cheat: { id: 'god', name: 'God mode', type: 'toggle', valueType: 'int32', address: {} }, active: true, verify: null }];
+  function api(over: Record<string, unknown> = {}): void {
+    setStarlightApi({
+      ceSessionCall: call, ceSessionSetActive: setActive, ceSessionStart: start, ceSessionRetry: retry,
+      launchGame, findGameProcess, updateConfig, userCheatsDisableAll: disableAll, agentStop,
+      userCheatsList: vi.fn().mockResolvedValue(MINE),
+      ceSessionEnd: vi.fn().mockResolvedValue({ ok: true }),
+      ...over,
+    } as unknown as StarlightApi);
+  }
+  beforeEach(() => {
+    disableAll.mockReset().mockResolvedValue(undefined); agentStop.mockReset().mockResolvedValue(undefined);
+    start.mockResolvedValue({ ok: true, sessionId: 's2', records: [], proton: true, attached: true, running: true, tables: TABLES, tableId: 30, hiddenIds: [], prereqErrors: {}, verdict: 'unknown', attempts: [], engine: 'ce', holders: [] });
+    api();
+  });
+
+  it('in starlightd mode the CE records are replaced by the paused notice', async () => {
+    seed({ engine: 'starlightd', holders: ['user-cheats'] });
+    render(<CeSessionView processes={[]} />);
+    expect(await screen.findByText('The Cheat Engine table is paused while your cheats run.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Infinite Money: Off' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'God mode: On' })).toBeInTheDocument();
+  });
+
+  it('names the agent session when it holds the game', () => {
+    seed({ engine: 'starlightd', holders: ['agent'] });
+    render(<CeSessionView processes={[]} />);
+    expect(screen.getByText('The Cheat Engine table is paused while the agent session runs.')).toBeInTheDocument();
+  });
+
+  it('offers to load the table when nothing holds the game', async () => {
+    seed({ engine: 'starlightd', holders: [] });
+    render(<CeSessionView processes={[]} />);
+    expect(screen.getByText('The Cheat Engine table is closed.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Load the table' }));
+    expect(start).toHaveBeenCalled();
+  });
+
+  it('Use the table instead turns user cheats off, stops the agent and restarts the session', async () => {
+    seed({ engine: 'starlightd', holders: ['agent', 'user-cheats'] });
+    render(<CeSessionView processes={[]} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Use the table instead' }));
+    expect(screen.getByText('This turns off your cheats and ends the agent session — continue?')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await vi.waitFor(() => expect(start).toHaveBeenCalled());
+    expect(disableAll).toHaveBeenCalledWith({ pid: 42 });
+    expect(agentStop).toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ cacheKey: '9kings', pid: 42 }));
+  });
+
+  it('a tools-only session with user cheats opens on the Cheats tab', async () => {
+    seed({ records: [], tables: [], tableId: null });
+    render(<CeSessionView processes={[]} />);
+    expect(await screen.findByRole('button', { name: 'God mode: On' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Cheats', selected: true })).toBeInTheDocument();
+  });
+
+  it('does not poll refresh in starlightd mode', async () => {
+    vi.useFakeTimers();
+    try {
+      seed({ engine: 'starlightd', holders: ['user-cheats'] });
+      render(<CeSessionView processes={[]} />);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(call).not.toHaveBeenCalledWith(expect.objectContaining({ method: 'refresh' }));
+    } finally { vi.useRealTimers(); }
   });
 });
 
