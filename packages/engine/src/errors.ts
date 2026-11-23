@@ -30,3 +30,11 @@ export const RpcCode = {
   Busy: -32013,
   PatchConflict: -32014,
 } as const;
+
+/** A cheat's checks failed: the game was probably updated and the cheat has to be re-found. */
+export class NeedsUpdateError extends EngineError {
+  name = 'NeedsUpdateError';
+  constructor(public readonly reasons: string[]) {
+    super(`this cheat needs updating: ${reasons.join('; ')}`);
+  }
+}

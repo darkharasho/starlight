@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useCeSessionStore } from '../../stores/ce-session-store.js';
 import { useConfigStore } from '../../stores/config-store.js';
+import { useUserCheatsStore } from '../../stores/user-cheats-store.js';
+import { userCheatsKey } from '../../../shared/game-key.js';
+import { MyCheatsSection } from './MyCheatsSection.js';
 import type { CeSessionRecord, DetectedProcess } from '../../../shared/ipc.js';
 import { buildCheatList, type CheatItem } from '../../../shared/cheat-list.js';
 import { acceleratorLabel, acceleratorToVk } from '../../../shared/vk.js';
@@ -49,7 +52,17 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
   const cover = useCover(s.lastReq?.game ?? (s.title ? { name: s.title } : undefined));
 
   const hasTable = s.tableId !== null || s.records.length > 0;
-  const activeTab: Tab = hasTable ? tab : 'scanner';
+  const paused = s.engine === 'starlightd';
+  const cacheKey = s.lastReq?.cacheKey ?? null;
+  const myKey = cacheKey === null ? null : userCheatsKey(cacheKey);
+  const myPid = s.attached ? s.attachedTo?.pid ?? null : null;
+  const hasUserCheats = useUserCheatsStore((u) => myKey !== null && u.key === myKey && u.items.length > 0);
+  useEffect(() => { if (myKey !== null) void useUserCheatsStore.getState().load(myKey, myPid); }, [myKey, myPid]);
+  const [confirmTable, setConfirmTable] = useState(false);
+  useEffect(() => { if (!paused) setConfirmTable(false); }, [paused]);
+  // The Cheats tab has something to show when there is a table, the player's own cheats, or the paused notice.
+  const hasCheatsTab = hasTable || hasUserCheats || paused;
+  const activeTab: Tab = hasCheatsTab ? tab : 'scanner';
   const hotkeysOn = config?.preferences.cheatHotkeys !== false;
   const title = s.title ?? 'Cheat Engine session';
 
@@ -67,16 +80,16 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
 
   // Keep "on" states and values current while the cheat list is showing.
   useEffect(() => {
-    if (!s.attached || activeTab !== 'cheats') return;
+    if (!s.attached || activeTab !== 'cheats' || paused) return;
     const t = setInterval(() => { void useCeSessionStore.getState().refresh(); }, 2000);
     return () => clearInterval(t);
-  }, [s.attached, activeTab, s.sessionId]);
+  }, [s.attached, activeTab, s.sessionId, paused]);
 
   // A table judged right after launch can fail only because the game hadn't
   // finished loading. Keep looking for a while — unless the user has already
   // got something switched on, which a reload would undo.
   const userHasCheatsOn = s.records.some((r) => r.isActive && !hidden.has(r.id));
-  const autoRetrying = s.attached && hasTable && s.verdict === 'broken' && s.retries < MAX_AUTO_RETRIES && !userHasCheatsOn;
+  const autoRetrying = !paused && s.attached && hasTable && s.verdict === 'broken' && s.retries < MAX_AUTO_RETRIES && !userHasCheatsOn;
   useEffect(() => {
     if (!autoRetrying || s.retrying || s.starting) return;
     const t = setTimeout(() => { void useCeSessionStore.getState().retry({ auto: true }); }, AUTO_RETRY_MS);
@@ -132,7 +145,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
         </Notice>
       )}
 
-      {s.attached && hasTable && s.verdict === 'broken' && (
+      {!paused && s.attached && hasTable && s.verdict === 'broken' && (
         <Notice tone="amber">
           <div className="flex items-center gap-3">
             <span className="flex-1">
@@ -152,7 +165,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
         </Notice>
       )}
 
-      {activeTab === 'cheats' && staleCount > 0 && s.verdict !== 'broken' && (
+      {activeTab === 'cheats' && !paused && staleCount > 0 && s.verdict !== 'broken' && (
         <Notice tone="amber">
           {staleCount === 1 ? 'A cheat' : `${staleCount} cheats`} couldn&apos;t find the code {staleCount === 1 ? 'it patches' : 'they patch'} —
           this table was made for a different version of the game.
@@ -265,13 +278,13 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
       </aside>
 
       <div className="relative flex min-w-0 flex-1 flex-col">
-        {hasTable ? (
+        {hasCheatsTab ? (
           <div className="flex shrink-0 items-center gap-2 pb-3">
             <div role="tablist" className="flex items-center gap-1">
               <TabButton active={activeTab === 'cheats'} onClick={() => setTab('cheats')}>Cheats</TabButton>
               <TabButton active={activeTab === 'scanner'} onClick={() => setTab('scanner')}>Memory scanner</TabButton>
             </div>
-            {activeTab === 'cheats' && list.total > SEARCH_THRESHOLD && (
+            {activeTab === 'cheats' && !paused && list.total > SEARCH_THRESHOLD && (
               <input type="search" aria-label="Filter cheats" placeholder="Filter cheats…" value={query} onChange={(e) => setQuery(e.target.value)}
                      className="ml-auto w-52 rounded-full border border-line bg-panel px-3.5 py-1.5 text-[13px] text-ink placeholder:text-muted/60 transition-colors focus:border-neon-cyan focus:outline-none" />
             )}
@@ -290,13 +303,17 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
           </div>
         ) : (
           <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pb-2 pr-2">
-            {list.total === 0 && (
+            {cacheKey !== null && <MyCheatsSection cacheKey={cacheKey} pid={myPid} attached={s.attached} />}
+            {paused && (
+              <PausedNotice holders={s.holders} confirming={confirmTable} setConfirming={setConfirmTable} />
+            )}
+            {!paused && hasTable && list.total === 0 && (
               <div className="py-8 text-center text-[13px] text-muted">This table has no entries.</div>
             )}
-            {list.total > 0 && sections.length === 0 && (
+            {!paused && list.total > 0 && sections.length === 0 && (
               <div className="py-8 text-center text-[13px] text-muted">No cheats match “{query.trim()}”.</div>
             )}
-            {sections.map((sec, i) => {
+            {!paused && sections.map((sec, i) => {
               const on = s.attached ? sec.items.filter((x) => !x.note && x.rec.isActive).length : 0;
               return (
                 <section key={`${sec.title ?? ''}:${i}`} className="mb-3 overflow-hidden rounded-xl border border-line bg-panel animate-rise"
@@ -317,7 +334,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
                 </section>
               );
             })}
-            {list.notes.length > 0 && q === '' && (
+            {!paused && list.notes.length > 0 && q === '' && (
               <details className="mt-1 px-1 text-xs text-muted">
                 <summary className="cursor-pointer hover:text-ink">About this table</summary>
                 <ul className="mt-2 flex flex-col gap-1 pl-3">
@@ -329,6 +346,41 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
         )}
       </div>
     </div>
+  );
+}
+
+/** The Cheat Engine table is off while starlightd runs the game's cheats. */
+function PausedNotice({ holders, confirming, setConfirming }: {
+  holders: ('agent' | 'user-cheats')[]; confirming: boolean; setConfirming: (b: boolean) => void;
+}): JSX.Element {
+  const loadTable = useCeSessionStore((x) => x.loadTable);
+  const useTableInstead = useCeSessionStore((x) => x.useTableInstead);
+  const agent = holders.includes('agent');
+  const btn = 'shrink-0 rounded-full border border-neon-amber/60 px-3 py-1 hover:bg-neon-amber/[0.1]';
+  if (holders.length === 0) {
+    return (
+      <Notice tone="amber">
+        <div className="flex items-center gap-3">
+          <span className="flex-1">The Cheat Engine table is closed.</span>
+          <button type="button" onClick={() => void loadTable()} className={btn}>Load the table</button>
+        </div>
+      </Notice>
+    );
+  }
+  return (
+    <Notice tone="amber">
+      <div className="flex items-center gap-3">
+        <span className="flex-1">{`The Cheat Engine table is paused while ${agent ? 'the agent session' : 'your cheats'} run${agent ? 's' : ''}.`}</span>
+        {!confirming && <button type="button" onClick={() => setConfirming(true)} className={btn}>Use the table instead</button>}
+      </div>
+      {confirming && (
+        <div role="alertdialog" aria-label="Use the table instead" className="mt-2 flex items-center gap-3">
+          <span className="flex-1">{`This turns off your cheats${agent ? ' and ends the agent session' : ''} — continue?`}</span>
+          <button type="button" onClick={() => { setConfirming(false); void useTableInstead(); }} className={btn}>Continue</button>
+          <button type="button" onClick={() => setConfirming(false)} className="shrink-0 rounded-full border border-line px-3 py-1 text-muted hover:text-ink">Cancel</button>
+        </div>
+      )}
+    </Notice>
   );
 }
 

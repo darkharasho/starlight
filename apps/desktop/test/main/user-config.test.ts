@@ -129,3 +129,27 @@ describe('user-config autoAttachOnDetect', () => {
     expect(cfg.preferences.autoAttachOnDetect).toBe(false);
   });
 });
+
+describe('user-config agent', () => {
+  it('defaults the agent preferences, also for an existing file without them', async () => {
+    const { DEFAULT_AGENT_PREFS } = await import('../../src/shared/ipc.js');
+    expect(DEFAULT_AGENT_PREFS).toEqual({
+      enabled: true, port: 47771, confirmYes: 'Ctrl+Shift+Y', confirmNo: 'Ctrl+Shift+N', stop: 'Ctrl+Shift+End',
+      askTimeoutSec: 300, approvalTimeoutSec: 120,
+    });
+    expect((await getConfigFrom(join(dir, 'missing.json'))).agent).toEqual(DEFAULT_AGENT_PREFS);
+    const path = join(dir, 'config.json');
+    await writeFile(path, JSON.stringify({ schemaVersion: 1 }));
+    expect((await getConfigFrom(path)).agent).toEqual(DEFAULT_AGENT_PREFS);
+    const next = await updateConfigFrom(path, { agent: { port: 50000 } });
+    expect(next.agent).toEqual({ ...DEFAULT_AGENT_PREFS, port: 50000 });
+  });
+
+  it('rejects out-of-range agent ports and timeouts', async () => {
+    const path = join(dir, 'config.json');
+    await expect(updateConfigFrom(path, { agent: { port: 80 } })).rejects.toThrow();
+    await expect(updateConfigFrom(path, { agent: { port: 70000 } })).rejects.toThrow();
+    await expect(updateConfigFrom(path, { agent: { askTimeoutSec: 5 } })).rejects.toThrow();
+    await expect(updateConfigFrom(path, { agent: { approvalTimeoutSec: 601 } })).rejects.toThrow();
+  });
+});

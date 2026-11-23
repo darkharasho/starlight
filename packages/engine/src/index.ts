@@ -5,7 +5,7 @@ export { read, write, readMany, type PrimitiveValue } from './memory.js';
 export * from './types.js';
 export {
   EngineError, AttachError, PermissionError,
-  ReadError, WriteError, ScanError, RpcCode,
+  ReadError, WriteError, ScanError, NeedsUpdateError, RpcCode,
 } from './errors.js';
 export { resolvePointerChain } from './pointer-chain.js';
 export { aobScan } from './aob-scan.js';
@@ -16,3 +16,6 @@ export { watchStart, type Watch } from './watch.js';
 export { disassemble, makeSignature, assemble, alloc, free, patch } from './code.js';
 export { setSpeed, getSpeed } from './speed.js';
 export { moduleExports, resolveSymbol } from './symbols.js';
+export {
+  parseAddressExpr, resolveAddressExpr, resolveCheatAddress, verifyCheat, enableCheat, type RunningCheat,
+} from './cheats.js';

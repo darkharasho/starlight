@@ -54,3 +54,38 @@ describe('SettingsRoute', () => {
     await waitFor(() => expect(received).toEqual({ preferences: { catalogRefreshOnLaunch: false } }));
   });
 });
+
+describe('SettingsRoute agent settings', () => {
+  const api = (patches: unknown[]) => setStarlightApi({
+    getConfig: async () => baseConfig,
+    updateConfig: async (req: { patch: unknown }) => { patches.push(req.patch); return baseConfig; },
+    agentConnectInfo: async () => ({ enabled: true, url: 'u', port: 1, portIsFallback: false, token: 't', claudeCommand: 'cmd', codexConfig: 'cfg' }),
+    onEvent: () => () => {},
+  } as never);
+
+  it('renders with a config that has no agent section (defaults)', async () => {
+    api([]);
+    render(<MemoryRouter><SettingsRoute /></MemoryRouter>);
+    expect(screen.getByText('Connect an agent')).toBeTruthy();
+    expect((screen.getByLabelText(/question timeout/i) as HTMLInputElement).value).toBe('300');
+    expect(screen.getByText('Answer yes')).toBeTruthy();
+    expect(screen.getByText('Stop the agent')).toBeTruthy();
+    expect(await screen.findByText('cmd')).toBeTruthy();
+  });
+
+  it('commits the question timeout on blur within 10–3600', async () => {
+    const patches: unknown[] = [];
+    api(patches);
+    render(<MemoryRouter><SettingsRoute /></MemoryRouter>);
+    const input = screen.getByLabelText(/question timeout/i) as HTMLInputElement;
+    await userEvent.clear(input);
+    await userEvent.type(input, '5');
+    await userEvent.tab();
+    expect(patches).toEqual([]);
+    expect(input.value).toBe('300');
+    await userEvent.clear(input);
+    await userEvent.type(input, '600');
+    await userEvent.tab();
+    await waitFor(() => expect(patches).toEqual([{ agent: { askTimeoutSec: 600 } }]));
+  });
+});

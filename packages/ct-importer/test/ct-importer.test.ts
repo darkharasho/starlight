@@ -9,6 +9,11 @@ const fixture = (name: string) =>
   readFileSync(resolve(HERE, 'fixtures/synthetic', name), 'utf8');
 
 describe('importCt', () => {
+  it('emits schemaVersion 2', () => {
+    const result = importCt(fixture('basic-static.ct'), { gameName: 'Test Target', processName: ['target'] });
+    expect(result.trainer.schemaVersion).toBe(2);
+  });
+
   it('imports basic-static.ct: 2 supported cheats in 1 default category', () => {
     const result = importCt(fixture('basic-static.ct'), {
       gameName: 'Test Target',

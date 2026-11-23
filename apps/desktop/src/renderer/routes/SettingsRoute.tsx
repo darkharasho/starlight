@@ -3,11 +3,18 @@ import { PageHeader } from '../components/PageHeader.js';
 import { useConfigStore } from '../stores/config-store.js';
 import { useUpdateStore } from '../stores/update-store.js';
 import { updateStatusText } from '../lib/update-view.js';
+import { ConnectAgentCard } from '../components/settings/ConnectAgentCard.js';
+import { HotkeyCapture } from '../components/HotkeyCapture.js';
+import { DEFAULT_AGENT_PREFS } from '../../shared/ipc.js';
 
 export function SettingsRoute(): JSX.Element {
   const config = useConfigStore((s) => s.config);
   const update = useConfigStore((s) => s.update);
   const [pollDraft, setPollDraft] = useState<string>(String(config?.preferences.pollIntervalMs ?? 2000));
+
+  const askTimeout = config?.agent?.askTimeoutSec ?? DEFAULT_AGENT_PREFS.askTimeoutSec;
+  const [askDraft, setAskDraft] = useState<string>(String(askTimeout));
+  useEffect(() => { setAskDraft(String(askTimeout)); }, [askTimeout]);
 
   useEffect(() => {
     if (config) setPollDraft(String(config.preferences.pollIntervalMs));
@@ -30,6 +37,16 @@ export function SettingsRoute(): JSX.Element {
     }
     if (n === config!.preferences.pollIntervalMs) return;
     await update({ preferences: { pollIntervalMs: n } });
+  }
+
+  async function commitAsk(): Promise<void> {
+    const n = Number(askDraft);
+    if (!Number.isInteger(n) || n < 10 || n > 3600) {
+      setAskDraft(String(askTimeout));
+      return;
+    }
+    if (n === askTimeout) return;
+    await update({ agent: { askTimeoutSec: n } });
   }
 
   async function toggleRefresh(): Promise<void> {
@@ -98,6 +115,41 @@ export function SettingsRoute(): JSX.Element {
             checked={config.preferences.cheatHotkeys !== false}
             onChange={() => void update({ preferences: { cheatHotkeys: config.preferences.cheatHotkeys === false } })}
             className="accent-neon-cyan size-4"
+          />
+        </label>
+      </div>
+
+      <div className="mt-8 pt-6 border-t border-line max-w-[480px] flex flex-col gap-4">
+        <ConnectAgentCard />
+        {([
+          ['Answer yes', 'confirmYes'],
+          ['Answer no', 'confirmNo'],
+          ['Stop the agent', 'stop'],
+        ] as const).map(([label, key]) => (
+          <div key={key} className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-ink">{label}</span>
+            <HotkeyCapture
+              value={(config.agent ?? DEFAULT_AGENT_PREFS)[key]}
+              onCapture={(accel) => void update({ agent: { [key]: accel } })}
+              onReset={() => void update({ agent: { [key]: DEFAULT_AGENT_PREFS[key] } })}
+            />
+          </div>
+        ))}
+        <label className="flex items-center justify-between gap-3 text-xs">
+          <span>
+            <div className="text-ink">Question timeout</div>
+            <div className="text-[10px] text-muted">How long the agent waits for your answer (10–3600 seconds)</div>
+          </span>
+          <input
+            aria-label="Question timeout (seconds)"
+            type="number"
+            min={10}
+            max={3600}
+            step={10}
+            value={askDraft}
+            onChange={(e) => setAskDraft(e.target.value)}
+            onBlur={() => void commitAsk()}
+            className="w-24 px-2 py-1.5 text-xs rounded-sm bg-panel border border-line text-ink"
           />
         </label>
       </div>

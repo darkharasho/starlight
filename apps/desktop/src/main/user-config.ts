@@ -2,7 +2,7 @@ import { app } from 'electron';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import type { UserConfig } from '../shared/ipc.js';
+import { DEFAULT_AGENT_PREFS, type UserConfig } from '../shared/ipc.js';
 
 const RecentTrainerSchema = z.object({
   id: z.string().min(1),
@@ -38,6 +38,16 @@ const CheatHotkeyOverrideSchema = z.object({
   dec: z.string().nullable().optional(),
 });
 
+const AgentPreferencesSchema = z.object({
+  enabled: z.boolean().default(DEFAULT_AGENT_PREFS.enabled),
+  port: z.number().int().min(1024).max(65535).default(DEFAULT_AGENT_PREFS.port),
+  confirmYes: z.string().min(1).default(DEFAULT_AGENT_PREFS.confirmYes),
+  confirmNo: z.string().min(1).default(DEFAULT_AGENT_PREFS.confirmNo),
+  stop: z.string().min(1).default(DEFAULT_AGENT_PREFS.stop),
+  askTimeoutSec: z.number().int().min(10).max(3600).default(DEFAULT_AGENT_PREFS.askTimeoutSec),
+  approvalTimeoutSec: z.number().int().min(30).max(600).default(DEFAULT_AGENT_PREFS.approvalTimeoutSec),
+}).default({ ...DEFAULT_AGENT_PREFS });
+
 export const UserConfigSchema = z.object({
   schemaVersion: z.literal(1).default(1),
   processNameOverrides: z.record(z.string(), z.array(z.string())).default({}),
@@ -50,6 +60,7 @@ export const UserConfigSchema = z.object({
   ).default({}),
   tableChoices: z.record(z.string(), z.number()).default({}),
   cheatHotkeys: z.record(z.string(), z.record(z.string(), z.string().nullable())).default({}),
+  agent: AgentPreferencesSchema,
 }).default({
   schemaVersion: 1,
   processNameOverrides: {},
@@ -59,6 +70,7 @@ export const UserConfigSchema = z.object({
   hotkeyOverrides: {},
   tableChoices: {},
   cheatHotkeys: {},
+  agent: { ...DEFAULT_AGENT_PREFS },
 });
 
 export type UserConfigInferred = z.infer<typeof UserConfigSchema>;

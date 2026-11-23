@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { StarlightTrainer, StarlightCheat, StarlightSupportedCheat, StarlightEvent } from '../../shared/ipc.js';
+import { isValueCheat } from '../lib/cheat-kind.js';
 import { starlight } from '../ipc-client.js';
 
 interface TrainerStore {
@@ -21,14 +22,10 @@ interface TrainerStore {
   rebindHotkey: (cheatId: string, slot: 'toggle' | 'inc' | 'dec', accelerator: string | null) => Promise<{ ok: boolean; error?: string }>;
 }
 
-function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
-  return !('unsupported' in c) || c.unsupported !== true;
-}
-
 function findSupported(t: StarlightTrainer | null, id: string): StarlightSupportedCheat | undefined {
   if (!t) return undefined;
   for (const cat of t.categories) for (const c of cat.cheats) {
-    if (c.id === id && isSupported(c)) return c as StarlightSupportedCheat;
+    if (c.id === id && isValueCheat(c)) return c as StarlightSupportedCheat;
   }
   return undefined;
 }
@@ -43,7 +40,7 @@ function clamp(v: number, min?: number, max?: number): number {
 function seedValues(t: StarlightTrainer): Record<string, number> {
   const out: Record<string, number> = {};
   for (const cat of t.categories) for (const c of cat.cheats) {
-    if (isSupported(c) && c.type === 'set' && typeof c.default === 'number') {
+    if (isValueCheat(c) && c.type === 'set' && typeof c.default === 'number') {
       out[c.id] = c.default;
     }
   }

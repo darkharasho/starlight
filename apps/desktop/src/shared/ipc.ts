@@ -38,6 +38,21 @@ export const CHANNELS = {
   launchGame:      'starlight:launchGame',
   allowMemoryAccess: 'starlight:allowMemoryAccess',
   findGameProcess: 'starlight:findGameProcess',
+  // The user's own cheats
+  userCheatsList:        'starlight:userCheats:list',
+  userCheatsSetActive:   'starlight:userCheats:setActive',
+  userCheatsSetValue:    'starlight:userCheats:setValue',
+  userCheatsRemove:      'starlight:userCheats:remove',
+  userCheatsDisableAll:  'starlight:userCheats:disableAll',
+  // The agent (MCP) connection
+  agentConnectInfo:  'starlight:agent:connectInfo',
+  agentRotateToken:  'starlight:agent:rotateToken',
+  // The agent session (attach approval, Stop, activity)
+  agentGetState:        'starlight:agent:getState',
+  agentRespondApproval: 'starlight:agent:respondApproval',
+  agentSetCanModify:    'starlight:agent:setCanModify',
+  agentAnswer:          'starlight:agent:answer',
+  agentStop:            'starlight:agent:stop',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -124,6 +139,17 @@ export type IpcOk<T = void> = T extends void ? { ok: true } : { ok: true; value:
 export type IpcErr = { ok: false; error: string };
 export type IpcResult<T = void> = IpcOk<T> | IpcErr;
 
+/** A cheat in the player's own library, with its state for the running game. */
+export interface UserCheatView {
+  cheat: import('@starlight/ct-importer').StarlightCheat;
+  active: boolean;
+  value?: number;
+  /** null when not attached to a game */
+  verify: { status: 'ok' | 'needs-update' | 'unverified'; reasons: string[] } | null;
+}
+
+export type SetActiveResult = { ok: true } | { ok: false; error: string; confirm?: 'close-ce' };
+
 export interface DetectedGame {
   source: 'steam' | 'manual' | 'epic' | 'heroic' | 'lutris';
   appId: string;
@@ -156,6 +182,13 @@ export type StarlightEvent =
   | { type: 'session:tables';       tables: CePickStep[] }
   /** The attached game exited; main already closed Cheat Engine. */
   | { type: 'session:game-exited';  sessionId: string }
+  /** Who runs the game's cheats changed (Cheat Engine or starlightd). */
+  | { type: 'userCheats:changed'; key: string }
+  | { type: 'session:engine'; sessionId: string; engine: 'ce' | 'starlightd'; holders: ('agent' | 'user-cheats')[] }
+  /** The agent session changed (status, approval, live changes, activity). */
+  | { type: 'agent:state'; state: AgentSnapshot }
+  /** Open the agent view (an attach was approved, or a notification was clicked). */
+  | { type: 'agent:focus' }
   | { type: 'ce:hotkey';            recordId: number; ok: boolean; active: boolean; error?: string | undefined }
   /** The trainer engine's install state changed (downloads run in the background). */
   | { type: 'ceRuntime:status'; status: CeRuntimeStatus; error?: string | undefined }
@@ -252,6 +285,9 @@ export type CeSessionStartResult =
       running: boolean;
       tables: CeTable[];
       process?: { pid: number; name?: string | undefined } | undefined;
+      /** Who runs the game's cheats; starlightd means the table is paused. */
+      engine: 'ce' | 'starlightd';
+      holders: ('agent' | 'user-cheats')[];
     } & CeSessionTableState)
   | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'ptrace' | 'anti-cheat' | 'unknown' };
 
@@ -295,6 +331,27 @@ export interface StarlightApi {
   /** Asks (desktop password prompt) to let Starlight read native games' memory. */
   allowMemoryAccess(): Promise<{ ok: true } | { ok: false; cancelled?: boolean; error: string }>;
   findGameProcess(req: { game: { id: string; name: string; steamAppId?: number | null } }): Promise<{ pid: number; name: string } | null>;
+  // The user's own cheats
+  userCheatsList(req: { key: string; pid: number | null }): Promise<UserCheatView[]>;
+  userCheatsSetActive(req: { key: string; pid: number; id: string; on: boolean; closeCe?: boolean; value?: number }): Promise<SetActiveResult>;
+  userCheatsSetValue(req: { key: string; pid: number; id: string; value: number }): Promise<IpcResult>;
+  userCheatsRemove(req: { key: string; id: string }): Promise<IpcResult>;
+  userCheatsDisableAll(req: { pid: number }): Promise<void>;
+  // The agent (MCP) connection
+  /** The URL, token and copy-paste setup for Claude Code and Codex. */
+  agentConnectInfo(): Promise<AgentConnectInfo>;
+  /** Makes a new token; every connected agent is disconnected. */
+  agentRotateToken(): Promise<AgentConnectInfo>;
+  // The agent session
+  agentGetState(): Promise<AgentSnapshot>;
+  /** Allow or deny a pending attach request. */
+  agentRespondApproval(req: { id: string; allow: boolean }): Promise<void>;
+  /** The player's answer to a pending question. */
+  agentAnswer(req: { id: string; value: unknown }): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** The "Agent can modify the game" switch. Off reverts the agent's freezes, watches, test cheats and speed. */
+  agentSetCanModify(req: { on: boolean }): Promise<void>;
+  /** Stops the agent: reverts everything it changed and detaches. */
+  agentStop(): Promise<void>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;
@@ -362,6 +419,93 @@ export interface UserConfig {
   tableChoices: Record<string, number>;
   /** Game key → cheat name → hotkey accelerator (null = explicitly no hotkey). */
   cheatHotkeys: Record<string, Record<string, string | null>>;
+  /** The local MCP server that Claude Code / Codex connect to. */
+  agent: AgentPreferences;
+}
+
+export interface AgentPreferences {
+  enabled: boolean;
+  /** 1024–65535. If it's taken, an OS-assigned port is used instead. */
+  port: number;
+  confirmYes: string;
+  confirmNo: string;
+  stop: string;
+  /** How long ask_player waits by default, 10–3600. */
+  askTimeoutSec: number;
+  /** How long an attach request waits for the player, 30–600. */
+  approvalTimeoutSec: number;
+}
+
+export const DEFAULT_AGENT_PREFS: AgentPreferences = {
+  enabled: true,
+  port: 47771,
+  confirmYes: 'Ctrl+Shift+Y',
+  confirmNo: 'Ctrl+Shift+N',
+  stop: 'Ctrl+Shift+End',
+  askTimeoutSec: 300,
+  approvalTimeoutSec: 120,
+};
+
+export interface AgentConnectInfo {
+  enabled: boolean;
+  url: string;
+  port: number;
+  /** True when the configured port was taken and the OS picked this one. */
+  portIsFallback: boolean;
+  token: string;
+  claudeCommand: string;
+  codexConfig: string;
+}
+
+// --- The agent session (main → renderer) ---
+
+export interface ActivityEntry {
+  id: number;
+  at: number;
+  /** null for notes (attach, Stop, the switch). */
+  tool: string | null;
+  summary: string;
+  status: 'running' | 'ok' | 'error' | 'refused' | 'note';
+  error?: string;
+  change?: { address: string; old: string; new: string };
+}
+
+export interface PendingApproval {
+  id: string;
+  /** "Claude", "Codex", … */
+  label: string;
+  game: string;
+  pid: number;
+  /** Allowing closes the Cheat Engine table that runs on the game. */
+  closesCeTable: boolean;
+  expiresAt: number;
+}
+
+export interface PendingQuestion {
+  id: string;
+  question: string;
+  answer: 'number' | 'confirm' | 'choice';
+  choices?: string[];
+  askedAt: number;
+  expiresAt: number;
+  label: string;
+}
+
+export interface AgentSnapshot {
+  status: 'idle' | 'awaiting-approval' | 'attached';
+  client: { label: string; name: string } | null;
+  approval: PendingApproval | null;
+  game: { pid: number; name: string; key: string; proton: boolean; steamAppId: number | null; buildId: string | null } | null;
+  canModify: boolean;
+  questions: PendingQuestion[];
+  live: {
+    freezes: Array<{ id: number; address: string; where: string | null; type: string; value: string }>;
+    tests: Array<{ id: number; name: string }>;
+    watches: Array<{ id: number; address: string; kind: 'write' | 'access'; endsAt: number }>;
+    speed: number;
+  };
+  /** Newest first. */
+  activity: ActivityEntry[];
 }
 
 // DeepPartial type used by updateConfig patches.

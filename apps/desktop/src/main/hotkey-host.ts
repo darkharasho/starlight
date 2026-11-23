@@ -1,6 +1,6 @@
 import { uIOhook, type UiohookKeyboardEvent } from 'uiohook-napi';
 import { BrowserWindow } from 'electron';
-import type { StarlightTrainer, StarlightSupportedCheat } from '@starlight/ct-importer';
+import { isValueCheat, type StarlightTrainer, type StarlightSupportedCheat } from '@starlight/ct-importer';
 import * as engineHost from './engine-host.js';
 import { CHANNELS, type StarlightEvent } from '../shared/ipc.js';
 import { parseAccelerator, type AcceleratorMatcher } from './hotkey-matcher.js';
@@ -29,10 +29,6 @@ function broadcast(e: StarlightEvent): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(CHANNELS.event, e);
 }
 
-function isSupported(c: unknown): c is StarlightSupportedCheat {
-  return !!c && typeof c === 'object' && !('unsupported' in c && (c as { unsupported: unknown }).unsupported === true);
-}
-
 function resolveHotkeys(
   cheat: StarlightSupportedCheat,
   override: CheatHotkeyOverrideMap | undefined,
@@ -50,7 +46,56 @@ function resolveHotkeys(
   return out;
 }
 
+type AgentSlot = 'yes' | 'no' | 'stop';
+interface AgentBinding { matcher: AcceleratorMatcher; handler: () => void }
+const agentBindings = new Map<AgentSlot, AgentBinding>();
+const AGENT_SLOTS: AgentSlot[] = ['yes', 'no', 'stop'];
+
+/**
+ * Global hotkeys for the agent (yes/no for a question, Stop). They live apart
+ * from cheat bindings, so `registerForTrainer` and `unregisterAll` never clear
+ * them. A slot present in `b` is rebound (`null` unbinds it); a slot absent
+ * from `b` keeps its binding and handler. `b === null` clears every slot.
+ */
+export function setAgentHotkeys(
+  b: { yes?: string | null; no?: string | null; stop?: string | null } | null,
+  on: { yes?(): void; no?(): void; stop?(): void } = {},
+): { ok: true } | { ok: false; invalid: string[] } {
+  if (b === null) {
+    agentBindings.clear();
+    return { ok: true };
+  }
+  const invalid: string[] = [];
+  const next = new Map<AgentSlot, AgentBinding | null>();
+  for (const slot of AGENT_SLOTS) {
+    if (!(slot in b)) continue;
+    const accel = b[slot];
+    if (accel == null) { next.set(slot, null); continue; }
+    const matcher = parseAccelerator(accel);
+    const handler = on[slot];
+    if (!matcher) { invalid.push(accel); continue; }
+    if (!handler) continue;
+    next.set(slot, { matcher, handler });
+  }
+  if (invalid.length > 0) return { ok: false, invalid };
+  for (const [slot, binding] of next) {
+    if (binding) agentBindings.set(slot, binding);
+    else agentBindings.delete(slot);
+  }
+  if (agentBindings.size > 0) ensureStarted();
+  return { ok: true };
+}
+
+export type AgentHotkeysPort = { set: typeof setAgentHotkeys };
+
 async function onKeyDown(e: UiohookKeyboardEvent): Promise<void> {
+  for (const slot of AGENT_SLOTS) {
+    const binding = agentBindings.get(slot);
+    if (binding?.matcher(e)) {
+      try { binding.handler(); } catch { /* a handler's failure must not break the listener */ }
+      return;
+    }
+  }
   for (const reg of cheats) {
     if (reg.toggleMatcher?.(e)) {
       const next = !(isOn.get(reg.cheatId) ?? false);
@@ -92,7 +137,7 @@ export function registerForTrainer(t: StarlightTrainer | null, overrides: Traine
   if (!t) return;
   for (const cat of t.categories) {
     for (const cheat of cat.cheats) {
-      if (!isSupported(cheat)) continue;
+      if (!isValueCheat(cheat)) continue;
       const hk = resolveHotkeys(cheat, overrides[cheat.id]);
       const reg: RegisteredCheat = {
         cheatId: cheat.id,

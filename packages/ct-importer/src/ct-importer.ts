@@ -74,7 +74,7 @@ export function importCt(xml: string, opts: ImportOptions): ImportResult {
   }
 
   const trainer: StarlightTrainer = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: `starlight-${slugify(opts.gameName)}-${Date.now()}`,
     game: {
       name: opts.gameName,

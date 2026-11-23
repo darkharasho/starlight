@@ -17,10 +17,11 @@ import {
 } from '@starlight/engine';
 import { getEngineClient } from './starlightd-host.js';
 import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
-import type {
-  StarlightTrainer,
-  StarlightSupportedCheat,
-  StarlightAddress,
+import {
+  isValueCheat,
+  type StarlightTrainer,
+  type StarlightSupportedCheat,
+  type StarlightAddress,
 } from '@starlight/ct-importer';
 import type { AttachResult, IpcResult } from '../shared/ipc.js';
 import { CHANNELS } from '../shared/ipc.js';
@@ -110,7 +111,7 @@ function findCheat(cheatId: string): StarlightSupportedCheat | undefined {
   if (!activeTrainer_) return undefined;
   for (const c of activeTrainer_.categories) {
     for (const x of c.cheats) {
-      if (x.id === cheatId && !('unsupported' in x && x.unsupported)) return x as StarlightSupportedCheat;
+      if (x.id === cheatId && isValueCheat(x)) return x;
     }
   }
   return undefined;

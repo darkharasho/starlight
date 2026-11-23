@@ -15,11 +15,8 @@ import { openToolsOnly, findCatalogEntry, sessionRequestFor, showGameScreen } fr
 export { gameCandidates };
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
 import { ValueCheatCard } from '../components/cheat-cards/ValueCheatCard.js';
+import { isValueCheat, isPatchCheat } from '../lib/cheat-kind.js';
 import { UnsupportedCheatCard } from '../components/cheat-cards/UnsupportedCheatCard.js';
-
-function isSupported(c: StarlightCheat): c is StarlightSupportedCheat {
-  return !('unsupported' in c) || c.unsupported !== true;
-}
 
 function LuaHeavyBanner({ supported, total, sourceUrl }: { supported: number; total: number; sourceUrl?: string | undefined }): JSX.Element {
   const pct = total > 0 ? Math.round((supported / total) * 100) : 0;
@@ -118,7 +115,7 @@ export function ActiveTrainerRoute(): JSX.Element {
   const [hotkeyErrors, setHotkeyErrors] = useState<Record<string, { toggle?: string; inc?: string; dec?: string }>>({});
 
   const overrides = config && trainer ? (config.hotkeyOverrides[trainer.id] ?? {}) : {};
-  const allCheats = trainer ? trainer.categories.flatMap(c => c.cheats.filter((x): x is StarlightSupportedCheat => isSupported(x))) : [];
+  const allCheats = trainer ? trainer.categories.flatMap(c => c.cheats.filter((x): x is StarlightSupportedCheat => isValueCheat(x))) : [];
 
   async function handleRebind(cheatId: string, slot: 'toggle' | 'inc' | 'dec', accel: string): Promise<void> {
     const conflict = findConflict(allCheats, overrides, cheatId, slot, accel);
@@ -345,7 +342,7 @@ function TrainerView({
   const activeCount = category.cheats.filter((c) => activeCheats[c.id]).length;
   const totalCheats = trainer.categories.reduce((acc, c) => acc + c.cheats.length, 0);
   const supportedCount = trainer.categories.reduce(
-    (acc, c) => acc + c.cheats.filter((x) => isSupported(x)).length, 0);
+    (acc, c) => acc + c.cheats.filter((x) => isValueCheat(x)).length, 0);
 
   return (
     <div className="flex flex-col h-full gap-3">
@@ -432,12 +429,12 @@ function TrainerView({
           <span className="text-[11px] text-muted">{category.cheats.length} cheats · {activeCount} active</span>
         </div>
         {category.cheats.map((c) => {
-          if (!isSupported(c)) {
+          if (!isValueCheat(c)) {
             return <UnsupportedCheatCard
               key={c.id}
               id={c.id}
               name={c.name}
-              reason={c.unsupportedReason}
+              reason={isPatchCheat(c) ? "Code cheat: open the game's page to use it" : c.unsupportedReason}
               {...(c.description !== undefined ? { description: c.description } : {})}
             />;
           }

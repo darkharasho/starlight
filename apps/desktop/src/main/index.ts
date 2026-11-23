@@ -3,25 +3,49 @@ import { guardStdio } from './stdio-guard.js';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
-import { configureStarlightdHost, engineNeedsPtraceGrant, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
-import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
+import { configureStarlightdHost, getEngineClient, engineNeedsPtraceGrant, enginePid, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
+import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setAgentHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
 import { LatchDetector } from './latch-detector.js';
-import { fetchCatalog, fetchTrainer } from './catalog-host.js';
+import { fetchCatalog, fetchTrainer, getCachedIndex } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
 import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
 import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
-import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession } from './ce-session.js';
+import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd } from './ce-session.js';
+import { createUserCheatsHost } from './user-cheats-host.js';
+import { userCheatsDir } from './user-cheats.js';
+import { createGameOwner } from './game-owner.js';
+import { setGameOwner } from './game-owner-singleton.js';
 import { cleanCeError } from './ce-session.js';
 import { launchGame } from './game-launcher.js';
 import { matchGameToProcess } from './game-matcher.js';
 import { killStaleCeProcesses } from './ce-process.js';
 import { buildCatalogIndex, type CatalogEntry } from './game-matcher.js';
 import { join } from 'node:path';
+import { readFile, readlink } from 'node:fs/promises';
+import { startMcpHost, type McpHost } from './agent/mcp-host.js';
+import { loadOrCreateToken, rotateToken } from './agent/token.js';
+import { buildConnectInfo } from './agent/connect-info.js';
+import { createAgentServer } from './agent/server.js';
+import type { ToolDef } from './agent/tools.js';
+import { attachTool, detachTool, gameInfoTool, listGamesTool } from './agent/tools-session.js';
+import { createActivityLog } from './agent/activity.js';
+import { createPlayerPrompts } from './agent/player-prompt.js';
+import { electronNotifier } from './agent/notifier.js';
+import { askPlayerTool } from './agent/tools-ask.js';
+import { discoveryTools } from './agent/tools-discovery.js';
+import { modifyTools } from './agent/tools-modify.js';
+import { libraryTools } from './agent/tools-library.js';
+import { createAgentSession } from './agent/session.js';
+import { checkAttachTarget, procTargetDeps } from './agent/target-guard.js';
+import { createBeforeQuit } from './quit.js';
+import { listModules as engineListModules } from '@starlight/engine';
+import { identifyGame } from './game-identity.js';
+import { detectAntiCheat } from './anti-cheat.js';
 import { createUpdater, type AutoUpdaterLike } from './updater.js';
 
 // Before anything logs: a closed stdout must not crash Starlight (see stdio-guard.ts).
@@ -32,6 +56,158 @@ let catalogIndex = new Map<string, CatalogEntry>();
 
 function broadcast(e: import('../shared/ipc.js').StarlightEvent): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(CHANNELS.event, e);
+}
+
+function broadcastEngine(): void {
+  const s = ceGetActiveSession();
+  if (s && s.pid !== null) broadcast({ type: 'session:engine', sessionId: s.sessionId, engine: s.engine, holders: gameOwner.holders(s.pid) });
+}
+
+/** One engine per game: Cheat Engine and starlightd never both hold it. */
+const gameOwner = createGameOwner({
+  ceSessionFor,
+  releaseCe: async (id) => { await releaseToStarlightd(id); broadcastEngine(); },
+  onChange: (pid) => { if (ceGetActiveSession()?.pid === pid) broadcastEngine(); },
+});
+setGameOwner(gameOwner);
+
+const userCheatsHost = createUserCheatsHost({
+  dir: userCheatsDir(app.getPath('userData')),
+  getClient: getEngineClient,
+  owner: gameOwner,
+  onChange: (key) => broadcast({ type: 'userCheats:changed', key }),
+});
+
+// --- The agent's MCP server (Claude Code / Codex) ---
+
+const USER_DATA = app.getPath('userData');
+let agentToken: string | null = null;
+let mcpHost: McpHost | null = null;
+/** The configured port `mcpHost` was started for (it may run on a fallback). */
+let mcpHostConfiguredPort: number | null = null;
+let mcpHostChain: Promise<void> = Promise.resolve();
+
+async function loadAgentToken(): Promise<string> {
+  agentToken ??= await loadOrCreateToken(USER_DATA);
+  return agentToken;
+}
+
+// The agent session: player-approved attach, tiers, Stop and the activity log.
+let agentStateQueued = false;
+/** Sends the agent's state to the renderer, at most once per tick. */
+function broadcastAgentState(): void {
+  if (agentStateQueued) return;
+  agentStateQueued = true;
+  setImmediate(() => {
+    agentStateQueued = false;
+    broadcast({ type: 'agent:state', state: agentSession.snapshot() });
+  });
+}
+
+/** Brings Starlight to the front on the agent view. */
+function focusAgentView(): void {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+  broadcast({ type: 'agent:focus' });
+}
+
+const agentActivity = createActivityLog({ onChange: broadcastAgentState });
+const agentPrompts = createPlayerPrompts({
+  notifier: electronNotifier(), focusAgentView, onChange: broadcastAgentState,
+  hotkeys: { set: setAgentHotkeys }, prefs: async () => (await getConfig()).agent,
+});
+const attachTargetDeps = procTargetDeps({ daemonPid: enginePid });
+const agentSession = createAgentSession({
+  getClient: getEngineClient,
+  checkTarget: (pid) => checkAttachTarget(pid, attachTargetDeps),
+  identify: (pid) => identifyGame(pid, { catalogIndex: () => catalogIndex, detectedGames: () => lastDetectedGames }),
+  owner: gameOwner,
+  prompts: agentPrompts,
+  hotkeys: { set: setAgentHotkeys },
+  activity: agentActivity,
+  prefs: async () => (await getConfig()).agent,
+  onChange: broadcastAgentState,
+  focusAgentView,
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const agentTools: ToolDef<any>[] = [
+  listGamesTool({
+    listProcesses: () => processHost.listOnce(),
+    manualExePaths: async () => (await getConfig()).manualGames.map((g) => g.exePath),
+    installDirs: () => lastDetectedGames.map((g) => g.installDir).filter(Boolean),
+    exePath: (pid) => readlink(`/proc/${pid}/exe`).catch(() => null),
+    identify: (pid) => identifyGame(pid, { catalogIndex: () => catalogIndex, detectedGames: () => lastDetectedGames }, { hash: false }),
+    detectAntiCheatFn: (pid) => detectAntiCheat(pid),
+    attachedPid: () => agentSession.attachedPid(),
+  }),
+  attachTool(agentSession),
+  detachTool(agentSession),
+  askPlayerTool(agentPrompts, async () => (await getConfig()).agent),
+  gameInfoTool({ listModules: engineListModules, readMaps: (pid) => readFile(`/proc/${pid}/maps`, 'utf8') }),
+  ...discoveryTools(),
+  ...modifyTools(),
+  ...libraryTools({
+    dir: userCheatsDir(USER_DATA),
+    onSaved: (key) => broadcast({ type: 'userCheats:changed', key }),
+    catalogTrainerFor: async (game) => {
+      const entry = game.catalogId ? (getCachedIndex()?.games ?? []).find((g) => g.id === game.catalogId) : undefined;
+      if (!entry) return null;
+      if (entry.trainerPath) return await fetchTrainer(entry.trainerPath);
+      if (entry.trainerSource) {
+        return await fetchTrainerLive(entry.trainerSource, {
+          id: entry.id, name: entry.name, processName: entry.processName, platform: entry.platform,
+        });
+      }
+      return null;
+    },
+  }),
+];
+
+/** Starts, restarts or stops the MCP server to match the agent preferences. Serialized. */
+function applyAgentHost(prefs: { enabled: boolean; port: number }): Promise<void> {
+  mcpHostChain = mcpHostChain.then(async () => {
+    if (prefs.enabled && mcpHost && mcpHostConfiguredPort === prefs.port) return;
+    if (mcpHost) {
+      const old = mcpHost;
+      mcpHost = null;
+      mcpHostConfiguredPort = null;
+      await old.close().catch(() => {});
+    }
+    if (!prefs.enabled) return;
+    await loadAgentToken();
+    mcpHost = await startMcpHost({
+      port: prefs.port,
+      token: () => agentToken ?? '',
+      createServer: (mcpSessionId) => createAgentServer(mcpSessionId, {
+        version: app.getVersion(),
+        tools: agentTools,
+        access: agentSession,
+        activity: agentActivity,
+        onClientInfo: () => {},
+      }),
+      onSessionClosed: (mcpSessionId) => { void agentSession.onMcpSessionClosed(mcpSessionId).catch(() => {}); },
+    });
+    mcpHostConfiguredPort = prefs.port;
+  }).catch((err) => {
+    console.error('[agent] the MCP server failed to start:', err instanceof Error ? err.message : err);
+  });
+  return mcpHostChain;
+}
+
+async function agentConnectInfo(): Promise<import('../shared/ipc.js').AgentConnectInfo> {
+  await mcpHostChain;
+  const cfg = await getConfig();
+  return buildConnectInfo({
+    enabled: cfg.agent.enabled,
+    port: mcpHost?.port ?? cfg.agent.port,
+    portIsFallback: mcpHost?.portIsFallback ?? false,
+    token: await loadAgentToken(),
+  });
 }
 
 /** Remembers the table that worked for a game so the next launch starts with it. */
@@ -152,6 +328,7 @@ app.whenReady().then(async () => {
 
   const initialConfig = await getConfig();
   processHost.setIntervalMs(initialConfig.preferences.pollIntervalMs);
+  void applyAgentHost(initialConfig.agent);
 
   // Reap Cheat Engine processes orphaned by a previous crash (which bypasses the
   // before-quit cleanup). Leftover CE holds the game open and makes the next
@@ -252,6 +429,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.updateConfig, async (_evt, req: { patch: import('../shared/ipc.js').DeepPartial<import('../shared/ipc.js').UserConfig> }) => {
     const next = await updateConfig(req.patch);
     processHost.setIntervalMs(next.preferences.pollIntervalMs);
+    void applyAgentHost(next.agent);  // restarts only when enabled or port changed
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.event, { type: 'config:changed', config: next });
     }
@@ -351,6 +529,7 @@ app.whenReady().then(async () => {
         processes,
         detectedGames: lastDetectedGames,
         engineNeedsPtraceGrantFn: () => engineNeedsPtraceGrant(),
+        starlightdHolders: (pid) => gameOwner.holders(pid),
         onProgress: (message) => broadcast({ type: 'session:progress', message }),
         onSteps: (tables) => broadcast({ type: 'session:tables', tables }),
         onGameExit: (sessionId) => broadcast({ type: 'session:game-exited', sessionId }),
@@ -370,6 +549,7 @@ app.whenReady().then(async () => {
         attached: r.attached, needsPicker: r.needsPicker, running: r.running,
         tables: r.tables, tableId: r.tableId, tableError: r.tableError, process: r.process,
         hiddenIds: r.hiddenIds, prereqErrors: r.prereqErrors, verdict: r.verdict, attempts: r.attempts,
+        engine: r.engine, holders: r.holders,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -410,6 +590,28 @@ app.whenReady().then(async () => {
     const m = await matchGameToProcess(req.game, { processes, detectedGames: lastDetectedGames }).catch(() => null);
     return m && m !== 'ambiguous' ? m : null;
   });
+
+  ipcMain.handle(CHANNELS.userCheatsList, (_evt, req: { key: string; pid: number | null }) => userCheatsHost.list(req.key, req.pid));
+  ipcMain.handle(CHANNELS.userCheatsSetActive, (_evt, req: Parameters<typeof userCheatsHost.setActive>[0]) => userCheatsHost.setActive(req));
+  ipcMain.handle(CHANNELS.userCheatsSetValue, (_evt, req: Parameters<typeof userCheatsHost.setValue>[0]) => userCheatsHost.setValue(req));
+  ipcMain.handle(CHANNELS.userCheatsRemove, (_evt, req: { key: string; id: string }) => userCheatsHost.remove(req.key, req.id));
+  ipcMain.handle(CHANNELS.userCheatsDisableAll, (_evt, req: { pid: number }) => userCheatsHost.disableAll(req.pid));
+
+  ipcMain.handle(CHANNELS.agentConnectInfo, () => agentConnectInfo());
+  ipcMain.handle(CHANNELS.agentRotateToken, async () => {
+    await mcpHostChain;
+    agentToken = await rotateToken(USER_DATA);
+    await mcpHost?.closeSessions();
+    return agentConnectInfo();
+  });
+  ipcMain.handle(CHANNELS.agentGetState, () => agentSession.snapshot());
+  ipcMain.handle(CHANNELS.agentRespondApproval, (_evt, req: { id: string; allow: boolean }) => {
+    agentPrompts.respondApproval(String(req?.id ?? ''), req?.allow === true);
+  });
+  ipcMain.handle(CHANNELS.agentAnswer, (_evt, req: { id: string; value: unknown }) =>
+    agentPrompts.answer(String(req?.id ?? ''), req?.value));
+  ipcMain.handle(CHANNELS.agentSetCanModify, (_evt, req: { on: boolean }) => agentSession.setCanModify(req?.on === true));
+  ipcMain.handle(CHANNELS.agentStop, () => agentSession.stop('player'));
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
@@ -453,12 +655,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', async () => {
-  processHost.pause();
-  shutdownHotkeys();
-  unregisterHotkeys();
-  await engineHost.detach();
-  await stopEngine();
-  const s = ceGetActiveSession();
-  if (s) await ceEndSession({ sessionId: s.sessionId }).catch(() => {});
-});
+// R21 quit order, awaited: Electron doesn't wait for an async before-quit, so the
+// first one holds the quit, runs these under a 3 s cap, then exits (I6).
+app.on('before-quit', createBeforeQuit({
+  exit: () => app.exit(0),
+  log: (m) => console.error(m),
+  steps: () => [
+    { name: 'pause process watch', run: () => processHost.pause() },
+    { name: 'hotkeys', run: () => { shutdownHotkeys(); unregisterHotkeys(); } },
+    { name: 'agent stop', run: () => agentSession.stop('app-quit') },
+    { name: 'my cheats', run: () => userCheatsHost.end() },
+    { name: 'MCP server', run: async () => { await mcpHostChain; await mcpHost?.close(); } },
+    { name: 'engine detach', run: () => engineHost.detach() },
+    { name: 'engine stop', run: () => stopEngine() },
+    {
+      name: 'Cheat Engine',
+      run: async () => {
+        const s = ceGetActiveSession();
+        if (s) await ceEndSession({ sessionId: s.sessionId });
+      },
+    },
+  ],
+}));
