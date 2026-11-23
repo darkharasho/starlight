@@ -2,7 +2,7 @@
 //! the function's displaced instructions, re-encoded at their new address, then a jump back to
 //! the rest of the function. The function's entry becomes `jmp body`, written as a recorded patch,
 //! so it is reverted with every other patch. The page itself is never freed (D9).
-use crate::patch::Patches;
+use crate::patch::{ApplyError, Patches};
 use crate::process::Target;
 use crate::rpc::RpcError;
 use crate::tracer::Tracer;
@@ -73,13 +73,13 @@ pub fn install(
     let mut entry = vec![0xE9];
     entry.extend_from_slice(&rel.to_le_bytes());
     entry.resize(len, 0x90);
-    let (patch_id, replaced) = patches.apply_with(handle, t, tracer.clone(), func, &entry).map_err(|e| release(e.into()))?;
-    if replaced != original {
-        // The code changed between reading it and patching it: the trampoline is stale.
-        // A thread may already be in the page, so it stays mapped (D9).
-        let _ = patches.revert(patch_id, true);
-        return Err(HookError::Skipped(format!("the code at {func:#x} changed while hooking")));
-    }
+    // Written only if the function still holds the bytes the trampoline was built from.
+    let (patch_id, _) = patches.apply_with(handle, t, tracer.clone(), func, &entry, Some(&original)).map_err(|e| match e {
+        ApplyError::NotWritten(e) => release(e.into()),
+        ApplyError::Changed(_) => release(HookError::Skipped(format!("the code at {func:#x} changed while hooking"))),
+        // The entry jump was live for a moment, so a thread may be in the page: it stays (D9).
+        ApplyError::Written(e) => e.into(),
+    })?;
     Ok(Hook { func, patch_id, code: page, trampoline: page + tramp_off, displaced: original })
 }
 
@@ -313,5 +313,38 @@ mod tests {
         assert!(matches!(&e, HookError::Rpc(r) if r.code == -32010), "{e:?}");
         assert_eq!(std::fs::read_to_string(format!("/proc/{}/maps", tt.pid())).unwrap(), before, "the page was not freed");
         assert!(patches.revert(1, true).is_err(), "no patch was recorded");
+    }
+
+    /// Mapped regions of `pid` as (start, perms).
+    fn regions(pid: i32) -> Vec<(u64, String)> {
+        std::fs::read_to_string(format!("/proc/{pid}/maps"))
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut w = l.split_whitespace();
+                let start = u64::from_str_radix(w.next().unwrap().split('-').next().unwrap(), 16).unwrap();
+                (start, w.next().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hook_page_stays_mapped_once_the_entry_may_have_run() {
+        // The session ends while hooking: the entry jump is written, then reverted at once.
+        // The game may have entered the page meanwhile, so it must not be unmapped (D9).
+        let tt = TestTarget::spawn(&["--spin"]);
+        let t = Arc::new(open_target(tt.pid()).unwrap());
+        let func = tt.addrs["spin_target"];
+        let tracer = t.tracer().unwrap();
+        let owner = Arc::new(Owner::default());
+        let patches = Patches::new(owner.clone());
+        let original = mem::read_bytes(&t, func, 7).unwrap();
+        let before = regions(tt.pid());
+        owner.run_all();
+        let e = install(&t, &tracer, &patches, 1, func, &|tramp| format!("jmp {tramp:#x}")).unwrap_err();
+        assert!(matches!(&e, HookError::Rpc(r) if r.code == -32007), "{e:?}");
+        assert_eq!(mem::read_bytes(&t, func, 7).unwrap(), original, "the entry was not reverted");
+        let new: Vec<_> = regions(tt.pid()).into_iter().filter(|r| !before.contains(r)).collect();
+        assert!(new.iter().any(|(a, p)| p == "rwxp" && a.abs_diff(func) < 1 << 31), "the hook page was freed: {new:x?}");
     }
 }

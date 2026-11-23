@@ -22,13 +22,54 @@ enum Write {
     Done(Vec<u8>),
     /// Not written: the current bytes differ from the expected ones (holds them).
     Changed(Vec<u8>),
+    /// The write came up short: the first part of the bytes may be in place.
+    Partial(RpcError),
+}
+
+/// `-ERESTARTSYS`, `-ERESTARTNOINTR`, `-ERESTARTNOHAND`, `-ERESTART_RESTARTBLOCK`: a syscall
+/// interrupted by our stop that the kernel restarts by moving RIP back over the `syscall`.
+const RESTART_ERRNOS: [i64; 4] = [-512, -513, -514, -516];
+/// Length of `syscall` (`0f 05`).
+const SYSCALL_LEN: u64 = 2;
+
+/// True if the thread with registers `r` is, or will resume, strictly inside `(addr, end)`. A
+/// thread stopped in a syscall the kernel will restart resumes at `rip - 2`, so that counts too.
+fn inside(r: &libc::user_regs_struct, addr: u64, end: u64) -> bool {
+    let within = |rip: u64| rip > addr && rip < end;
+    let restarts = (r.orig_rax as i64) >= 0 && RESTART_ERRNOS.contains(&(r.rax as i64));
+    within(r.rip) || (restarts && within(r.rip.wrapping_sub(SYSCALL_LEN)))
+}
+
+/// Why `Patches::apply_with` failed, and whether the game may have run the new bytes.
+#[derive(Debug)]
+pub enum ApplyError {
+    /// Nothing was written.
+    NotWritten(RpcError),
+    /// `expect` did not match the current bytes (given here); nothing was written.
+    Changed(Vec<u8>),
+    /// The bytes were (or may have been) written and the game may have run them, but no patch
+    /// was recorded (e.g. the session ended meanwhile and the patch was reverted at once).
+    Written(RpcError),
+}
+
+impl From<ApplyError> for RpcError {
+    fn from(e: ApplyError) -> Self {
+        match e {
+            ApplyError::NotWritten(e) | ApplyError::Written(e) => e,
+            ApplyError::Changed(now) => {
+                RpcError::patch_conflict(format!("the code changed (now {})", crate::rpc::to_hex(&now)))
+            }
+        }
+    }
 }
 
 /// Write `bytes` at `addr` with every thread stopped, once no thread's RIP is strictly inside the
 /// site. Returns the original bytes. `-32013 Busy` if a thread stays inside for 200 attempts.
+#[allow(dead_code)] // used by the speed hooks' GOT slot writes (Task 12)
 pub fn write_code(t: &Target, tracer: &Tracer, addr: u64, bytes: &[u8]) -> Result<Vec<u8>, RpcError> {
     match write_checked(t, tracer, addr, bytes, None)? {
         Write::Done(original) | Write::Changed(original) => Ok(original),
+        Write::Partial(e) => Err(e),
     }
 }
 
@@ -50,7 +91,7 @@ fn write_checked(t: &Target, tracer: &Tracer, addr: u64, bytes: &[u8], expect: O
             }
             for &tid in s.tids() {
                 match s.regs(tid) {
-                    Ok(r) if r.rip > addr && r.rip < end => return Ok(None),
+                    Ok(r) if inside(&r, addr, end) => return Ok(None),
                     Ok(_) => {}
                     // Its RIP is unknown (the thread is going away): try again.
                     Err(_) => return Ok(None),
@@ -58,7 +99,10 @@ fn write_checked(t: &Target, tracer: &Tracer, addr: u64, bytes: &[u8], expect: O
             }
             match mem.write_at(&bytes, addr) {
                 Ok(n) if n == bytes.len() => Ok(Some(Write::Done(current))),
-                Ok(n) => Err(RpcError::write_failed(format!("short write at {addr:#x}: {n} of {} bytes", bytes.len()))),
+                Ok(n) => Ok(Some(Write::Partial(RpcError::write_failed(format!(
+                    "short write at {addr:#x}: {n} of {} bytes",
+                    bytes.len()
+                ))))),
                 Err(e) => Err(RpcError::write_failed(format!("write at {addr:#x}: {e}"))),
             }
         })??;
@@ -116,10 +160,11 @@ impl Patches {
             return Err(RpcError::invalid_params("bytes must not be empty"));
         }
         let tracer = t.tracer()?;
-        self.apply_with(handle, t, tracer, addr, bytes)
+        Ok(self.apply_with(handle, t, tracer, addr, bytes, None)?)
     }
 
-    /// `apply` with a tracer the caller already holds.
+    /// `apply` with a tracer the caller already holds. With `expect`, the bytes are written only
+    /// if the current ones equal it (checked in the same stop as the write).
     pub fn apply_with(
         &self,
         handle: u32,
@@ -127,20 +172,25 @@ impl Patches {
         tracer: Arc<Tracer>,
         addr: u64,
         bytes: &[u8],
-    ) -> Result<(u32, Vec<u8>), RpcError> {
+        expect: Option<&[u8]>,
+    ) -> Result<(u32, Vec<u8>), ApplyError> {
         let end = addr.saturating_add(bytes.len() as u64);
         let _applying = self.applying.lock().unwrap();
         if let Some(other) =
             self.live.lock().unwrap().values().find(|r| r.target.pid == t.pid && r.addr < end && addr < r.addr + r.written.len() as u64)
         {
-            return Err(RpcError::patch_conflict(format!(
+            return Err(ApplyError::NotWritten(RpcError::patch_conflict(format!(
                 "{addr:#x}..{end:#x} overlaps patch {} at {:#x}..{:#x}",
                 other.id,
                 other.addr,
                 other.addr + other.written.len() as u64
-            )));
+            ))));
         }
-        let original = write_code(t, &tracer, addr, bytes)?;
+        let original = match write_checked(t, &tracer, addr, bytes, expect).map_err(ApplyError::NotWritten)? {
+            Write::Done(original) => original,
+            Write::Changed(now) => return Err(ApplyError::Changed(now)),
+            Write::Partial(e) => return Err(ApplyError::Written(e)),
+        };
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let rec = Arc::new(Rec {
             id,
@@ -157,7 +207,7 @@ impl Patches {
         let token = self.owner.add(Some(handle), Teardown::Patch, Box::new(move || teardown(&live, &r)));
         *rec.token.lock().unwrap() = Some(token);
         if rec.tracer.lock().unwrap().is_none() {
-            return Err(RpcError::unknown_handle(format!("handle {handle} went away while patching")));
+            return Err(ApplyError::Written(RpcError::unknown_handle(format!("handle {handle} went away while patching"))));
         }
         Ok((id, original))
     }
@@ -171,12 +221,17 @@ impl Patches {
             let mut held = rec.tracer.lock().unwrap();
             let tracer = held.as_ref().ok_or_else(unknown)?;
             let expect = (!force).then_some(rec.written.as_slice());
-            if let Write::Changed(now) = write_checked(&rec.target, tracer, rec.addr, &rec.original, expect)? {
-                return Err(RpcError::patch_conflict(format!(
-                    "the bytes at {:#x} changed since patch {id} (now {}); use force to restore anyway",
-                    rec.addr,
-                    crate::rpc::to_hex(&now)
-                )));
+            match write_checked(&rec.target, tracer, rec.addr, &rec.original, expect)? {
+                Write::Done(_) => {}
+                Write::Changed(now) => {
+                    return Err(RpcError::patch_conflict(format!(
+                        "the bytes at {:#x} changed since patch {id} (now {}); use force to restore anyway",
+                        rec.addr,
+                        crate::rpc::to_hex(&now)
+                    )))
+                }
+                // Part of the original is back; the patch stays live so it can be retried.
+                Write::Partial(e) => return Err(e),
             }
             held.take()
         };
@@ -200,4 +255,58 @@ fn teardown(live: &Live, rec: &Rec) {
     };
     live.lock().unwrap().remove(&rec.id);
     drop(tracer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::open_target;
+    use crate::tracer::tests::TestTarget;
+
+    fn regs(rip: u64, rax: i64, orig_rax: i64) -> libc::user_regs_struct {
+        let mut r: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        r.rip = rip;
+        r.rax = rax as u64;
+        r.orig_rax = orig_rax as u64;
+        r
+    }
+
+    #[test]
+    fn inside_is_strict_and_counts_syscall_restarts() {
+        let (a, e) = (0x1000, 0x1008);
+        assert!(!inside(&regs(0x1000, 0, -1), a, e), "at the start is fine");
+        assert!(inside(&regs(0x1001, 0, -1), a, e));
+        assert!(inside(&regs(0x1007, 0, -1), a, e));
+        assert!(!inside(&regs(0x1008, 0, -1), a, e), "at the end is fine");
+        // Blocked in a syscall right after the range: restarts at rip-2, inside.
+        for errno in RESTART_ERRNOS {
+            assert!(inside(&regs(0x1009, errno, 202), a, e), "{errno}");
+        }
+        // Same RIP, but the syscall completed (or is not a syscall stop): resumes at rip.
+        assert!(!inside(&regs(0x1009, -4, 202), a, e), "-EINTR is not restarted");
+        assert!(!inside(&regs(0x1009, -512, -1), a, e), "not in a syscall");
+        assert!(!inside(&regs(0x100a, -512, 202), a, e), "restart lands on the end");
+    }
+
+    #[test]
+    fn apply_with_types_its_failures() {
+        let tt = TestTarget::spawn(&[]);
+        let t = Arc::new(open_target(tt.pid()).unwrap());
+        let f = tt.addrs["bump_counter"];
+        let orig = crate::mem::read_bytes(&t, f, 4).unwrap();
+        let owner = Arc::new(Owner::default());
+        let patches = Patches::new(owner.clone());
+
+        // Expected bytes differ: refused before anything is written.
+        let e = patches.apply_with(1, &t, t.tracer().unwrap(), f, &[0x90; 4], Some(&[0xCC; 4])).unwrap_err();
+        assert!(matches!(&e, ApplyError::Changed(now) if *now == orig), "{e:?}");
+        assert_eq!(crate::mem::read_bytes(&t, f, 4).unwrap(), orig);
+
+        // Session already over: written, then reverted at once. Reported as `Written`, so a
+        // caller knows the game may have run the bytes.
+        owner.run_all();
+        let e = patches.apply_with(1, &t, t.tracer().unwrap(), f, &[0x90; 4], Some(&orig)).unwrap_err();
+        assert!(matches!(&e, ApplyError::Written(r) if r.code == -32007), "{e:?}");
+        assert_eq!(crate::mem::read_bytes(&t, f, 4).unwrap(), orig, "the teardown did not revert");
+    }
 }
