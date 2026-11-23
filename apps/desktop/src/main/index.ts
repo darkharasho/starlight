@@ -7,7 +7,7 @@ import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer 
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
 import { LatchDetector } from './latch-detector.js';
-import { fetchCatalog, fetchTrainer } from './catalog-host.js';
+import { fetchCatalog, fetchTrainer, getCachedIndex } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
 import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
@@ -38,6 +38,7 @@ import { electronNotifier } from './agent/notifier.js';
 import { askPlayerTool } from './agent/tools-ask.js';
 import { discoveryTools } from './agent/tools-discovery.js';
 import { modifyTools } from './agent/tools-modify.js';
+import { libraryTools } from './agent/tools-library.js';
 import { createAgentSession } from './agent/session.js';
 import { listModules as engineListModules } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
@@ -142,6 +143,21 @@ const agentTools: ToolDef<any>[] = [
   gameInfoTool({ listModules: engineListModules, readMaps: (pid) => readFile(`/proc/${pid}/maps`, 'utf8') }),
   ...discoveryTools(),
   ...modifyTools(),
+  ...libraryTools({
+    dir: userCheatsDir(USER_DATA),
+    onSaved: (key) => broadcast({ type: 'userCheats:changed', key }),
+    catalogTrainerFor: async (game) => {
+      const entry = game.catalogId ? (getCachedIndex()?.games ?? []).find((g) => g.id === game.catalogId) : undefined;
+      if (!entry) return null;
+      if (entry.trainerPath) return await fetchTrainer(entry.trainerPath);
+      if (entry.trainerSource) {
+        return await fetchTrainerLive(entry.trainerSource, {
+          id: entry.id, name: entry.name, processName: entry.processName, platform: entry.platform,
+        });
+      }
+      return null;
+    },
+  }),
 ];
 
 /** Starts, restarts or stops the MCP server to match the agent preferences. Serialized. */
