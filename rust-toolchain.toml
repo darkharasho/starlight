@@ -1,0 +1,6 @@
+# Pinned so a release's starlightd bytes only change when its code does:
+# replacing the installed daemon drops its ptrace permission and re-prompts.
+# CI installs this exact toolchain (see the workflows' "Install Rust" step).
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"

@@ -39,6 +39,9 @@ jobs:
       - name: Build C test target
         run: make -C packages/engine/test-target
 
+      - name: Install Rust (pinned in rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
