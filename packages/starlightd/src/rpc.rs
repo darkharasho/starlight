@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
 use crate::cleanup::{self, Owner};
 use crate::scan::{FirstReq, NextReq, Scans};
-use crate::{aob, mem, modules, pointer, process::Handles};
+use crate::{aob, mem, modules, pointer, process::Handles, symbols};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -266,6 +266,31 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             let list = modules::list(&t)?;
             Ok(json!({ "modules": list }))
         }
+        "module_exports" => {
+            let t = handles.get(param_handle(params)?)?;
+            let name = param_str(params, "module")?;
+            let mods = modules::list(&t)?;
+            let m = modules::find(&mods, name)
+                .ok_or_else(|| RpcError::module_not_found(format!("module not found: {name}")))?;
+            let exports: Vec<Value> = symbols::exports(&t, m)?
+                .into_iter()
+                .map(|e| {
+                    let mut v = json!({ "name": e.name, "address": format!("{:#x}", e.address), "kind": e.kind.as_str() });
+                    if let Some(f) = e.forwarder {
+                        v["forwarder"] = Value::String(f);
+                    }
+                    v
+                })
+                .collect();
+            Ok(json!({ "exports": exports }))
+        }
+        "resolve_symbol" => {
+            let t = handles.get(param_handle(params)?)?;
+            let (module, name) = (param_str(params, "module")?, param_str(params, "name")?);
+            let mods = modules::list(&t)?;
+            let address = symbols::resolve(&t, &mods, module, name)?;
+            Ok(json!({ "address": format!("{address:#x}") }))
+        }
         "write" => {
             let t = handles.get(param_handle(params)?)?;
             let addr = param_addr(params, "address")?;
@@ -365,6 +390,10 @@ const MAX_READ: u64 = 64 * 1024 * 1024;
 const MAX_MANY_ITEMS: usize = 4096;
 const MAX_MANY_LENGTH: u64 = 4096;
 const MAX_RESULTS_PAGE: u64 = 1000;
+
+fn param_str<'a>(params: &'a Value, key: &str) -> Result<&'a str, RpcError> {
+    params.get(key).and_then(Value::as_str).ok_or_else(|| RpcError::invalid_params(format!("{key} must be a string")))
+}
 
 fn param_scan(params: &Value) -> Result<u32, RpcError> {
     u32::try_from(param_u64(params, "scan")?).map_err(|_| RpcError::invalid_params("scan out of range"))

@@ -8,6 +8,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <dlfcn.h>
+#include <time.h>
+#include <sys/time.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -84,6 +87,7 @@ int main(int argc, char** argv) {
     printf("addr g_player_ptr=%p\n",  (void*)&g_player);
     printf("addr g_counter=%p\n",     (void*)&g_counter);
     printf("addr bump_counter=%p\n",  (void*)&bump_counter);
+    printf("addr libc_clock_gettime=%p\n", dlsym(RTLD_DEFAULT, "clock_gettime"));
     if (mapped) printf("addr mapped=%p\n", mapped);
     printf("offset stats_in_player=%zu\n", offsetof(Player, stats));
     printf("offset hp_in_stats=%zu\n",     offsetof(Stats, hp));

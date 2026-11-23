@@ -239,6 +239,32 @@ impl Drop for Target {
     }
 }
 
+/// `minimal_pe` image that also exports each `(name, rva)` (rva = file offset, so the file can be
+/// mapped as-is). The export directory lives at 0x200, its tables below 0x1000; `size_of_image` >= 0x1000.
+pub fn minimal_pe_with_exports(size_of_image: u32, exports: &[(&str, u32)]) -> Vec<u8> {
+    let mut b = minimal_pe(size_of_image);
+    b.resize(0x1000, 0);
+    let put = |b: &mut Vec<u8>, off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
+    let n = exports.len() as u32;
+    put(&mut b, 0x58 + 112, &0x200u32.to_le_bytes()); // data directory 0: export table RVA
+    put(&mut b, 0x58 + 116, &0x100u32.to_le_bytes()); // ... and size
+    put(&mut b, 0x210, &1u32.to_le_bytes()); // ordinal base
+    put(&mut b, 0x214, &n.to_le_bytes());
+    put(&mut b, 0x218, &n.to_le_bytes());
+    put(&mut b, 0x21c, &0x600u32.to_le_bytes());
+    put(&mut b, 0x220, &0x700u32.to_le_bytes());
+    put(&mut b, 0x224, &0x800u32.to_le_bytes());
+    let mut name_at = 0x900;
+    for (i, (name, rva)) in exports.iter().enumerate() {
+        put(&mut b, 0x600 + i * 4, &rva.to_le_bytes());
+        put(&mut b, 0x700 + i * 4, &(name_at as u32).to_le_bytes());
+        put(&mut b, 0x800 + i * 2, &(i as u16).to_le_bytes());
+        put(&mut b, name_at, name.as_bytes());
+        name_at += name.len() + 1;
+    }
+    b
+}
+
 /// Minimal PE32+ image header: "MZ", e_lfanew=0x40, "PE\0\0", COFF header, optional header with SizeOfImage.
 pub fn minimal_pe(size_of_image: u32) -> Vec<u8> {
     let mut h = vec![0u8; 0x200];

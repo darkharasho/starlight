@@ -10,6 +10,7 @@ mod process;
 mod regions;
 mod rpc;
 mod scan;
+mod symbols;
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
