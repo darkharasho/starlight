@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createServer, type Server } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { startSession, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
+import { startSession, releaseToStarlightd, ceSessionFor, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
 import { PTRACE_MESSAGE } from '../../src/main/ce-native.js';
 
 const scannerHost = vi.hoisted(() => ({
@@ -733,6 +733,102 @@ const reply = (cmd) => {
     await expect(startSession({ source: 'http://127.0.0.1:1/x.CT', cacheKey: 'one-b', runtimeRoot: dir, ctCacheDir, ...native }))
       .rejects.toThrow(/still connected/);
     expect(getActiveSession()?.sessionId).toBe(r.sessionId);
+  });
+
+  describe('one engine per game', () => {
+    const CT = '<CheatTable><CheatEntries><CheatEntry><ID>2</ID><Description>"Infinite HP"</Description></CheatEntry></CheatEntries></CheatTable>';
+    async function serveCt(): Promise<{ url: string; close: () => Promise<void> }> {
+      const srv = createServer((_req, res) => { res.writeHead(200); res.end(CT); });
+      const url = await new Promise<string>((resolve) => srv.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(srv.address() as { port: number }).port}/x.CT`)));
+      return { url, close: () => new Promise<void>((r) => srv.close(() => r())) };
+    }
+
+    it('releaseToStarlightd shuts CE down and keeps the session in starlightd mode', async () => {
+      const log = join(dir, 'fake-ce.log');
+      await installFakeCe(log);
+      const r = await startSession({ source: await startCtServer(), cacheKey: 'rel1', runtimeRoot: dir, ctCacheDir, ...native });
+      expect(ceSessionFor(4242)).toEqual({ sessionId: r.sessionId });
+      expect(ceSessionFor(1)).toBeNull();
+      const ceProcess = getActiveSession()!.ceProcess!;
+      const kill = vi.spyOn(ceProcess, 'kill');
+      expect(await releaseToStarlightd(r.sessionId)).toBe(true);
+      expect((await readFile(log, 'utf8')).trim().split('\n').pop()).toBe('shutdown');
+      expect(kill).toHaveBeenCalled();
+      const s = getActiveSession()!;
+      expect(s).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd', bridge: null, pid: 4242 });
+      expect(s.records).toEqual(r.records.map((x) => ({ ...x, isActive: false })));
+      expect(ceSessionFor(4242)).toBeNull();
+      expect(await releaseToStarlightd(r.sessionId)).toBe(false);
+    });
+
+    it('CE exiting after releaseToStarlightd keeps the session', async () => {
+      await installFakeCe(join(dir, 'fake-ce.log'));
+      let alive = true;
+      const r = await startSession({ source: await startCtServer(), cacheKey: 'rel2', runtimeRoot: dir, ctCacheDir, ...native, isGameAlive: () => alive, gameWatchMs: 20 });
+      await releaseToStarlightd(r.sessionId);
+      await new Promise((res) => setTimeout(res, 300));   // the killed CE launcher's onExit has fired by now
+      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd', pid: 4242 });
+      // ...and the game-exit watch still runs.
+      scannerHost.end.mockClear();
+      alive = false;
+      await new Promise((res) => setTimeout(res, 150));
+      expect(getActiveSession()).toBeNull();
+      expect(scannerHost.end).toHaveBeenCalled();
+    });
+
+    it('starting on a game starlightd owns does not launch Cheat Engine', async () => {
+      const ct = await serveCt();
+      const findWineRunnerFn = vi.fn();
+      const startCeServerFn = vi.fn();
+      const ensureRuntime = vi.fn();
+      try {
+        const r = await startSession({
+          source: ct.url, cacheKey: 'sd1', runtimeRoot: dir, ctCacheDir, ...native,
+          findWineRunnerFn, startCeServerFn, ensureRuntime, starlightdHolders: () => ['user-cheats'],
+        });
+        expect(findWineRunnerFn).not.toHaveBeenCalled();
+        expect(startCeServerFn).not.toHaveBeenCalled();
+        expect(ensureRuntime).not.toHaveBeenCalled();
+        expect(r).toMatchObject({ engine: 'starlightd', holders: ['user-cheats'], attached: true, verdict: 'unknown', process: { pid: 4242 } });
+        expect(r.records.map((x) => x.name)).toEqual(['Infinite HP']);
+        expect(getActiveSession()).toMatchObject({ engine: 'starlightd', bridge: null, ceProcess: null });
+      } finally { await ct.close(); }
+    });
+
+    it('anti-cheat is still refused in starlightd mode', async () => {
+      await expect(startSession({
+        source: await startCtServer(), cacheKey: 'sd-ac', runtimeRoot: dir, ctCacheDir, ...native,
+        starlightdHolders: () => ['agent'],
+        detectAntiCheatFn: async () => ({ name: 'Easy Anti-Cheat', module: 'EasyAntiCheat_EOS_x64.dll' }),
+      })).rejects.toThrow(/won't attach/);
+    });
+
+    it('set_speed in starlightd mode goes to the scanner host', async () => {
+      const r = await startSession({ source: await startCtServer(), cacheKey: 'sd-sp', runtimeRoot: dir, ctCacheDir, ...native, starlightdHolders: () => ['agent'] });
+      scannerHost.call.mockClear();
+      expect(await callSession({ sessionId: r.sessionId, method: 'set_speed', params: { speed: 2 } })).toEqual({ ok: true, from: 'scanner' });
+      expect(scannerHost.call).toHaveBeenCalledWith(4242, 'speed_set', { speed: 2 });
+      scannerHost.call.mockClear();
+      await callSession({ sessionId: r.sessionId, method: 'scan_status', params: {} });
+      expect(scannerHost.call).toHaveBeenCalledWith(4242, 'scan_status', {});
+    });
+
+    it('CE-only commands in starlightd mode say the table is paused', async () => {
+      const r = await startSession({ source: await startCtServer(), cacheKey: 'sd-pa', runtimeRoot: dir, ctCacheDir, ...native, starlightdHolders: () => ['agent'] });
+      const paused = { ok: false, error: 'the Cheat Engine table is paused' };
+      expect(await callSession({ sessionId: r.sessionId, method: 'set_value', params: {} })).toEqual(paused);
+      expect(await callSession({ sessionId: r.sessionId, method: 'refresh' })).toEqual(paused);
+      expect(await setActive({ sessionId: r.sessionId, recordId: 2, active: true })).toEqual(paused);
+    });
+
+    it('speed_set is refused while CE owns the game', async () => {
+      await installFakeCe(join(dir, 'fake-ce.log'));
+      const r = await startSession({ source: await startCtServer(), cacheKey: 'ce-sp', runtimeRoot: dir, ctCacheDir, ...native });
+      scannerHost.call.mockClear();
+      expect(await callSession({ sessionId: r.sessionId, method: 'speed_set', params: { speed: 2 } }))
+        .toEqual({ ok: false, error: 'Game speed runs through Cheat Engine for this table.' });
+      expect(scannerHost.call).not.toHaveBeenCalled();
+    });
   });
 
   it('forwards hotkey presses from Cheat Engine', async () => {

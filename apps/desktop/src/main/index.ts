@@ -14,7 +14,9 @@ import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
 import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
-import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession } from './ce-session.js';
+import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd } from './ce-session.js';
+import { createGameOwner } from './game-owner.js';
+import { setGameOwner } from './game-owner-singleton.js';
 import { cleanCeError } from './ce-session.js';
 import { launchGame } from './game-launcher.js';
 import { matchGameToProcess } from './game-matcher.js';
@@ -29,6 +31,19 @@ let catalogIndex = new Map<string, CatalogEntry>();
 function broadcast(e: import('../shared/ipc.js').StarlightEvent): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(CHANNELS.event, e);
 }
+
+function broadcastEngine(): void {
+  const s = ceGetActiveSession();
+  if (s && s.pid !== null) broadcast({ type: 'session:engine', sessionId: s.sessionId, engine: s.engine, holders: gameOwner.holders(s.pid) });
+}
+
+/** One engine per game: Cheat Engine and starlightd never both hold it. */
+const gameOwner = createGameOwner({
+  ceSessionFor,
+  releaseCe: async (id) => { await releaseToStarlightd(id); broadcastEngine(); },
+  onChange: (pid) => { if (ceGetActiveSession()?.pid === pid) broadcastEngine(); },
+});
+setGameOwner(gameOwner);
 
 /** Remembers the table that worked for a game so the next launch starts with it. */
 async function rememberTable(cacheKey: string, tableId: number | null): Promise<void> {
@@ -347,6 +362,7 @@ app.whenReady().then(async () => {
         processes,
         detectedGames: lastDetectedGames,
         engineNeedsPtraceGrantFn: () => engineNeedsPtraceGrant(),
+        starlightdHolders: (pid) => gameOwner.holders(pid),
         onProgress: (message) => broadcast({ type: 'session:progress', message }),
         onSteps: (tables) => broadcast({ type: 'session:tables', tables }),
         onGameExit: (sessionId) => broadcast({ type: 'session:game-exited', sessionId }),
@@ -366,6 +382,7 @@ app.whenReady().then(async () => {
         attached: r.attached, needsPicker: r.needsPicker, running: r.running,
         tables: r.tables, tableId: r.tableId, tableError: r.tableError, process: r.process,
         hiddenIds: r.hiddenIds, prereqErrors: r.prereqErrors, verdict: r.verdict, attempts: r.attempts,
+        engine: r.engine, holders: r.holders,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

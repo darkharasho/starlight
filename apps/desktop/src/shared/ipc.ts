@@ -156,6 +156,8 @@ export type StarlightEvent =
   | { type: 'session:tables';       tables: CePickStep[] }
   /** The attached game exited; main already closed Cheat Engine. */
   | { type: 'session:game-exited';  sessionId: string }
+  /** Who runs the game's cheats changed (Cheat Engine or starlightd). */
+  | { type: 'session:engine'; sessionId: string; engine: 'ce' | 'starlightd'; holders: ('agent' | 'user-cheats')[] }
   | { type: 'ce:hotkey';            recordId: number; ok: boolean; active: boolean; error?: string | undefined }
   /** The trainer engine's install state changed (downloads run in the background). */
   | { type: 'ceRuntime:status'; status: CeRuntimeStatus; error?: string | undefined }
@@ -252,6 +254,9 @@ export type CeSessionStartResult =
       running: boolean;
       tables: CeTable[];
       process?: { pid: number; name?: string | undefined } | undefined;
+      /** Who runs the game's cheats; starlightd means the table is paused. */
+      engine: 'ce' | 'starlightd';
+      holders: ('agent' | 'user-cheats')[];
     } & CeSessionTableState)
   | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'ptrace' | 'anti-cheat' | 'unknown' };
 

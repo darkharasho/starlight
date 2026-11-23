@@ -22,6 +22,7 @@ import { getEngineClient } from './starlightd-host.js';
 import { listCtRecords } from '@starlight/ct-importer';
 import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
 import { findPrerequisites, isJunk } from '../shared/cheat-list.js';
+import type { Holder } from './game-owner.js';
 
 /** Convert a Linux path to the Wine drive-Z form CE understands (Z:\a\b). */
 export function toWinePath(linuxPath: string): string {
@@ -99,6 +100,11 @@ export function isStaleTableError(msg: string): boolean {
 
 export interface SessionState {
   sessionId: string;
+  /**
+   * Who runs the game's cheats: Cheat Engine, or starlightd while it owns the
+   * game (the table is paused: no bridge, no CE process).
+   */
+  engine: 'ce' | 'starlightd';
   /** null for a tools-only session (no table for this game). */
   ctPath: string | null;
   /** null in a preview session (records parsed from the CT, no CE launched). */
@@ -154,6 +160,11 @@ export interface StartSessionOpts {
   onProgress?: ((message: string) => void) | undefined;
   /** The tables queued for checking and how each fared so far. */
   onSteps?: ((steps: PickStep[]) => void) | undefined;
+  /**
+   * Who holds the game on starlightd. When this lists anyone for the game's
+   * pid, Cheat Engine isn't launched and the table stays paused.
+   */
+  starlightdHolders?: ((pid: number) => Holder[]) | undefined;
   /** Unsolicited messages from Cheat Engine (hotkey presses). */
   onEvent?: ((event: Record<string, unknown>) => void) | undefined;
   cacheKey: string;     // unique key per catalog entry id
@@ -249,6 +260,10 @@ export interface StartSessionResult {
   verdict: TableVerdict;
   /** Every table tried this time, in order. */
   attempts: TableAttempt[];
+  /** Who runs the game's cheats. */
+  engine: 'ce' | 'starlightd';
+  /** Who holds the game on starlightd (empty while Cheat Engine runs it). */
+  holders: Holder[];
 }
 
 const FORUM_ATTACHMENT_URL = 'https://fearlessrevolution.com/download/file.php?id=';
@@ -319,19 +334,41 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   if (effectivePid === undefined) {
     const sessionId = randomUUID();
     const records = ctPath ? await recordsFromCt(ctPath) : [];
-    active = { sessionId, ctPath, bridge: null, ceProcess: null, records, pid: null };
+    active = { sessionId, engine: 'ce', ctPath, bridge: null, ceProcess: null, records, pid: null };
     return {
       sessionId, records, proton: false, needsPicker: true, attached: false, tables, tableId, running,
       // Nothing can be switched on yet, so show the list as it will look once
       // the prerequisites are on.
       hiddenIds: findPrerequisites(records).map((p) => p.id),
-      prereqErrors: {}, verdict: 'unknown', attempts: [],
+      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: 'ce', holders: [],
     };
   }
 
   // Refuse before anything is launched when anti-cheat is loaded in the game.
   const antiCheat = await (opts.detectAntiCheatFn ?? detectAntiCheat)(effectivePid);
   if (antiCheat) throw new Error(antiCheatMessage(antiCheat));
+
+  // starlightd already holds this game: Cheat Engine stays out, the table is
+  // paused and its cheats are shown from the .CT.
+  const holders = opts.starlightdHolders?.(effectivePid) ?? [];
+  if (holders.length > 0) {
+    const sessionId = randomUUID();
+    const records = ctPath ? await recordsFromCt(ctPath) : [];
+    const session: SessionState = { sessionId, engine: 'starlightd', ctPath, bridge: null, ceProcess: null, records, pid: effectivePid };
+    active = session;
+    session.stopWatch = watchGame(effectivePid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, () => {
+      if (active !== session) return;
+      active = null;
+      void scannerHost.end().catch(() => {});
+      opts.onGameExit?.(sessionId);
+    });
+    return {
+      sessionId, records, proton: false, needsPicker: false, attached: true, running: true,
+      tables, tableId, process: { pid: effectivePid, name: opts.processName },
+      hiddenIds: findPrerequisites(records).map((p) => p.id),
+      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: 'starlightd', holders,
+    };
+  }
 
   // Attaching needs the trainer engine. It's normally downloaded in the
   // background at startup; if that hasn't finished, wait for it here.
@@ -428,7 +465,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
         launcherExited = true;
         void ceServer?.stop();
         // If this session was active, drop it.
-        if (active?.sessionId === sessionId) { active.stopWatch?.(); active = null; }
+        if (active?.sessionId === sessionId && active.engine === 'ce') { active.stopWatch?.(); active = null; }
       },
     });
     ceProcess = ceServer
@@ -475,7 +512,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     onProgress: opts.onProgress,
     onSteps: opts.onSteps,
   };
-  const session: SessionState = { sessionId, ctPath, bridge, ceProcess, records: [], pid: effectivePid, pick };
+  const session: SessionState = { sessionId, engine: 'ce', ctPath, bridge, ceProcess, records: [], pid: effectivePid, pick };
   active = session;
   session.stopWatch = watchGame(effectivePid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, () => {
     if (active !== session) return;
@@ -523,7 +560,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     process: { pid: effectivePid, name: processName },
     tableError: picked.tableError,
     hiddenIds: picked.hiddenIds, prereqErrors: picked.prereqErrors,
-    verdict: picked.verdict, attempts: picked.attempts,
+    verdict: picked.verdict, attempts: picked.attempts, engine: 'ce', holders: [],
   };
 }
 
@@ -744,6 +781,7 @@ export async function setActive(req: { sessionId: string; recordId: number; acti
   if (!active || active.sessionId !== req.sessionId) {
     return { ok: false, error: 'session not active' };
   }
+  if (active.engine === 'starlightd') return { ok: false, error: PAUSED_MESSAGE };
   if (!active.bridge) {
     return { ok: false, error: 'not attached to a game process' };
   }
@@ -776,6 +814,14 @@ const CALLABLE: Record<string, number> = {
  */
 export async function callSession(req: { sessionId: string; method: string; params?: unknown }): Promise<Record<string, unknown>> {
   if (!active || active.sessionId !== req.sessionId) return { ok: false, error: 'session not active' };
+  if (req.method === 'speed_set' && active.engine === 'ce') {
+    return { ok: false, error: 'Game speed runs through Cheat Engine for this table.' };
+  }
+  if (active.engine === 'starlightd') {
+    if (active.pid === null) return { ok: false, error: 'not attached to a game process' };
+    if (req.method === 'set_speed') return scannerHost.call(active.pid, 'speed_set', req.params);
+    if (!SCANNER_METHODS.has(req.method)) return { ok: false, error: PAUSED_MESSAGE };
+  }
   if (SCANNER_METHODS.has(req.method)) {
     if (active.pid === null) return { ok: false, error: 'not attached to a game process' };
     return scannerHost.call(active.pid, req.method, req.params);
@@ -791,6 +837,33 @@ export async function callSession(req: { sessionId: string; method: string; para
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+const PAUSED_MESSAGE = 'the Cheat Engine table is paused';
+
+/** The active Cheat Engine session on this game, if one is connected. */
+export function ceSessionFor(pid: number): { sessionId: string } | null {
+  return active && active.bridge !== null && active.pid === pid ? { sessionId: active.sessionId } : null;
+}
+
+/**
+ * Hands the game from Cheat Engine to starlightd: the same shutdown as
+ * ending a CE session (cheats off, bridge closed, CE killed), but the session
+ * stays active in starlightd mode with its pid and records.
+ */
+export async function releaseToStarlightd(sessionId: string): Promise<boolean> {
+  const s = active;
+  if (!s || s.sessionId !== sessionId || s.engine !== 'ce' || !s.bridge) return false;
+  const { bridge, ceProcess } = s;
+  // Flip first: CE's exit callback must not clear a session that lives on.
+  s.engine = 'starlightd';
+  s.bridge = null;
+  s.ceProcess = null;
+  await sendWithTimeout(bridge, { method: 'shutdown' }, 5000).catch(() => {});
+  try { await bridge.close(); } catch { /* ignore */ }
+  try { await ceProcess?.kill('SIGTERM'); } catch { /* ignore */ }
+  for (const r of s.records) r.isActive = false;
+  return true;
 }
 
 export async function endSession(req: { sessionId: string }): Promise<{ ok: boolean }> {

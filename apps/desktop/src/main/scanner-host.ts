@@ -1,5 +1,5 @@
 import {
-  attach as engineAttach, scanFirst, scanNext, scanResults, scanEnd, readMany, write, freeze,
+  attach as engineAttach, scanFirst, scanNext, scanResults, scanEnd, readMany, write, freeze, setSpeed as engineSetSpeed,
   type EngineClient, type Session, type FreezeHandle, type ValueType,
 } from '@starlight/engine';
 import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
@@ -12,7 +12,7 @@ import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
  */
 export const SCANNER_METHODS: ReadonlySet<string> = new Set([
   'scan_first', 'scan_next', 'scan_status', 'scan_results', 'scan_reset',
-  'mem_read', 'mem_write', 'freeze_set', 'freeze_clear',
+  'mem_read', 'mem_write', 'freeze_set', 'freeze_clear', 'speed_set',
 ]);
 
 export interface ScannerHost {
@@ -120,9 +120,11 @@ const idleScan = (): ScanState => ({ id: null, busy: false, started: false, coun
 export function createScannerHost(deps: {
   getClient: () => Promise<EngineClient>;
   attach?: typeof engineAttach;
+  setSpeed?: typeof engineSetSpeed;
   detectAntiCheatFn?: typeof detectAntiCheat;
 }): ScannerHost {
   const attachFn = deps.attach ?? engineAttach;
+  const setSpeedFn = deps.setSpeed ?? engineSetSpeed;
   const antiCheat = deps.detectAntiCheatFn ?? detectAntiCheat;
 
   let session: Session | null = null;
@@ -328,6 +330,19 @@ export function createScannerHost(deps: {
     return { ok: true };
   }
 
+  async function speedSet(forPid: number, p: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const speed = Number(p['speed']);
+    if (!Number.isFinite(speed)) return { ok: false, error: 'bad speed' };
+    const s = await ensureSession(forPid);
+    if ('ok' in s) return s;
+    try {
+      await setSpeedFn(s, speed);
+      return { ok: true, speed };
+    } catch (err) {
+      return { ok: false, error: errMsg(err) };
+    }
+  }
+
   return {
     async call(forPid, method, params) {
       if (!SCANNER_METHODS.has(method)) return { ok: false, error: `unsupported command: ${method}` };
@@ -351,6 +366,7 @@ export function createScannerHost(deps: {
         case 'mem_read': return memRead(forPid, p);
         case 'mem_write': return memWrite(forPid, p);
         case 'freeze_set': return freezeSet(forPid, p);
+        case 'speed_set': return speedSet(forPid, p);
         default: return freezeClear(p);
       }
     },

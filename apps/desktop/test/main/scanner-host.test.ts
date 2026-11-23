@@ -26,12 +26,14 @@ function setup(handlers: Record<string, Handler> = {}) {
     sessions.push(s);
     return s;
   });
+  const setSpeedFn = vi.fn(async (_s: Session, speed: number) => ({ speed }));
   const host = createScannerHost({
     getClient: async () => client,
+    setSpeed: setSpeedFn as never,
     attach: attachFn as never,
     detectAntiCheatFn: async () => null,
   });
-  return { host, calls, attachFn, sessions, client };
+  return { host, calls, attachFn, sessions, client, setSpeedFn };
 }
 
 const of = (calls: Array<{ method: string }>, m: string) => calls.filter((c) => c.method === m);
@@ -40,8 +42,16 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 describe('scanner-host', () => {
   it('lists the panel commands', () => {
     expect([...SCANNER_METHODS].sort()).toEqual([
-      'freeze_clear', 'freeze_set', 'mem_read', 'mem_write', 'scan_first', 'scan_next', 'scan_reset', 'scan_results', 'scan_status',
+      'freeze_clear', 'freeze_set', 'mem_read', 'mem_write', 'scan_first', 'scan_next', 'scan_reset', 'scan_results', 'scan_status', 'speed_set',
     ]);
+  });
+
+  it('speed_set sets the game speed on the pid session', async () => {
+    const { host, setSpeedFn, sessions } = setup();
+    expect(await host.call(10, 'speed_set', { speed: 2 })).toEqual({ ok: true, speed: 2 });
+    expect(setSpeedFn).toHaveBeenCalledWith(sessions[0], 2);
+    setSpeedFn.mockRejectedValueOnce(new Error('another session already controls this game\'s speed'));
+    expect(await host.call(10, 'speed_set', { speed: 3 })).toEqual({ ok: false, error: 'another session already controls this game\'s speed' });
   });
 
   it('scan_first returns ok immediately and scan_status reports busy until the daemon answers', async () => {
