@@ -54,6 +54,16 @@ describe('scanner-host', () => {
     expect(await host.call(10, 'speed_set', { speed: 3 })).toEqual({ ok: false, error: 'another session already controls this game\'s speed' });
   });
 
+  it('speed_set refuses speeds outside 0.1–10 (and a missing speed) without touching the game', async () => {
+    const { host, setSpeedFn } = setup();
+    for (const speed of [0, -1, 0.05, 10.5, null, undefined, 'fast', Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(await host.call(10, 'speed_set', { speed })).toEqual({ ok: false, error: 'Game speed must be between 0.1 and 10.' });
+    }
+    expect(setSpeedFn).not.toHaveBeenCalled();
+    expect(await host.call(10, 'speed_set', { speed: 0.1 })).toEqual({ ok: true, speed: 0.1 });
+    expect(await host.call(10, 'speed_set', { speed: 10 })).toEqual({ ok: true, speed: 10 });
+  });
+
   it('scan_first returns ok immediately and scan_status reports busy until the daemon answers', async () => {
     let release!: (v: unknown) => void;
     const { host } = setup({ scan_first: () => new Promise((r) => { release = r; }) });

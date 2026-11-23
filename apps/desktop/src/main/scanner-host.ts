@@ -331,8 +331,10 @@ export function createScannerHost(deps: {
   }
 
   async function speedSet(forPid: number, p: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const speed = Number(p['speed']);
-    if (!Number.isFinite(speed)) return { ok: false, error: 'bad speed' };
+    // The same range as the agent's set_speed; Number(null) is 0, which would stop the game clock.
+    const raw = p['speed'];
+    const speed = typeof raw === 'number' ? raw : Number.NaN;
+    if (!(speed >= 0.1 && speed <= 10)) return { ok: false, error: 'Game speed must be between 0.1 and 10.' };
     const s = await ensureSession(forPid);
     if ('ok' in s) return s;
     try {
