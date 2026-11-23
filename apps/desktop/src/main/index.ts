@@ -20,6 +20,7 @@ import { matchGameToProcess } from './game-matcher.js';
 import { killStaleCeProcesses } from './ce-process.js';
 import { buildCatalogIndex, type CatalogEntry } from './game-matcher.js';
 import { join } from 'node:path';
+import { createUpdater, type AutoUpdaterLike } from './updater.js';
 
 let lastDetectedGames: import('../shared/ipc.js').DetectedGame[] = [];
 let catalogIndex = new Map<string, CatalogEntry>();
@@ -402,8 +403,30 @@ app.whenReady().then(async () => {
   });
   ipcMain.on(CHANNELS.windowClose, (evt) => BrowserWindow.fromWebContents(evt.sender)?.close());
 
+  const updater = createUpdater({
+    isPackaged: app.isPackaged,
+    version: app.getVersion(),
+    // Imported here, not at the top: electron-updater reads Electron state when it loads.
+    load: async () => {
+      const m = await import('electron-updater');
+      // CommonJS: depending on the bundler's interop the exports may sit under default.
+      const mod = m.default ?? m;
+      return mod.autoUpdater as unknown as AutoUpdaterLike;
+    },
+    onState: (state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.webContents.isDestroyed()) win.webContents.send(CHANNELS.updateState, state);
+      }
+    },
+  });
+  ipcMain.handle(CHANNELS.updateGetVersion, () => updater.getVersion());
+  ipcMain.handle(CHANNELS.updateGetState, () => updater.getState());
+  ipcMain.handle(CHANNELS.updateCheck, () => updater.check());
+  ipcMain.handle(CHANNELS.updateRestart, () => updater.restart());
+
   processHost.start();
   createWindow();
+  void updater.start();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

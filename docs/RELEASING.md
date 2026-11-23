@@ -32,6 +32,19 @@ gh release delete v<version> --yes
 git push --delete origin v<version> && git tag -d v<version>
 ```
 
+## How users get updates
+
+The AppImage updates itself (`apps/desktop/src/main/updater.ts`, using
+electron-updater). It checks the latest published GitHub release on launch and
+every 6 hours, downloads only the parts that changed, and installs the new
+version when the user quits, or straight away from "Restart to update" in the
+title bar or Settings. It reads `latest-linux.yml`, which electron-builder
+uploads with each release. Drafts are never offered, so a release reaches users
+only once the publish job has run.
+
+Updates only work when Starlight runs from the AppImage, not in `pnpm dev` or
+from `linux-unpacked`.
+
 ## Building locally
 
 ```bash

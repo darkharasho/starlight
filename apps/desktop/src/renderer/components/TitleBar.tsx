@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { StarlightLogo } from './StarlightLogo.js';
+import { useUpdateStore } from '../stores/update-store.js';
+import { updatePill } from '../lib/update-view.js';
 
 const DRAG = { WebkitAppRegion: 'drag' } as React.CSSProperties;
 const NO_DRAG = { WebkitAppRegion: 'no-drag' } as React.CSSProperties;
@@ -27,6 +29,7 @@ export function TitleBar(): JSX.Element {
 
       {/* Window controls — pinned right, no-drag so they're clickable */}
       <div className="ml-auto flex items-stretch h-full" style={NO_DRAG}>
+        <UpdatePill />
         <WindowButton
           aria-label="Minimize"
           onClick={() => window.starlight?.windowMinimize()}
@@ -81,6 +84,27 @@ export function TitleBar(): JSX.Element {
         </WindowButton>
       </div>
     </div>
+  );
+}
+
+/** Starlight's own update: progress while it downloads, then "Restart to update". */
+function UpdatePill(): JSX.Element | null {
+  const pill = updatePill(useUpdateStore((s) => s.state));
+  const restart = useUpdateStore((s) => s.restart);
+  if (!pill) return null;
+  const base = 'self-center mr-2 rounded-full px-3 py-0.5 text-[11px] border';
+  if (pill.kind === 'downloading') {
+    return <span className={`${base} border-line text-muted`}>{pill.label}</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => void restart()}
+      title={`Restart Starlight to install v${pill.version}`}
+      className={`${base} border-neon-cyan text-neon-cyan hover:bg-neon-cyan/10 focus-visible:outline-none focus-visible:bg-neon-cyan/20`}
+    >
+      {pill.label}
+    </button>
   );
 }
 

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { CHANNELS, type StarlightApi, type StarlightEvent, type WindowState, type CeRuntimeProgressEvent } from '../shared/ipc.js';
+import { CHANNELS, type StarlightApi, type StarlightEvent, type WindowState, type CeRuntimeProgressEvent, type UpdateState } from '../shared/ipc.js';
 
 const api: StarlightApi = {
   loadTrainer:   ()    => ipcRenderer.invoke(CHANNELS.loadTrainer),
@@ -44,6 +44,15 @@ const api: StarlightApi = {
     const handler = (_evt: unknown, state: WindowState): void => listener(state);
     ipcRenderer.on(CHANNELS.windowState, handler);
     return () => ipcRenderer.off(CHANNELS.windowState, handler);
+  },
+  updateGetVersion: () => ipcRenderer.invoke(CHANNELS.updateGetVersion),
+  updateGetState:   () => ipcRenderer.invoke(CHANNELS.updateGetState),
+  updateCheck:      () => ipcRenderer.invoke(CHANNELS.updateCheck),
+  updateRestart:    () => ipcRenderer.invoke(CHANNELS.updateRestart),
+  onUpdateState: (listener) => {
+    const handler = (_evt: unknown, state: UpdateState): void => listener(state);
+    ipcRenderer.on(CHANNELS.updateState, handler);
+    return () => ipcRenderer.off(CHANNELS.updateState, handler);
   },
 };
 

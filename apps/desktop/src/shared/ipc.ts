@@ -43,6 +43,12 @@ export const CHANNELS = {
   windowToggleMaximize: 'starlight:window:toggleMaximize',
   windowClose:          'starlight:window:close',
   windowState:          'starlight:window:state',
+  // Starlight's own updates
+  updateGetVersion: 'starlight:update:getVersion',
+  updateGetState:   'starlight:update:getState',
+  updateCheck:      'starlight:update:check',
+  updateRestart:    'starlight:update:restart',
+  updateState:      'starlight:update:state',
 } as const;
 
 export interface AttachRequest { pid: number }
@@ -296,7 +302,26 @@ export interface StarlightApi {
   windowToggleMaximize(): void;
   windowClose():          void;
   onWindowState(listener: (state: WindowState) => void): () => void;
+  // Starlight's own updates
+  /** Starlight's version (app.getVersion()). */
+  updateGetVersion(): Promise<string>;
+  updateGetState():   Promise<UpdateState>;
+  /** A manual check; outside the AppImage it answers without checking. */
+  updateCheck():      Promise<UpdateCheckResult>;
+  /** Quits and installs a downloaded update; does nothing before one is downloaded. */
+  updateRestart():    Promise<void>;
+  onUpdateState(listener: (state: UpdateState) => void): () => void;
 }
+
+export type UpdateState =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'none' }
+  | { status: 'downloading'; version: string; percent: number | null }
+  | { status: 'downloaded'; version: string }
+  | { status: 'error'; message: string };
+
+export type UpdateCheckResult = { ok: true } | { ok: false; error: string };
 
 // Phase 5.1 — User config types (canonical Zod schema in main/user-config.ts)
 export interface RecentTrainer {
