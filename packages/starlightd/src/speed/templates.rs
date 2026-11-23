@@ -19,8 +19,10 @@
 //!
 //! The spin is bounded (`SPIN_LIMIT` `pause`s): a lock holder can be suspended indefinitely (a
 //! GC's stop-the-world signal, Wine's `SuspendThread`, or a `fork` child that inherited a held
-//! lock). On timeout `guard_enter` reports "not entered", so the call passes through unscaled
-//! instead of hanging the game, and `scale` reads its slot without the lock.
+//! lock). On timeout `guard_enter` reports "timed out": the hook doesn't hang the game, skips the
+//! nesting table (no entry was claimed, so no `guard_leave` follows), and still scales: `scale`
+//! times out too and reads its slot without the lock, so the game keeps its game time. Nesting is
+//! not tracked on that degraded path, so a nested hooked call made during it is scaled twice.
 //!
 //! # Lock-free slot reads
 //!
@@ -79,14 +81,16 @@ pub const OFF_SCALE32: u64 = OFF_CODE + 3 * ROUTINE_MAX;
 /// Room for each shared routine.
 pub const ROUTINE_MAX: u64 = 0x200;
 
-/// `guard_enter` results.
+/// `guard_enter` results: 0 outermost, 1 nested (both entered), `NOT_ENTERED` (pass the call
+/// through), `TIMED_OUT` (not entered, but scale: the lock holder is stuck).
 const NOT_ENTERED: u32 = 2;
+const TIMED_OUT: u32 = 3;
 /// Most `pause`s spent waiting for the lock before giving up (about 2^20).
 pub const SPIN_LIMIT: u32 = 1 << 20;
 
 /// Takes the lock with owner tag `ecx | 1` (state base in `r10`; clobbers `r11`). Jumps to
-/// `{p}_locked` once held, or to `{p}_reentered` if this thread already holds it or the holder
-/// doesn't let go within `SPIN_LIMIT` pauses.
+/// `{p}_locked` once held, to `{p}_reentered` if this thread already holds it, or to
+/// `{p}_timeout` if the holder doesn't let go within `SPIN_LIMIT` pauses.
 fn acquire(p: &str) -> String {
     format!(
         "mov r9d, ecx
@@ -100,7 +104,7 @@ cmp eax, r9d
 je {p}_reentered
 pause
 dec r11d
-je {p}_reentered
+je {p}_timeout
 jmp {p}_acquire
 "
     )
@@ -162,6 +166,7 @@ s_now:
     format!(
         "mov r10, {state:#x}
 {acquire}s_reentered:
+s_timeout:
 // No lock: read the slot as a seqlock reader (never written here).
 shl rdx, {slot_shift}
 lea r11, [r10+rdx+{OFF_SLOTS:#x}]
@@ -225,13 +230,17 @@ ret
 }
 
 /// `guard_enter(rcx = key) -> eax`: 0 = outermost (entered), 1 = nested (entered), 2 = not
-/// entered (the table is full, this thread holds the lock, or the lock stayed taken). Callers
-/// treat 1 and 2 as nested, and call `guard_leave` unless the result was 2.
+/// entered (the table is full or this thread holds the lock), 3 = timed out (the lock stayed
+/// taken; not entered). Callers scale on 0 and 3, pass through on 1 and 2, and call
+/// `guard_leave` only after 0 or 1.
 fn guard_enter(state: u64) -> String {
     format!(
         "mov r10, {state:#x}
 {acquire}e_reentered:
 mov eax, {NOT_ENTERED}
+ret
+e_timeout:
+mov eax, {TIMED_OUT}
 ret
 e_locked:
 lea rdx, [r10+{OFF_NEST:#x}]
@@ -438,10 +447,13 @@ mov {a1}, rbx
 {call_original}
 mov r15, rax
 test r13d, r13d
+je h_body
+cmp r13d, {TIMED_OUT}
 jne h_out
+h_body:
 {body}h_out:
-cmp r13d, {NOT_ENTERED}
-je h_done
+cmp r13d, 1
+ja h_done
 mov rcx, r14
 mov rax, {leave:#x}
 call rax
@@ -657,8 +669,8 @@ mod tests {
     fn a_held_lock_still_gives_game_time_from_a_consistent_slot() {
         let st = LocalState::new(2.0);
         assert_eq!(st.call(OFF_SCALE, KEY, 9, 1000), 1000);
-        // Another thread holds the lock and never lets go: after the bounded spin, the slot is
-        // read without the lock, so the game keeps its game time instead of jumping to real time.
+        // Another thread holds the lock and never lets go: after the bounded spin, `scale` reads
+        // the slot without the lock (the hook-level path is `a_hook_keeps_game_time_while_the_lock_is_stuck`).
         st.put32(OFF_LOCK, 0x1234_5679);
         assert_eq!(st.call(OFF_SCALE, KEY, 9, 2000), 3000);
         // A slot caught mid-update (odd sequence) can't be trusted: real time is passed through.
@@ -667,5 +679,152 @@ mod tests {
         assert_eq!(st.call(OFF_SCALE, KEY, 9, 2000), 2000);
         // A slot never used has no game time yet.
         assert_eq!(st.call(OFF_SCALE, KEY, 3, 5000), 5000);
+    }
+
+    /// What a Win64 call to a hook left in the registers the ABI says it must preserve.
+    #[derive(Debug, PartialEq)]
+    struct Saved {
+        rbx: u64,
+        rsi: u64,
+        rdi: u64,
+        r12: u64,
+        r13: u64,
+        r14: u64,
+        r15: u64,
+        xmm6: f64,
+    }
+
+    const SENTINELS: Saved = Saved {
+        rbx: 0x1111_0000_0000_00b0,
+        rsi: 0x1111_0000_0000_0051,
+        rdi: 0x1111_0000_0000_0d1,
+        r12: 0x1111_0000_0000_0012,
+        r13: 0x1111_0000_0000_0013,
+        r14: 0x1111_0000_0000_0014,
+        r15: 0x1111_0000_0000_0015,
+        xmm6: 6.25,
+    };
+
+    /// Call `f` as a Win64 function (32 bytes of shadow space, rsp 16-aligned at the call) with
+    /// `rcx = arg` and the sentinels in every callee-saved register; returns `rax` and what the
+    /// callee-saved registers held afterwards.
+    fn call_win64(f: u64, arg: u64) -> (u64, Saved) {
+        let s = &SENTINELS;
+        let (rax, rbx, rsi, rdi, r12, r13, r14, r15, xmm6): (u64, u64, u64, u64, u64, u64, u64, u64, f64);
+        unsafe {
+            std::arch::asm!(
+                // rbx can't be an asm operand: save it by hand, and keep every operand in a
+                // named register so none of them lands in rbx. push + 0x28 keeps rsp aligned.
+                "push rbx",
+                "sub rsp, 0x28",
+                "mov rbx, r10",
+                "call rax",
+                "mov r11, rbx",
+                "add rsp, 0x28",
+                "pop rbx",
+                inout("rax") f => rax,
+                inout("r10") s.rbx => _,
+                out("r11") rbx,
+                inout("rcx") arg => _,
+                inout("rsi") s.rsi => rsi,
+                inout("rdi") s.rdi => rdi,
+                inout("r12") s.r12 => r12,
+                inout("r13") s.r13 => r13,
+                inout("r14") s.r14 => r14,
+                inout("r15") s.r15 => r15,
+                inout("xmm6") s.xmm6 => xmm6,
+                out("rdx") _, out("r8") _, out("r9") _,
+                out("xmm0") _, out("xmm1") _, out("xmm2") _, out("xmm3") _, out("xmm4") _, out("xmm5") _,
+            );
+        }
+        (rax, Saved { rbx, rsi, rdi, r12, r13, r14, r15, xmm6 })
+    }
+
+    /// A Win64 `Tick64` hook on a stand-in `GetTickCount64` (returns the `u64` at `value`),
+    /// called on a thread with a fake TEB in GS (`gs:[30]` = the TEB), as under Wine.
+    struct LocalHook {
+        page: u64,
+        hook: u64,
+        value: u64,
+    }
+
+    impl LocalHook {
+        fn new(st: &LocalState) -> LocalHook {
+            let prot = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
+            let p = unsafe { libc::mmap(std::ptr::null_mut(), 0x1000, prot, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) };
+            assert_ne!(p, libc::MAP_FAILED);
+            let page = p as u64;
+            let (orig, value, hook) = (page, page + 0x100, page + 0x200);
+            // The original clobbers the Win64 volatile registers, as a real one may.
+            let orig_src = format!("mov rax, {value:#x}\nmov rax, qword ptr [rax]\nxor ecx, ecx\nxor edx, edx\nxor r8d, r8d\nxor r9d, r9d\nxor r10d, r10d\nxor r11d, r11d\nxorps xmm0, xmm0\nxorps xmm5, xmm5\nret\n");
+            let hook_src = hook_source(Kind::Tick64, Abi::Win64, st.0, 11, orig);
+            for (at, src) in [(orig, orig_src), (hook, hook_src)] {
+                let a = asm::assemble(&src, at, &|_| None).unwrap_or_else(|e| panic!("{e}\n{src}"));
+                unsafe { std::ptr::copy_nonoverlapping(a.bytes.as_ptr(), at as *mut u8, a.bytes.len()) };
+            }
+            LocalHook { page, hook, value }
+        }
+        /// Call the hook with the stand-in returning `v`.
+        fn call(&self, v: u64) -> (u64, Saved) {
+            unsafe { std::ptr::write_volatile(self.value as *mut u64, v) };
+            call_win64(self.hook, 0)
+        }
+    }
+
+    impl Drop for LocalHook {
+        fn drop(&mut self) {
+            unsafe { libc::munmap(self.page as *mut libc::c_void, 0x1000) };
+        }
+    }
+
+    /// Run `f` on a new thread whose GS base is a fake TEB (Rust and glibc use FS, not GS).
+    fn with_fake_teb(f: impl FnOnce(u64) + Send + 'static) {
+        std::thread::spawn(move || {
+            let teb = Box::leak(Box::new([0u64; 32]));
+            let addr = teb.as_ptr() as u64;
+            teb[6] = addr; // TEB.Self at 0x30
+            const ARCH_SET_GS: libc::c_long = 0x1001;
+            assert_eq!(unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, addr) }, 0);
+            f(addr);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn win64_hook_preserves_callee_saved_registers() {
+        with_fake_teb(|teb| {
+            let st = LocalState::new(2.0);
+            let h = LocalHook::new(&st);
+            // Outermost and scaled.
+            assert_eq!(h.call(1000), (1000, SENTINELS));
+            assert_eq!(h.call(1500), (2000, SENTINELS));
+            // Passed through: the lock is held under this thread's own tag (as when a signal
+            // handler interrupts its thread inside a hook).
+            st.put32(OFF_LOCK, (teb as u32) | 1);
+            assert_eq!(h.call(1600), (1600, SENTINELS));
+            st.put32(OFF_LOCK, 0);
+        });
+    }
+
+    #[test]
+    fn a_hook_keeps_game_time_while_the_lock_is_stuck() {
+        with_fake_teb(|teb| {
+            let st = LocalState::new(2.0);
+            let h = LocalHook::new(&st);
+            assert_eq!(h.call(1000).0, 1000);
+            assert_eq!(h.call(2000).0, 3000);
+            // Another thread took the lock and is suspended: guard_enter and scale both time out,
+            // and the hook still returns game time (from the lock-free slot read).
+            st.put32(OFF_LOCK, (teb as u32 ^ 0x1000_0000) | 1);
+            let (r, saved) = h.call(3000);
+            assert_eq!((r, saved), (5000, SENTINELS), "game time, not real time (3000)");
+            // No nesting entry was claimed on that path, so none is left behind.
+            let nest = unsafe { std::slice::from_raw_parts((st.0 + OFF_NEST) as *const u64, (NEST_COUNT * 2) as usize) };
+            assert!(nest.iter().step_by(2).all(|&k| k == 0), "{nest:x?}");
+            // The holder lets go: back to normal.
+            st.put32(OFF_LOCK, 0);
+            assert_eq!(h.call(4000).0, 7000);
+        });
     }
 }

@@ -121,21 +121,23 @@ const WINE: [(&str, &str, Kind); 6] = [
 const MAX_THUNKS: usize = 4;
 
 /// Where the code at `addr` really is: an import thunk (`jmp qword ptr [rip+imp]`, or a
-/// `jmp rel32`, optionally after hot-patch padding such as Wine's `lea rsp,[rsp+0]`) is followed
-/// to its target. Wine builds kernel32's `QueryPerformanceCounter` and winmm's `timeGetTime` this
-/// way; the thunk itself can't be hooked (its jump would be displaced) and isn't the function the
-/// other names lead to.
+/// `jmp rel32`, optionally after `nop`s or Wine's `lea rsp,[rsp+0]` padding) is followed to its
+/// target. Wine builds kernel32's `QueryPerformanceCounter` and winmm's `timeGetTime` this way.
+/// Hooking the function rather than its thunk lets names that reach the same function be
+/// deduplicated (D15), and avoids a second hook nested around the one on the function. A hop
+/// whose target can't be read stops at the last readable address.
 fn follow_thunks(read: Reader, mut addr: u64) -> u64 {
+    let mut last_readable = addr;
     'hop: for _ in 0..MAX_THUNKS {
-        let Some(code) = read(addr, 16) else { return addr };
+        let Some(code) = read(addr, 16) else { return last_readable };
+        last_readable = addr;
         for i in Decoder::with_ip(64, &code, addr, DecoderOptions::NONE).iter() {
             let padding = i.mnemonic() == Mnemonic::Nop
                 || (i.mnemonic() == Mnemonic::Lea
                     && i.op0_register() == Register::RSP
                     && i.memory_base() == Register::RSP
                     && i.memory_index() == Register::None
-                    && i.memory_displacement64() == 0)
-                || (i.mnemonic() == Mnemonic::Mov && i.op0_register() == Register::EDI && i.op1_kind() == OpKind::Register && i.op1_register() == Register::EDI);
+                    && i.memory_displacement64() == 0);
             if padding {
                 continue;
             }
@@ -316,6 +318,20 @@ mod tests {
         assert_eq!((qpc.1, qpc.4.as_deref()), (ntdll + 0xc40, Some("same function as RtlQueryPerformanceCounter")));
         let tgt = got.iter().find(|h| h.0 == "timeGetTime").unwrap();
         assert_eq!((tgt.1, tgt.2, tgt.3, tgt.4.clone()), (k32 + 0xd00, Kind::Tick32, SLOT_TIME_GET_TIME, None));
+        // A thunk whose import slot points at unreadable memory stays where it is.
+        let mut k2 = pe(&[("GetTickCount", 0xc00)], &[]);
+        put(&mut k2, 0xc00, &[0xff, 0x25]);
+        put(&mut k2, 0xc02, &jmp_rip(k32 + 0xc00, 6, k32 + 0xf00));
+        put(&mut k2, 0xf00, &0xdead_0000_0000u64.to_le_bytes());
+        let read2 = reader(vec![(k32, k2)]);
+        assert_eq!(follow_thunks(&read2, k32 + 0xc00), k32 + 0xc00);
+        // `mov edi, edi` is not padding we step over.
+        let mut k3 = pe(&[("GetTickCount", 0xc00)], &[]);
+        put(&mut k3, 0xc00, &[0x8b, 0xff, 0xff, 0x25]);
+        put(&mut k3, 0xc04, &jmp_rip(k32 + 0xc02, 6, k32 + 0xf00));
+        put(&mut k3, 0xf00, &(k32 + 0xd00).to_le_bytes());
+        let read3 = reader(vec![(k32, k3)]);
+        assert_eq!(follow_thunks(&read3, k32 + 0xc00), k32 + 0xc00);
         // GetTickCount64 isn't exported here: left out.
         assert!(!got.iter().any(|h| h.0 == "GetTickCount64"), "{got:?}");
     }
