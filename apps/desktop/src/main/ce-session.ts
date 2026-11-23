@@ -17,6 +17,8 @@ import { detectProton, type ProtonInfo } from './proton-detect.js';
 import { readExeName } from './proc-exe-name.js';
 import { matchGameToProcess, type MatchableGame } from './game-matcher.js';
 import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
+import { createScannerHost, SCANNER_METHODS } from './scanner-host.js';
+import { getEngineClient } from './starlightd-host.js';
 import { listCtRecords } from '@starlight/ct-importer';
 import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
 import { findPrerequisites, isJunk } from '../shared/cheat-list.js';
@@ -103,6 +105,8 @@ export interface SessionState {
   bridge: Bridge | null;
   ceProcess: CeProcessHandle | null;
   records: CeRecord[];
+  /** The game this session is attached to; null for a preview with no process. */
+  pid: number | null;
   /** What's needed to try the game's other tables without restarting Cheat Engine. */
   pick?: PickContext | undefined;
   /** Stops watching for the game to exit. */
@@ -130,6 +134,9 @@ async function recordsFromCt(ctPath: string): Promise<CeRecord[]> {
 }
 
 let active: SessionState | null = null;
+
+/** The memory scanner runs on starlightd, not in the CE bridge. */
+const scannerHost = createScannerHost({ getClient: getEngineClient });
 
 export interface StartSessionOpts {
   /** URL of the .CT or viewtopic page. Omit (with no `sources`) for a tools-only session. */
@@ -312,7 +319,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   if (effectivePid === undefined) {
     const sessionId = randomUUID();
     const records = ctPath ? await recordsFromCt(ctPath) : [];
-    active = { sessionId, ctPath, bridge: null, ceProcess: null, records };
+    active = { sessionId, ctPath, bridge: null, ceProcess: null, records, pid: null };
     return {
       sessionId, records, proton: false, needsPicker: true, attached: false, tables, tableId, running,
       // Nothing can be switched on yet, so show the list as it will look once
@@ -468,11 +475,12 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     onProgress: opts.onProgress,
     onSteps: opts.onSteps,
   };
-  const session: SessionState = { sessionId, ctPath, bridge, ceProcess, records: [], pick };
+  const session: SessionState = { sessionId, ctPath, bridge, ceProcess, records: [], pid: effectivePid, pick };
   active = session;
   session.stopWatch = watchGame(effectivePid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, () => {
     if (active !== session) return;
     active = null;
+    void scannerHost.end().catch(() => {});
     // The game is gone, so there's nothing to undo — just close Cheat Engine.
     void bridge.close().catch(() => {});
     void ceProcess.kill('SIGTERM').catch(() => {});
@@ -759,15 +767,6 @@ const CALLABLE: Record<string, number> = {
   refresh: 8000,
   set_value: 8000,
   set_speed: 15_000,     // first use injects the speedhack module
-  scan_first: 15_000,    // starts the scan; progress comes from scan_status
-  scan_next: 15_000,
-  scan_status: 5000,
-  scan_results: 15_000,
-  scan_reset: 8000,
-  mem_read: 8000,
-  mem_write: 8000,
-  freeze_set: 8000,
-  freeze_clear: 8000,
   set_hotkeys: 8000,
 };
 
@@ -777,6 +776,10 @@ const CALLABLE: Record<string, number> = {
  */
 export async function callSession(req: { sessionId: string; method: string; params?: unknown }): Promise<Record<string, unknown>> {
   if (!active || active.sessionId !== req.sessionId) return { ok: false, error: 'session not active' };
+  if (SCANNER_METHODS.has(req.method)) {
+    if (active.pid === null) return { ok: false, error: 'not attached to a game process' };
+    return scannerHost.call(active.pid, req.method, req.params);
+  }
   if (!active.bridge) return { ok: false, error: 'not attached to a game process' };
   const timeout = CALLABLE[req.method];
   if (timeout === undefined) return { ok: false, error: `unsupported command: ${req.method}` };
@@ -795,6 +798,8 @@ export async function endSession(req: { sessionId: string }): Promise<{ ok: bool
   if (!s || s.sessionId !== req.sessionId) return { ok: true };
   active = null;
   s.stopWatch?.();
+  // Release the scanner's freezes and detach before CE goes.
+  await scannerHost.end().catch(() => {});
   // Put the game back first: disable active cheats (runs their [DISABLE]),
   // restore normal speed, release frozen values. Killing CE without this
   // leaves code patches in the game, and the next attach then fails because

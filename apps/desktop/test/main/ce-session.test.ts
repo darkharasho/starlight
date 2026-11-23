@@ -9,6 +9,15 @@ import { readFile } from 'node:fs/promises';
 import { startSession, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
 import { PTRACE_MESSAGE } from '../../src/main/ce-native.js';
 
+const scannerHost = vi.hoisted(() => ({
+  call: vi.fn(async () => ({ ok: true, from: 'scanner' }) as Record<string, unknown>),
+  end: vi.fn(async () => undefined),
+}));
+vi.mock('../../src/main/scanner-host.js', async (orig) => ({
+  ...(await orig<typeof import('../../src/main/scanner-host.js')>()),
+  createScannerHost: () => scannerHost,
+}));
+
 let dir: string;
 /** Windows CE's directory in the runtime (CheatEngineWindows75). */
 let winCeDir: string;
@@ -457,6 +466,36 @@ const reply = (cmd) => {
     expect(await callSession({ sessionId: r.sessionId, method: 'set_speed', params: { speed: 2 } })).toEqual({ ok: true, speed: 2 });
     expect(await callSession({ sessionId: r.sessionId, method: 'shutdown' })).toMatchObject({ ok: false, error: expect.stringMatching(/unsupported/) });
     expect(await callSession({ sessionId: 'nope', method: 'set_speed' })).toMatchObject({ ok: false, error: 'session not active' });
+  });
+
+  it('routes scanner commands to the scanner host, not the CE bridge', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log);
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'live-scan', runtimeRoot: dir, ctCacheDir, ...native });
+    scannerHost.call.mockClear();
+    const out = await callSession({ sessionId: r.sessionId, method: 'scan_status', params: { a: 1 } });
+    expect(out).toEqual({ ok: true, from: 'scanner' });
+    expect(scannerHost.call).toHaveBeenCalledWith(4242, 'scan_status', { a: 1 });
+    expect(await readFile(log, 'utf8')).not.toMatch(/scan_status/);
+  });
+
+  it('refuses scanner commands when no game is attached', async () => {
+    const r = await startSession({ sources: [], cacheKey: 'tools-n', runtimeRoot: dir, ctCacheDir });
+    scannerHost.call.mockClear();
+    expect(await callSession({ sessionId: r.sessionId, method: 'mem_read', params: {} }))
+      .toEqual({ ok: false, error: 'not attached to a game process' });
+    expect(scannerHost.call).not.toHaveBeenCalled();
+  });
+
+  it('endSession ends the scanner before shutting CE down', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log);
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'live-end', runtimeRoot: dir, ctCacheDir, ...native });
+    const order: string[] = [];
+    scannerHost.end.mockImplementationOnce(async () => { order.push(`scanner-end:${(await readFile(log, 'utf8')).includes('shutdown')}`); });
+    await endSession({ sessionId: r.sessionId });
+    expect(order).toEqual(['scanner-end:false']);
+    expect((await readFile(log, 'utf8')).trim().split('\n').pop()).toBe('shutdown');
   });
 
   it('asks Cheat Engine to undo its cheats before the session ends', async () => {
