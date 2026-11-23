@@ -29,3 +29,4 @@ dist-runtimes/
 # Keep the desktop app icon resources (the broad "build" rule above ignores them)
 !apps/desktop/build/
 !apps/desktop/build/**
+packages/starlightd/target/
