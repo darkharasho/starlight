@@ -61,3 +61,15 @@ needs permission. If `attach()` throws `PermissionError`, either:
 - grant the daemon `cap_sys_ptrace` (`sudo setcap cap_sys_ptrace+ep /path/to/starlightd`).
 
 At `ptrace_scope=0` no grant is needed. Tests spawn the target themselves.
+
+## Running cheats
+
+`verifyCheat(session, cheat)` checks a v2 cheat (`@starlight/ct-importer` types) against the live game and
+returns `{ status: 'ok' | 'needs-update' | 'unverified', reasons }`. A cheat without a `verify` block is
+`unverified`; with one, its AOB must match exactly once and every `verify` check must pass.
+
+`enableCheat(session, cheat, { value?, intervalMs? })` verifies first (throws `NeedsUpdateError` on
+`needs-update`), then runs the cheat and returns a `RunningCheat` (`setValue`, idempotent `disable`).
+Value cheats freeze the value; patch cheats run their `enable` steps in order (`alloc`, `assemble`,
+`writeBytes`, `registerSymbol`; `site` is predefined) and a failing step reverts the earlier patches.
+Cheats with `disable` steps need the native table runner and are refused. Memory from `alloc` steps is not freed.

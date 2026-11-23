@@ -83,3 +83,8 @@ export interface ModuleExport {
   kind: 'func' | 'ifunc' | 'object';
   forwarder?: string;
 }
+
+export interface VerifyResult {
+  status: 'ok' | 'needs-update' | 'unverified';
+  reasons: string[];
+}
