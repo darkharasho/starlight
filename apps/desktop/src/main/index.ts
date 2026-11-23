@@ -8,11 +8,11 @@ import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } fr
 import { LatchDetector } from './latch-detector.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
-import type { FetchTrainerRequest } from '../shared/ipc.js';
+import type { FetchTrainerRequest, CeRuntimeProgressEvent } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
-import { detectCeRuntime } from './ce-runtime-detect.js';
-import { installCeRuntime, installWindowsCe } from './ce-runtime-install.js';
+import { detectCeRuntime, WIN_CE_DIR, CESERVER_DIR, CESERVER_BIN } from './ce-runtime-detect.js';
+import { installCeServer, installWindowsCe } from './ce-runtime-install.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession } from './ce-session.js';
 import { cleanCeError } from './ce-session.js';
 import { launchGame } from './game-launcher.js';
@@ -285,29 +285,32 @@ app.whenReady().then(async () => {
     try {
       const manifestRes = await fetch(CE_MANIFEST_URL);
       if (!manifestRes.ok) return { ok: false as const, error: `manifest HTTP ${manifestRes.status}` };
+      // `platforms['linux-x64']` (Linux CE 7.6.6) stays in the manifest for
+      // Starlight 0.2 and older; this version doesn't use it.
       const manifest = await manifestRes.json() as {
         cheatEngine: {
-          platforms: { 'linux-x64': { url: string; sha256: string; extractedDir?: string } };
           windows?: { url: string; sha256: string };
+          ceserver?: { url: string; sha256: string; extractedDir?: string; binaryRelative?: string };
         };
       };
-      const linux = manifest.cheatEngine.platforms['linux-x64'];
-      await installCeRuntime({
-        url: linux.url,
-        sha256: linux.sha256,
-        runtimeRoot: CE_RUNTIME_ROOT,
-        onProgress: (e) => evt.sender.send(CHANNELS.ceRuntimeProgress, e),
-      });
-      // Also fetch the Windows CE build (for cheating Proton games) when the
-      // manifest provides it. Optional so a linux-only manifest still works.
-      const win = manifest.cheatEngine.windows;
-      if (win) {
-        const installDir = join(CE_RUNTIME_ROOT, linux.extractedDir ?? 'CheatEngineLinux766-4');
-        await installWindowsCe({
-          url: win.url,
-          sha256: win.sha256,
-          installDir,
-          onProgress: (e) => evt.sender.send(CHANNELS.ceRuntimeProgress, e),
+      const onProgress = (e: CeRuntimeProgressEvent): void => evt.sender.send(CHANNELS.ceRuntimeProgress, e);
+      // Only what's missing: an update can add a part to an existing install.
+      const status = await detectCeRuntime({ runtimeRoot: CE_RUNTIME_ROOT });
+      const missing = status.status === 'ready' ? [] : status.missing;
+      if (missing.includes('windows-ce')) {
+        const win = manifest.cheatEngine.windows;
+        if (!win) return { ok: false as const, error: 'The runtime list has no Windows Cheat Engine.' };
+        await installWindowsCe({ url: win.url, sha256: win.sha256, destDir: join(CE_RUNTIME_ROOT, WIN_CE_DIR), onProgress });
+      }
+      if (missing.includes('ceserver')) {
+        const srv = manifest.cheatEngine.ceserver;
+        if (!srv) return { ok: false as const, error: 'The runtime list has no ceserver.' };
+        await installCeServer({
+          url: srv.url,
+          sha256: srv.sha256,
+          runtimeRoot: CE_RUNTIME_ROOT,
+          binaryRelative: srv.binaryRelative ?? `${srv.extractedDir ?? CESERVER_DIR}/${CESERVER_BIN}`,
+          onProgress,
         });
       }
       return { ok: true as const };

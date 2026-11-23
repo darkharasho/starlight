@@ -12,62 +12,57 @@ beforeEach(async () => {
 });
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 
+async function putWinCe(rel: string): Promise<string> {
+  const d = join(dir, rel);
+  await mkdir(d, { recursive: true });
+  await writeFile(join(d, 'cheatengine-x86_64.exe'), 'MZ');
+  return d;
+}
+
+async function putCeServer(mode = 0o755): Promise<string> {
+  const d = join(dir, 'ceserver-7.5');
+  await mkdir(d, { recursive: true });
+  const bin = join(d, 'ceserver');
+  await writeFile(bin, '#!/bin/sh\n');
+  await chmod(bin, mode);
+  return bin;
+}
+
 describe('detectCeRuntime', () => {
-  it('returns not-installed when runtime dir is missing', async () => {
+  it('lists both parts as missing when nothing is installed', async () => {
     const r = await detectCeRuntime({ runtimeRoot: join(dir, 'absent') });
-    expect(r.status).toBe('not-installed');
+    expect(r).toEqual({ status: 'not-installed', missing: ['windows-ce', 'ceserver'] });
   });
 
-  it('returns not-installed when binary is missing', async () => {
-    const ceDir = join(dir, 'CheatEngineLinux766-4');
-    await mkdir(ceDir, { recursive: true });
-    const r = await detectCeRuntime({
-      runtimeRoot: dir,
-      extractedDir: 'CheatEngineLinux766-4',
-      binaryRelative: 'cheatengine-x86_64',
-    });
-    expect(r.status).toBe('not-installed');
-  });
-
-  it('returns ready with absolute paths when binary exists and is executable', async () => {
-    const ceDir = join(dir, 'CheatEngineLinux766-4');
-    await mkdir(ceDir, { recursive: true });
-    const bin = join(ceDir, 'cheatengine-x86_64');
-    await writeFile(bin, '#!/bin/sh\nexit 0\n');
-    await chmod(bin, 0o755);
-    const r = await detectCeRuntime({
-      runtimeRoot: dir,
-      extractedDir: 'CheatEngineLinux766-4',
-      binaryRelative: 'cheatengine-x86_64',
-    });
-    expect(r.status).toBe('ready');
-    if (r.status !== 'ready') return;
-    expect(r.binary).toBe(bin);
-    expect(r.installDir).toBe(ceDir);
-  });
-
-  it('returns not-installed when binary exists but is not executable', async () => {
-    const ceDir = join(dir, 'CheatEngineLinux766-4');
-    await mkdir(ceDir, { recursive: true });
-    const bin = join(ceDir, 'cheatengine-x86_64');
-    await writeFile(bin, '#!/bin/sh\nexit 0\n');
-    await chmod(bin, 0o644);
-    const r = await detectCeRuntime({
-      runtimeRoot: dir,
-      extractedDir: 'CheatEngineLinux766-4',
-      binaryRelative: 'cheatengine-x86_64',
-    });
-    expect(r.status).toBe('not-installed');
-  });
-
-  it('uses sensible defaults for extractedDir and binaryRelative when not specified', async () => {
-    // Defaults: extractedDir='CheatEngineLinux766-4', binaryRelative='cheatengine-x86_64'
-    const ceDir = join(dir, 'CheatEngineLinux766-4');
-    await mkdir(ceDir, { recursive: true });
-    const bin = join(ceDir, 'cheatengine-x86_64');
-    await writeFile(bin, '#!/bin/sh\nexit 0\n');
-    await chmod(bin, 0o755);
+  it('is ready with Windows CE and ceserver installed', async () => {
+    const winCeDir = await putWinCe('CheatEngineWindows75');
+    const ceserver = await putCeServer();
     const r = await detectCeRuntime({ runtimeRoot: dir });
-    expect(r.status).toBe('ready');
+    expect(r).toEqual({ status: 'ready', winCeDir, winCeExe: join(winCeDir, 'cheatengine-x86_64.exe'), ceserver });
+  });
+
+  it('uses the Windows CE an older install put inside the Linux CE', async () => {
+    const winCeDir = await putWinCe(join('CheatEngineLinux766-4', 'windowsbin'));
+    await putCeServer();
+    const r = await detectCeRuntime({ runtimeRoot: dir });
+    expect(r).toMatchObject({ status: 'ready', winCeDir });
+  });
+
+  it('prefers the current Windows CE location over the legacy one', async () => {
+    await putWinCe(join('CheatEngineLinux766-4', 'windowsbin'));
+    const winCeDir = await putWinCe('CheatEngineWindows75');
+    await putCeServer();
+    expect(await detectCeRuntime({ runtimeRoot: dir })).toMatchObject({ winCeDir });
+  });
+
+  it('asks for only ceserver when an older install already has Windows CE', async () => {
+    await putWinCe(join('CheatEngineLinux766-4', 'windowsbin'));
+    expect(await detectCeRuntime({ runtimeRoot: dir })).toEqual({ status: 'not-installed', missing: ['ceserver'] });
+  });
+
+  it('treats a ceserver that is not executable as missing', async () => {
+    await putWinCe('CheatEngineWindows75');
+    await putCeServer(0o644);
+    expect(await detectCeRuntime({ runtimeRoot: dir })).toEqual({ status: 'not-installed', missing: ['ceserver'] });
   });
 });

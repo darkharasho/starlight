@@ -15,7 +15,7 @@ export interface InstallOpts {
   sha256: string;
   runtimeRoot: string;
   onProgress: (e: ProgressEvent) => void;
-  /** Path of the binary inside the extracted root, chmod +x'd. Default: CheatEngineLinux766-4/cheatengine-x86_64. */
+  /** Path of the binary inside the extracted root, chmod +x'd. Default: ceserver-7.5/ceserver. */
   binaryRelative?: string;
 }
 
@@ -61,7 +61,12 @@ async function downloadVerified(
   return readFile(tmpPath);
 }
 
-export async function installCeRuntime(opts: InstallOpts): Promise<void> {
+/**
+ * Downloads + extracts ceserver (Cheat Engine's Linux memory server, which
+ * Windows CE connects to for native Linux games). The zip holds one top-level
+ * directory (the manifest's extractedDir) with the binary and its extension.
+ */
+export async function installCeServer(opts: InstallOpts): Promise<void> {
   await mkdir(opts.runtimeRoot, { recursive: true });
   const tmpZip = join(opts.runtimeRoot, `.download-${process.pid}-${Date.now()}.zip`);
 
@@ -69,7 +74,7 @@ export async function installCeRuntime(opts: InstallOpts): Promise<void> {
   await extractZipTo(buf, opts.runtimeRoot, opts.onProgress);
   await rm(tmpZip, { force: true });
 
-  const binaryRel = opts.binaryRelative ?? 'CheatEngineLinux766-4/cheatengine-x86_64';
+  const binaryRel = opts.binaryRelative ?? 'ceserver-7.5/ceserver';
   await chmod(join(opts.runtimeRoot, binaryRel), 0o755).catch(() => {});
 
   opts.onProgress({ phase: 'done' });
@@ -78,24 +83,24 @@ export async function installCeRuntime(opts: InstallOpts): Promise<void> {
 export interface InstallWindowsCeOpts {
   url: string;
   sha256: string;
-  /** The Linux CE install dir (…/CheatEngineLinux766-4); the zip extracts into its windowsbin/. */
-  installDir: string;
+  /** Where the CE app files go (…/runtime/CheatEngineWindows75). */
+  destDir: string;
   onProgress: (e: ProgressEvent) => void;
 }
 
 /**
- * Downloads + extracts the Windows Cheat Engine build into `<installDir>/windowsbin/`
- * so Proton games can be cheated by running Windows CE inside their prefix. The
- * zip is expected to contain the CE app files at its root (incl. lua/json.lua).
+ * Downloads + extracts the Windows Cheat Engine build into `destDir`. Starlight
+ * runs it inside a Proton game's prefix, or in its own prefix (connected to
+ * ceserver) for native games. The zip holds the CE app files at its root
+ * (incl. lua/json.lua).
  */
 export async function installWindowsCe(opts: InstallWindowsCeOpts): Promise<void> {
-  const windowsbin = join(opts.installDir, 'windowsbin');
-  await mkdir(windowsbin, { recursive: true });
-  const tmpZip = join(opts.installDir, `.wince-${process.pid}-${Date.now()}.zip`);
+  await mkdir(opts.destDir, { recursive: true });
+  const tmpZip = join(opts.destDir, `.wince-${process.pid}-${Date.now()}.zip`);
   const buf = await downloadVerified(opts.url, opts.sha256, tmpZip, opts.onProgress);
-  await extractZipTo(buf, windowsbin, opts.onProgress);
+  await extractZipTo(buf, opts.destDir, opts.onProgress);
   await rm(tmpZip, { force: true });
-  await neutralizeCePrank(windowsbin);
+  await neutralizeCePrank(opts.destDir);
   opts.onProgress({ phase: 'done' });
 }
 
