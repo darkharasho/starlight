@@ -56,10 +56,12 @@ function CheatRow({ item, attached, pending, error }: {
 
   function commit(): void {
     const text = (draft ?? '').trim();
-    setDraft(null);
     const n = Number(text);
+    // An inactive cheat keeps what was typed; the toggle sends it.
+    if (!item.active) { if (text === '' || !Number.isFinite(n)) setDraft(null); return; }
+    setDraft(null);
     if (text === '' || !Number.isFinite(n) || n === item.value) return;
-    if (item.active) void useUserCheatsStore.getState().setValue(cheat.id, n);
+    void useUserCheatsStore.getState().setValue(cheat.id, n);
   }
   function toggle(): void {
     const n = Number(shown);

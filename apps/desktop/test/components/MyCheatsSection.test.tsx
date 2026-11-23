@@ -61,6 +61,19 @@ describe('MyCheatsSection', () => {
     expect(setValue).toHaveBeenCalledWith({ key: 'game', pid: 7, id: 'gold', value: 999 });
   });
 
+  it('a value typed into an inactive set cheat is kept and sent when it is switched on', async () => {
+    list.mockResolvedValue([{ cheat: gold, active: false, verify: null }]);
+    render(<MyCheatsSection cacheKey="game" pid={7} attached />);
+    const input = await screen.findByLabelText('Value of Gold');
+    await userEvent.clear(input);
+    await userEvent.type(input, '777');
+    await userEvent.tab();
+    expect((screen.getByLabelText('Value of Gold') as HTMLInputElement).value).toBe('777');
+    await userEvent.click(screen.getByRole('button', { name: 'Gold: Off' }));
+    expect(setActive).toHaveBeenCalledWith(expect.objectContaining({ id: 'gold', on: true, value: 777 }));
+    expect(setValue).not.toHaveBeenCalled();
+  });
+
   it('remove asks first', async () => {
     render(<MyCheatsSection cacheKey="game" pid={7} attached />);
     await userEvent.click(await screen.findByRole('button', { name: 'Remove Gold' }));
