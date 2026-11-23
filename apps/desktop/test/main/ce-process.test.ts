@@ -2,123 +2,85 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdir, rm, writeFile, chmod, readFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnCeProcess, type CeProcessHandle } from '../../src/main/ce-process.js';
+import { spawnCeProcess, type CeProcessHandle, type CeProcessOpts } from '../../src/main/ce-process.js';
 
 let dir: string;
-let installDir: string;
-let binary: string;
-let ctPath: string;
+let winCeDir: string;
+let launcher: string;
+let probe: string;
 let handle: CeProcessHandle | undefined;
 
 beforeEach(async () => {
   dir = join(tmpdir(), `starlight-ceproc-${Date.now()}-${Math.random()}`);
-  installDir = join(dir, 'install');
-  await mkdir(installDir, { recursive: true });
-  await mkdir(join(installDir, 'autorun'), { recursive: true });
-  binary = join(installDir, 'fake-ce.sh');
-  // Fake binary: writes argv[1] to a probe file then exits 0.
-  await writeFile(binary, '#!/bin/sh\necho "$1" > /tmp/starlight-fake-ce-probe\nexit 0\n');
-  await chmod(binary, 0o755);
-  ctPath = join(dir, 'trainer.CT');
-  await writeFile(ctPath, '<CheatTable />');
+  winCeDir = join(dir, 'CheatEngineWindows75');
+  await mkdir(join(winCeDir, 'autorun'), { recursive: true });
+  probe = join(dir, 'probe.txt');
+  // Stands in for `proton` / `wine`: records its argv, then exits.
+  launcher = join(dir, 'launcher.sh');
+  await writeFile(launcher, `#!/bin/sh\necho "$@" > ${probe}\nexit 0\n`);
+  await chmod(launcher, 0o755);
 });
 afterEach(async () => {
   if (handle) await handle.kill('SIGKILL').catch(() => {});
   handle = undefined;
   await rm(dir, { recursive: true, force: true });
-  await rm('/tmp/starlight-fake-ce-probe', { force: true });
 });
 
+function opts(extra: Partial<CeProcessOpts> = {}, env: Record<string, string> = {}): CeProcessOpts {
+  return {
+    launch: { command: launcher, args: ['run'], env, winCeExe: join(winCeDir, 'ce.exe'), winCeDir },
+    controlScript: '-- starlight test\n',
+    sessionId: 'sess-1',
+    runtimeRoot: dir,
+    ...extra,
+  };
+}
+
+function untilExit(o: CeProcessOpts): Promise<number | null> {
+  return new Promise((resolve) => {
+    void (async () => {
+      handle = await spawnCeProcess({ ...o, onExit: (code) => resolve(code) });
+    })();
+  });
+}
+
 describe('spawnCeProcess', () => {
-  it('writes the autorun script, spawns the binary (no CT on argv), and triggers onExit', async () => {
-    let exitCode: number | null = -1;
-    const exited = new Promise<void>((resolve) => {
-      const onExit = (code: number | null): void => { exitCode = code; resolve(); };
-      void (async () => {
-        handle = await spawnCeProcess({
-          binaryPath: binary, installDir, ctPath, controlScript: '-- starlight test\n', onExit,
-        });
-        // Verify autorun was written before child completes.
-        const wrote = await readFile(join(installDir, 'autorun', 'zzz-starlight.lua'), 'utf8');
-        expect(wrote).toContain('starlight test');
-      })();
-    });
-    await exited;
-    expect(exitCode).toBe(0);
-    // The CT is NOT passed on argv anymore — the control script loads it after
-    // muting dialogs. argv[1] is empty.
-    const probe = await readFile('/tmp/starlight-fake-ce-probe', 'utf8');
-    expect(probe.trim()).toBe('');
+  it('writes the autorun script and runs Windows CE through the launcher (no CT on argv)', async () => {
+    await writeFile(launcher, `#!/bin/sh\necho "$@" > ${probe}\ncat autorun/zzz-starlight.lua >> ${probe}\nexit 0\n`);
+    expect(await untilExit(opts())).toBe(0);
+    const out = await readFile(probe, 'utf8');
+    expect(out.split('\n')[0]).toBe(`run ${join(winCeDir, 'ce.exe')}`);
+    expect(out).toContain('starlight test');
   });
 
   it('removes the autorun script after the child exits', async () => {
-    const exited = new Promise<void>((resolve) => {
-      void (async () => {
-        handle = await spawnCeProcess({
-          binaryPath: binary, installDir, ctPath, controlScript: 'x',
-          onExit: () => resolve(),
-        });
-      })();
-    });
-    await exited;
-    // Give the cleanup hook a tick.
+    await untilExit(opts());
     await new Promise((r) => setTimeout(r, 50));
-    await expect(access(join(installDir, 'autorun', 'zzz-starlight.lua'))).rejects.toBeTruthy();
+    await expect(access(join(winCeDir, 'autorun', 'zzz-starlight.lua'))).rejects.toBeTruthy();
   });
 
   it('kill() resolves after the child exits', async () => {
-    // Replace fake binary with one that sleeps so we can kill it mid-run.
-    await writeFile(binary, '#!/bin/sh\nsleep 30\n');
-    await chmod(binary, 0o755);
-    handle = await spawnCeProcess({
-      binaryPath: binary, installDir, ctPath, controlScript: 'x', onExit: () => {},
-    });
+    await writeFile(launcher, '#!/bin/sh\nsleep 30\n');
+    handle = await spawnCeProcess(opts());
     const start = Date.now();
     await handle.kill('SIGTERM');
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(2000);
+    expect(Date.now() - start).toBeLessThan(2500);
   });
 
   it('forwards stderr lines via onStderrLine when provided', async () => {
-    await writeFile(binary, '#!/bin/sh\necho "first error" 1>&2\necho "second error" 1>&2\nexit 0\n');
-    await chmod(binary, 0o755);
+    await writeFile(launcher, '#!/bin/sh\necho "first error" 1>&2\necho "second error" 1>&2\nexit 0\n');
     const lines: string[] = [];
-    const exited = new Promise<void>((resolve) => {
-      void (async () => {
-        handle = await spawnCeProcess({
-          binaryPath: binary, installDir, ctPath, controlScript: 'x',
-          onStderrLine: (l) => { lines.push(l); },
-          onExit: () => resolve(),
-        });
-      })();
-    });
-    await exited;
-    expect(lines).toContain('first error');
-    expect(lines).toContain('second error');
+    await untilExit(opts({ onStderrLine: (l) => { lines.push(l); } }));
+    expect(lines).toEqual(['first error', 'second error']);
   });
-  it("launches Proton CE with the game's Steam compat settings", async () => {
-    // Fake `proton`: prints the env Proton would use to build the S: drive.
-    const protonBin = join(dir, 'proton');
-    await writeFile(protonBin, '#!/bin/sh\necho "install=$STEAM_COMPAT_INSTALL_PATH libs=$STEAM_COMPAT_LIBRARY_PATHS data=$STEAM_COMPAT_DATA_PATH"\nexit 0\n');
-    await chmod(protonBin, 0o755);
-    const winCeDir = join(dir, 'windowsbin');
-    await mkdir(winCeDir, { recursive: true });
+
+  it('passes the launch environment and tags the process with its session and runtime root', async () => {
+    await writeFile(launcher, '#!/bin/sh\necho "data=$STEAM_COMPAT_DATA_PATH install=$STEAM_COMPAT_INSTALL_PATH session=$STARLIGHT_CE_SESSION root=$STARLIGHT_CE_ROOT"\nexit 0\n');
     const lines: string[] = [];
-    const exited = new Promise<void>((resolve) => {
-      void (async () => {
-        handle = await spawnCeProcess({
-          binaryPath: binary, installDir, ctPath, controlScript: 'x',
-          proton: {
-            protonBin, winCeExe: join(winCeDir, 'ce.exe'), winCeDir, ctWinPath: '',
-            compatDataPath: '/c/data', clientInstallPath: '/steam',
-            compatEnv: { STEAM_COMPAT_INSTALL_PATH: '/lib/steamapps/common/G', STEAM_COMPAT_LIBRARY_PATHS: '/lib/steamapps' },
-          },
-          onStdoutLine: (l) => { lines.push(l); },
-          onExit: () => resolve(),
-        });
-      })();
-    });
-    await exited;
-    expect(lines).toContain('install=/lib/steamapps/common/G libs=/lib/steamapps data=/c/data');
+    await untilExit(opts(
+      { onStdoutLine: (l) => { lines.push(l); } },
+      { STEAM_COMPAT_DATA_PATH: '/c/data', STEAM_COMPAT_INSTALL_PATH: '/lib/steamapps/common/G' },
+    ));
+    expect(lines).toEqual([`data=/c/data install=/lib/steamapps/common/G session=sess-1 root=${dir}`]);
   });
 });

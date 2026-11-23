@@ -162,8 +162,9 @@ export type StarlightEvent =
 export interface WindowState { maximized: boolean }
 
 export type CeRuntimeStatus =
-  | { status: 'ready'; installDir: string; binary: string }
-  | { status: 'not-installed' }
+  | { status: 'ready'; winCeDir: string; winCeExe: string; ceserver: string }
+  /** `missing` lists what still has to be downloaded (an update can add a part). */
+  | { status: 'not-installed'; missing: ('windows-ce' | 'ceserver')[] }
   | { status: 'installing'; phase: string; current?: number; total?: number };
 
 export interface CeRuntimeProgressEvent {

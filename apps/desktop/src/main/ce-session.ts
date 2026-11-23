@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { detectCeRuntime } from './ce-runtime-detect.js';
 import { createBridge, type Bridge } from './ce-bridge.js';
 import { generateControlScript } from './ce-control-script.js';
-import { spawnCeProcess, type CeProcessHandle, type CeProtonLaunch } from './ce-process.js';
+import { spawnCeProcess, type CeProcessHandle, type CeWineLaunch } from './ce-process.js';
+import {
+  findWineRunner, findSteamRoot, readPtraceScope, startCeServer, NO_WINE_MESSAGE, PTRACE_MESSAGE,
+  type CeServerHandle, type WineRunner,
+} from './ce-native.js';
 import { downloadCtToDisk } from './ct-cache.js';
 import { listTables, type CtTable } from './ct-tables.js';
 import { detectProton, type ProtonInfo } from './proton-detect.js';
@@ -15,25 +19,21 @@ import { listCtRecords } from '@starlight/ct-importer';
 import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
 import { findPrerequisites, isJunk } from '../shared/cheat-list.js';
 
-/** Path to the Windows CE inside an extracted runtime, relative to installDir. */
-const WIN_CE_RELATIVE = 'windowsbin/cheatengine-x86_64.exe';
-
 /** Convert a Linux path to the Wine drive-Z form CE understands (Z:\a\b). */
 export function toWinePath(linuxPath: string): string {
   return 'Z:' + linuxPath.replace(/\//g, '\\');
 }
 
 /**
- * The control script does `require("json")`. Linux CE ships `lua/json.lua`, but
- * the extracted Windows CE build does not — without it the autorun aborts before
- * the bridge starts. Copy the module next to Windows CE so `require` resolves.
+ * The control script does `require("json")`. The Windows CE runtime ships
+ * `lua/json.lua`; a Windows CE that older installs put inside the Linux CE
+ * (`…/windowsbin`) may lack it, so copy the Linux CE's next to it.
  */
-export async function ensureWinCeJson(installDir: string): Promise<void> {
-  const dest = join(installDir, 'windowsbin', 'lua', 'json.lua');
+export async function ensureWinCeJson(winCeDir: string): Promise<void> {
+  const dest = join(winCeDir, 'lua', 'json.lua');
   try { await access(dest, constants.F_OK); return; } catch { /* missing — copy it */ }
-  const src = join(installDir, 'lua', 'json.lua');
-  await mkdir(join(installDir, 'windowsbin', 'lua'), { recursive: true });
-  await copyFile(src, dest);
+  await mkdir(join(winCeDir, 'lua'), { recursive: true });
+  await copyFile(join(winCeDir, '..', 'lua', 'json.lua'), dest).catch(() => {});
 }
 
 export interface CeRecord {
@@ -112,7 +112,6 @@ interface PickContext {
   tableId: number | null;
   cacheKey: string;
   ctCacheDir: string;
-  proton: boolean;
   autoPick: boolean;
   tableReadyTimeoutMs: number;
   onProgress?: ((message: string) => void) | undefined;
@@ -175,6 +174,10 @@ export interface StartSessionOpts {
   gameWatchMs?: number | undefined;
   detectProtonFn?: typeof detectProton;
   readComm?: (pid: number) => Promise<string>;
+  /** Native games: what runs Windows CE (default: Steam's Proton, else Wine). */
+  findWineRunnerFn?: (() => Promise<WineRunner | null>) | undefined;
+  startCeServerFn?: ((opts: { bin: string }) => Promise<CeServerHandle>) | undefined;
+  readPtraceScopeFn?: (() => Promise<number>) | undefined;
 }
 
 function defaultIsGameAlive(pid: number): boolean {
@@ -285,9 +288,9 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   }
 
   // No attach target (ambiguous match, or a plain load with no process): show
-  // the cheat list parsed straight from the .CT and DON'T launch Cheat Engine.
-  // Booting CE just to preview would pop the Linux CE Patreon nag; the user
-  // attaches (which re-runs this with a pid) when they pick a process.
+  // the cheat list parsed straight from the .CT and DON'T launch Cheat Engine
+  // (booting it just to preview is slow). The user attaches (which re-runs
+  // this with a pid) when they pick a process.
   if (effectivePid === undefined) {
     const sessionId = randomUUID();
     const records = ctPath ? await recordsFromCt(ctPath) : [];
@@ -311,49 +314,93 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     proton = await (opts.detectProtonFn ?? detectProton)({ pid: effectivePid });
   }
 
+  // Every game is cheated by Windows CE: inside the game's prefix for a Proton
+  // game, or in Starlight's own prefix connected to ceserver for a native one.
+  let runner: WineRunner | null = null;
+  if (!proton) {
+    if (await (opts.readPtraceScopeFn ?? readPtraceScope)() > 0) throw new Error(PTRACE_MESSAGE);
+    runner = await (opts.findWineRunnerFn ?? (async () => findWineRunner({
+      prefixRoot: join(opts.runtimeRoot, 'prefix'),
+      steamRoot: await findSteamRoot(),
+    })))();
+    if (!runner) throw new Error(NO_WINE_MESSAGE);
+  }
+
   // Short poll: Cheat Engine's Lua runs on its UI thread, so a long-poll would
   // stall its timers (value freezing, scan completion, window hiding) for the
   // whole wait. Quick empty replies keep CE responsive.
   const bridge = await createBridge({ pollTimeoutMs: 25, onEvent: opts.onEvent });
-  // The control script loads the table itself (dialogs muted first). Windows CE
-  // needs the Wine `Z:\…` path; native Linux CE takes the Linux path.
-  const ceCtPath = ctPath === null ? undefined : proton ? toWinePath(ctPath) : ctPath;
-  const controlScript = generateControlScript({ bridgeUrl: bridge.url, openProcessName: processName, ctPath: ceCtPath });
   const sessionId = randomUUID();
+  await ensureWinCeJson(detect.winCeDir);
 
-  let protonLaunch: CeProtonLaunch | undefined;
+  let ceServer: CeServerHandle | null = null;
+  let launch: CeWineLaunch;
   if (proton) {
-    await ensureWinCeJson(detect.installDir);
-    protonLaunch = {
-      protonBin: proton.protonBin,
-      winCeExe: join(detect.installDir, WIN_CE_RELATIVE),
-      winCeDir: join(detect.installDir, 'windowsbin'),
-      ctWinPath: ctPath ? toWinePath(ctPath) : '',
-      compatDataPath: proton.compatDataPath,
-      clientInstallPath: proton.clientInstallPath,
-      compatEnv: proton.compatEnv,
+    launch = {
+      command: proton.protonBin,
+      args: ['run'],
+      env: {
+        ...proton.compatEnv,
+        STEAM_COMPAT_DATA_PATH: proton.compatDataPath,
+        STEAM_COMPAT_CLIENT_INSTALL_PATH: proton.clientInstallPath,
+      },
+      winCeExe: detect.winCeExe,
+      winCeDir: detect.winCeDir,
     };
+  } else {
+    try {
+      ceServer = await (opts.startCeServerFn ?? startCeServer)({ bin: detect.ceserver });
+    } catch (err) {
+      await bridge.close().catch(() => {});
+      throw err;
+    }
+    await mkdir(runner!.prefixDir, { recursive: true });
+    launch = { command: runner!.command, args: runner!.args, env: runner!.env, winCeExe: detect.winCeExe, winCeDir: detect.winCeDir };
   }
 
-  const ceProcess = await spawnCeProcess({
-    binaryPath: detect.binary,
-    installDir: detect.installDir,
-    ctPath: ctPath ?? '',
-    controlScript,
-    proton: protonLaunch,
-    onExit: () => {
-      // If this session was active, drop it.
-      if (active?.sessionId === sessionId) { active.stopWatch?.(); active = null; }
-    },
+  // The control script loads the table itself (dialogs muted first), from the
+  // Wine `Z:\…` path.
+  const controlScript = generateControlScript({
+    bridgeUrl: bridge.url,
+    ctPath: ctPath === null ? undefined : toWinePath(ctPath),
+    ...(ceServer
+      ? { openProcessPid: effectivePid, ceServer: { host: '127.0.0.1', port: ceServer.port } }
+      : { openProcessName: processName }),
   });
 
-  // Windows CE cold-boots under Proton/Wine, which is much slower than native
-  // Linux CE — give it a longer ping window.
-  const defaultTimeout = proton ? 45_000 : 10_000;
+  let ceProcess: CeProcessHandle;
+  // `proton run` / `wine` keep running for as long as CE does, so an early
+  // exit means CE never started: stop waiting for it.
+  let launcherExited = false;
+  try {
+    const raw = await spawnCeProcess({
+      launch,
+      controlScript,
+      sessionId,
+      runtimeRoot: opts.runtimeRoot,
+      onExit: () => {
+        launcherExited = true;
+        void ceServer?.stop();
+        // If this session was active, drop it.
+        if (active?.sessionId === sessionId) { active.stopWatch?.(); active = null; }
+      },
+    });
+    ceProcess = ceServer
+      ? { ...raw, kill: async (signal) => { await raw.kill(signal); await ceServer!.stop(); } }
+      : raw;
+  } catch (err) {
+    await bridge.close().catch(() => {});
+    await ceServer?.stop();
+    throw err;
+  }
+
+  // Windows CE cold-boots under Proton/Wine. The first native session also
+  // creates Starlight's prefix, which takes longer still.
+  const defaultTimeout = proton ? 45_000 : 90_000;
   const deadline = Date.now() + (opts.pingTimeoutMs ?? defaultTimeout);
   let online = false;
   let ready = false;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !launcherExited) {
     try {
       const pong = await Promise.race([
         bridge.send({ method: 'ping' }),
@@ -367,13 +414,16 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     }
   }
   if (!online) {
+    const exitedEarly = launcherExited;   // read before kill() sets it
     await bridge.close().catch(() => {});
     await ceProcess.kill('SIGTERM').catch(() => {});
-    throw new Error('CE process spawned but timed out waiting for ping');
+    throw new Error(exitedEarly
+      ? `Cheat Engine closed while starting (${runner?.kind === 'wine' ? 'Wine' : 'Proton'} could not run it).`
+      : 'CE process spawned but timed out waiting for ping');
   }
 
   const pick: PickContext = {
-    tables, tableId, cacheKey: opts.cacheKey, ctCacheDir: opts.ctCacheDir, proton: proton !== null,
+    tables, tableId, cacheKey: opts.cacheKey, ctCacheDir: opts.ctCacheDir,
     autoPick: opts.autoPick !== false,
     tableReadyTimeoutMs: opts.tableReadyTimeoutMs ?? 20_000,
     onProgress: opts.onProgress,
@@ -542,7 +592,7 @@ async function pickTable(s: SessionState, first: { loaded: number | null; ready?
   const load = async (t: CtTable): Promise<boolean> => {
     const cacheKey = t.id === 0 ? ctx.cacheKey : `${ctx.cacheKey}-a${t.id}`;
     const { ctPath } = await downloadCtToDisk({ source: t.url, cacheDir: ctx.ctCacheDir, cacheKey });
-    const r = await sendWithTimeout(bridge, { method: 'load_table', params: { path: ctx.proton ? toWinePath(ctPath) : ctPath } }, 30_000) as { ok?: boolean };
+    const r = await sendWithTimeout(bridge, { method: 'load_table', params: { path: toWinePath(ctPath) } }, 30_000) as { ok?: boolean };
     if (!r.ok) return false;
     s.ctPath = ctPath;
     return true;
@@ -598,7 +648,7 @@ export async function retryTables(req: { sessionId: string }): Promise<({ ok: tr
     // prerequisites from the last attempt don't linger.
     const cur = s.pick.tables.find((t) => t.id === s.pick!.tableId);
     if (cur && s.ctPath) {
-      await sendWithTimeout(s.bridge, { method: 'load_table', params: { path: s.pick.proton ? toWinePath(s.ctPath) : s.ctPath } }, 30_000);
+      await sendWithTimeout(s.bridge, { method: 'load_table', params: { path: toWinePath(s.ctPath) } }, 30_000);
     }
     const picked = await pickTable(s, { loaded: s.pick.tableId });
     return { ok: true, ...picked, tableId: s.pick.tableId };

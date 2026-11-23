@@ -9,7 +9,9 @@ import { readFile } from 'node:fs/promises';
 import { startSession, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
 
 let dir: string;
-let installDir: string;
+/** Windows CE's directory in the runtime (CheatEngineWindows75). */
+let winCeDir: string;
+/** Stands in for the Wine launcher; the live tests make it a scripted CE. */
 let binary: string;
 let ctCacheDir: string;
 let ctServer: Server;
@@ -27,9 +29,15 @@ async function startCtServer(): Promise<string> {
 
 beforeEach(async () => {
   dir = join(tmpdir(), `starlight-ce-session-${Date.now()}-${Math.random()}`);
-  installDir = join(dir, 'CheatEngineLinux766-4');
-  await mkdir(join(installDir, 'autorun'), { recursive: true });
-  binary = join(installDir, 'cheatengine-x86_64');
+  winCeDir = join(dir, 'CheatEngineWindows75');
+  await mkdir(join(winCeDir, 'autorun'), { recursive: true });
+  await mkdir(join(winCeDir, 'lua'), { recursive: true });
+  await writeFile(join(winCeDir, 'cheatengine-x86_64.exe'), 'MZ');
+  await writeFile(join(winCeDir, 'lua', 'json.lua'), '-- json');
+  await mkdir(join(dir, 'ceserver-7.5'), { recursive: true });
+  await writeFile(join(dir, 'ceserver-7.5', 'ceserver'), '#!/bin/sh\n');
+  await chmod(join(dir, 'ceserver-7.5', 'ceserver'), 0o755);
+  binary = join(dir, 'fake-wine');
   // Default: a "stuck" binary that never responds.
   await writeFile(binary, '#!/bin/sh\nsleep 30\n');
   await chmod(binary, 0o755);
@@ -41,10 +49,17 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+/** A native game: Windows CE "runs" through `binary`, ceserver is stubbed. */
+const ceServerStops: number[] = [];
+const nativeLaunch = {
+  findWineRunnerFn: async () => ({ kind: 'wine' as const, command: binary, args: [], env: {}, prefixDir: join(dir, 'prefix', 'wine') }),
+  startCeServerFn: async () => ({ port: 52736, stop: async () => { ceServerStops.push(1); } }),
+  readPtraceScopeFn: async () => 0,
+};
+
 describe('ce-session', () => {
   it('rejects start when runtime is not installed', async () => {
-    // Use a dir where the binary does not exist.
-    await rm(binary, { force: true });
+    await rm(join(winCeDir, 'cheatengine-x86_64.exe'), { force: true });
     // Any source URL is fine — the detect failure gates before the download.
     const source = await startCtServer();
     await expect(startSession({
@@ -54,13 +69,59 @@ describe('ce-session', () => {
 
   it('times out cleanly when CE never responds to ping', async () => {
     const source = await startCtServer();
-    // A pid forces an actual CE launch (the "stuck" binary); native (non-Proton)
-    // so it uses the Linux CE path and hangs → ping timeout.
+    // A pid forces an actual CE launch (the "stuck" binary) → ping timeout.
+    ceServerStops.length = 0;
     await expect(startSession({
       source, cacheKey: 'k2', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
-      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game',
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
     })).rejects.toThrow(/timed out|ping/i);
     expect(getActiveSession()).toBeNull();
+    expect(ceServerStops.length).toBeGreaterThan(0);   // ceserver isn't left running
+  });
+
+  it('runs Windows CE connected to ceserver for a native game, opening it by pid', async () => {
+    const marker = join(dir, 'wine-invoked.txt');
+    await writeFile(binary, `#!/bin/sh\necho "$@" > ${marker}\ncat autorun/zzz-starlight.lua >> ${marker}\nsleep 30\n`);
+    await chmod(binary, 0o755);
+    let serverBin = '';
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'native1', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 600,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game',
+      ...nativeLaunch,
+      startCeServerFn: async ({ bin }) => { serverBin = bin; return { port: 40123, stop: async () => {} }; },
+    })).rejects.toThrow(/timed out|ping/i);
+    expect(serverBin).toBe(join(dir, 'ceserver-7.5', 'ceserver'));
+    const out = await readFile(marker, 'utf8');
+    expect(out.split('\n')[0]).toBe(join(winCeDir, 'cheatengine-x86_64.exe'));
+    expect(out).toContain('local CESERVER = { host = "127.0.0.1", port = 40123 }');
+    expect(out).toContain('local OPEN_PROCESS_PID = 4242');
+    expect(out).toContain('local CT_PATH = "Z:\\\\');   // the table, as a Wine path
+  });
+
+  it('stops waiting at once when Wine exits without starting Cheat Engine', async () => {
+    await writeFile(binary, '#!/bin/sh\nexit 1\n');
+    const t0 = Date.now();
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'native4', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 20_000,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+    })).rejects.toThrow(/closed while starting \(Wine/);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+  });
+
+  it('says how to allow memory access when ptrace is restricted', async () => {
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'native2', runtimeRoot: dir, ctCacheDir,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game',
+      ...nativeLaunch, readPtraceScopeFn: async () => 1,
+    })).rejects.toThrow(/ptrace_scope=0/);
+  });
+
+  it('asks for Proton or Wine when a native game has nothing to run Cheat Engine with', async () => {
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'native3', runtimeRoot: dir, ctCacheDir,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game',
+      ...nativeLaunch, findWineRunnerFn: async () => null,
+    })).rejects.toThrow(/Proton or Wine/);
   });
 
   it('endSession is idempotent and tolerates missing session', async () => {
@@ -106,15 +167,17 @@ describe('ce-session', () => {
     // the ping loop times out (we assert on the invocation, not a live bridge).
     const marker = join(dir, 'proton-invoked.txt');
     const fakeProton = join(dir, 'proton');
-    // cwd is the windowsbin dir, so the control script is at ./autorun/…
+    // cwd is Windows CE's dir, so the control script is at ./autorun/…
     await writeFile(fakeProton, `#!/bin/sh\necho "$@" > ${marker}\nenv | grep STEAM_COMPAT >> ${marker}\ncat autorun/zzz-starlight.lua >> ${marker} 2>/dev/null\nsleep 30\n`);
     await chmod(fakeProton, 0o755);
-    // Windows CE binary must exist for the launch path.
-    await mkdir(join(installDir, 'windowsbin', 'autorun'), { recursive: true });
-    await writeFile(join(installDir, 'windowsbin', 'cheatengine-x86_64.exe'), 'stub');
-    // The bundled json module the control script needs copied into windowsbin.
-    await mkdir(join(installDir, 'lua'), { recursive: true });
-    await writeFile(join(installDir, 'lua', 'json.lua'), '-- stub json module');
+    // An install from before 0.3: Windows CE inside the Linux CE, without its
+    // own json module.
+    await rm(winCeDir, { recursive: true });
+    const legacy = join(dir, 'CheatEngineLinux766-4');
+    await mkdir(join(legacy, 'windowsbin', 'autorun'), { recursive: true });
+    await writeFile(join(legacy, 'windowsbin', 'cheatengine-x86_64.exe'), 'stub');
+    await mkdir(join(legacy, 'lua'), { recursive: true });
+    await writeFile(join(legacy, 'lua', 'json.lua'), '-- stub json module');
 
     const source = await startCtServer();
     await expect(startSession({
@@ -138,7 +201,7 @@ describe('ce-session', () => {
     expect(invocation).toContain('local OPEN_PROCESS_NAME = "Game.exe"');
 
     // json.lua was staged into windowsbin so `require("json")` resolves in Windows CE.
-    const staged = await readFile(join(installDir, 'windowsbin', 'lua', 'json.lua'), 'utf8');
+    const staged = await readFile(join(legacy, 'windowsbin', 'lua', 'json.lua'), 'utf8');
     expect(staged).toContain('stub json module');
   });
 
@@ -146,10 +209,6 @@ describe('ce-session', () => {
     await writeFile(binary, '#!/bin/sh\nsleep 30\n'); await chmod(binary, 0o755);
     const source = await startCtServer();
     // matcher returns a pid → session proceeds to the (stub) proton launch and times out
-    await mkdir(join(installDir, 'windowsbin', 'autorun'), { recursive: true });
-    await writeFile(join(installDir, 'windowsbin', 'cheatengine-x86_64.exe'), 'stub');
-    await mkdir(join(installDir, 'lua'), { recursive: true });
-    await writeFile(join(installDir, 'lua', 'json.lua'), '--stub');
     const fakeProton = join(dir, 'proton');
     await writeFile(fakeProton, '#!/bin/sh\nsleep 30\n'); await chmod(fakeProton, 0o755);
 
@@ -198,7 +257,9 @@ const url = /local BRIDGE_URL = "([^"]+)"/.exec(lua)[1];
 const first = /local CT_PATH = (.*)/.exec(lua)[1];
 fs.appendFileSync(${JSON.stringify(log)}, 'ct=' + first + '\\n');
 let ready = false; setTimeout(() => { ready = true; }, ${opts.readyAfterMs ?? 0});
-let path = first === 'nil' ? null : JSON.parse(first);
+// Windows CE gets Wine paths (Z:\\home\\…); read the files from Linux.
+const fromWine = (p) => p.replace(/^Z:/, '').replace(/\\\\/g, '/');
+let path = first === 'nil' ? null : fromWine(JSON.parse(first));
 let on = new Set();
 const spec = () => {
   if (!path) return null;
@@ -228,7 +289,7 @@ const reply = (cmd) => {
       if (how === 'unknown' || how === undefined) return { unknown: true };
       return how ? { ok: true, found: 1 } : { ok: false, found: 0, missing: 1, error: "signature 'x' is not in the game" };
     }
-    case 'load_table': path = cmd.params.path; on = new Set(); return { ok: true };
+    case 'load_table': path = fromWine(cmd.params.path); on = new Set(); return { ok: true };
     case 'set_hotkeys': return { ok: true, count: cmd.params.bindings.length };
     case 'set_speed': return { ok: true, speed: cmd.params.speed };
     case 'shutdown': return { ok: true };
@@ -241,7 +302,7 @@ const reply = (cmd) => {
       const r = await fetch(url + '/poll');
       if (r.status === 200) {
         const cmd = await r.json();
-        if (cmd.method !== 'ping') fs.appendFileSync(${JSON.stringify(log)}, cmd.method + (cmd.method === 'load_table' ? ' ' + cmd.params.path.split('/').pop() : '') + '\\n');
+        if (cmd.method !== 'ping') fs.appendFileSync(${JSON.stringify(log)}, cmd.method + (cmd.method === 'load_table' ? ' ' + cmd.params.path.split('\\\\').pop() : '') + '\\n');
         await fetch(url + '/result', { method: 'POST', body: JSON.stringify({ id: cmd.id, result: reply(cmd) }) });
         if (cmd.method === 'set_hotkeys' && cmd.params.bindings.length > 0) {
           // "press" the first hotkey
@@ -277,7 +338,7 @@ const reply = (cmd) => {
     { id: 3, name: 'Infinite Ammo', depth: 1 },
   ];
 
-  const native = { pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', isGameAlive: () => true };
+  const native = { pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', isGameAlive: () => true, ...nativeLaunch };
 
   it('attaches, waits for the table to finish loading, and lists records', async () => {
     const log = join(dir, 'fake-ce.log');

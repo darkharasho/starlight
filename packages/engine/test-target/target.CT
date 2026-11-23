@@ -11,7 +11,7 @@
           <ID>2</ID>
           <Description>"Health"</Description>
           <VariableType>4 Bytes</VariableType>
-          <Address>"target"+403030</Address>
+          <Address>"target"+4030</Address>
           <Hotkeys>
             <Hotkey><Action>Toggle Activation</Action><Keys><Key>112</Key></Keys><ID>0</ID></Hotkey>
           </Hotkeys>
@@ -20,7 +20,7 @@
           <ID>3</ID>
           <Description>"Speed"</Description>
           <VariableType>Float</VariableType>
-          <Address>"target"+403034</Address>
+          <Address>"target"+4034</Address>
           <Hotkeys>
             <Hotkey><Action>Toggle Activation</Action><Keys><Key>113</Key></Keys><ID>0</ID></Hotkey>
           </Hotkeys>
@@ -29,7 +29,7 @@
           <ID>4</ID>
           <Description>"Souls"</Description>
           <VariableType>8 Bytes</VariableType>
-          <Address>"target"+403040</Address>
+          <Address>"target"+4040</Address>
           <Hotkeys>
             <Hotkey><Action>Toggle Activation</Action><Keys><Key>114</Key></Keys><ID>0</ID></Hotkey>
           </Hotkeys>

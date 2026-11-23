@@ -28,13 +28,18 @@ export function RuntimeSetupModal(): JSX.Element | null {
     );
   }
 
-  // status: 'not-installed'
+  // status: 'not-installed'. An install from an older Starlight already has
+  // Windows Cheat Engine and only needs the small ceserver add-on.
+  const onlyCeServer = status.missing.length === 1 && status.missing[0] === 'ceserver';
   return (
     <Backdrop>
-      <h2 className="text-base font-semibold">Set up the trainer engine</h2>
+      <h2 className="text-base font-semibold">
+        {onlyCeServer ? 'Update the trainer engine' : 'Set up the trainer engine'}
+      </h2>
       <p className="text-xs text-muted mt-2 max-w-[420px]">
-        Starlight uses Cheat Engine as its trainer engine. We&apos;ll download a one-time ~24 MB
-        runtime to your user data directory. It runs invisibly in the background.
+        {onlyCeServer
+          ? 'Starlight needs one more small part (under 1 MB) to cheat native Linux games.'
+          : 'Starlight uses Cheat Engine as its trainer engine. We\'ll download a one-time ~34 MB runtime to your user data directory. It runs invisibly in the background.'}
       </p>
       <p className="text-[10px] text-muted/80 mt-2 max-w-[420px]">
         Cheat Engine is licensed under GPLv2. Sources at{' '}
@@ -47,7 +52,7 @@ export function RuntimeSetupModal(): JSX.Element | null {
       <div className="mt-3 flex gap-2">
         <button type="button" onClick={() => void install()}
                 className="px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]">
-          Set up
+          {onlyCeServer ? 'Update' : 'Set up'}
         </button>
         <button type="button" onClick={() => void refresh()}
                 className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan">

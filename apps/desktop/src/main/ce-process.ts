@@ -3,34 +3,29 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
- * When present, Cheat Engine is launched as a *Windows* program inside the
- * game's Proton prefix (via `proton run`) so it sees the game's Windows modules.
- * Native Linux CE cannot resolve Windows module names for a Proton process.
+ * How to start Windows Cheat Engine: through the game's own Proton (`proton
+ * run`, inside the game's prefix) for Proton games, or through Starlight's own
+ * Proton/Wine prefix for native Linux games (CE then talks to ceserver).
  */
-export interface CeProtonLaunch {
-  /** Path to the Proton `proton` launcher script. */
-  protonBin: string;
-  /** Path to the Windows CE executable (…/windowsbin/cheatengine-x86_64.exe). */
+export interface CeWineLaunch {
+  /** The launcher (`proton` or `wine`); `args` and then the CE exe follow it. */
+  command: string;
+  args: string[];
+  /** Added to the environment (Steam compat settings, WINEPREFIX…). */
+  env: Record<string, string>;
+  /** Path to the Windows CE executable. */
   winCeExe: string;
-  /** Directory holding the Windows CE (its autorun/ receives the control script). */
+  /** Directory holding Windows CE (its autorun/ receives the control script). */
   winCeDir: string;
-  /** The CT path in Wine form (e.g. `Z:\home\user\x.ct`). */
-  ctWinPath: string;
-  /** STEAM_COMPAT_DATA_PATH — the game's compatdata dir. */
-  compatDataPath: string;
-  /** STEAM_COMPAT_CLIENT_INSTALL_PATH — the Steam client install dir. */
-  clientInstallPath: string;
-  /** The game's STEAM_COMPAT_* variables (see ProtonInfo.compatEnv). */
-  compatEnv?: Record<string, string> | undefined;
 }
 
 export interface CeProcessOpts {
-  binaryPath: string;
-  installDir: string;
-  ctPath: string;
+  launch: CeWineLaunch;
   controlScript: string;
-  /** If set, launch Windows CE inside the game's Proton prefix instead of Linux CE. */
-  proton?: CeProtonLaunch | undefined;
+  /** Tags the CE process so only this session's CE is ever killed. */
+  sessionId: string;
+  /** The runtime root, tagged too so a later run can reap orphans. */
+  runtimeRoot: string;
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   onStderrLine?: (line: string) => void;
   onStdoutLine?: (line: string) => void;
@@ -44,42 +39,24 @@ export interface CeProcessHandle {
 }
 
 const AUTORUN_FILENAME = 'zzz-starlight.lua';
+/** Environment tags on every CE Starlight starts (Wine passes them on to CE). */
+export const SESSION_TAG = 'STARLIGHT_CE_SESSION';
+export const ROOT_TAG = 'STARLIGHT_CE_ROOT';
 
 export async function spawnCeProcess(opts: CeProcessOpts): Promise<CeProcessHandle> {
-  // The control script goes into the autorun/ of whichever CE we're launching:
-  // native Linux CE (installDir) or Windows CE inside the Proton prefix (winCeDir).
-  const ceDir = opts.proton ? opts.proton.winCeDir : opts.installDir;
-  const autorunDir = join(ceDir, 'autorun');
+  const { launch } = opts;
+  const autorunDir = join(launch.winCeDir, 'autorun');
   await mkdir(autorunDir, { recursive: true });
   const autorunPath = join(autorunDir, AUTORUN_FILENAME);
   await writeFile(autorunPath, opts.controlScript, 'utf8');
 
-  let child: ChildProcess;
-  if (opts.proton) {
-    // No CT on argv — the control script loads it after muting dialogs.
-    child = spawn(
-      opts.proton.protonBin,
-      ['run', opts.proton.winCeExe],
-      {
-        cwd: opts.proton.winCeDir,
-        detached: false,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          ...opts.proton.compatEnv,
-          STEAM_COMPAT_DATA_PATH: opts.proton.compatDataPath,
-          STEAM_COMPAT_CLIENT_INSTALL_PATH: opts.proton.clientInstallPath,
-        },
-      },
-    );
-  } else {
-    // No CT on argv — the control script loads it after muting dialogs.
-    child = spawn(opts.binaryPath, [], {
-      cwd: opts.installDir,
-      detached: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  }
+  // No CT on argv: the control script loads it after muting dialogs.
+  const child: ChildProcess = spawn(launch.command, [...launch.args, launch.winCeExe], {
+    cwd: launch.winCeDir,
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...launch.env, [SESSION_TAG]: opts.sessionId, [ROOT_TAG]: opts.runtimeRoot },
+  });
   if (!child.pid) throw new Error('CE failed to spawn (no pid)');
 
   if (opts.onStdoutLine) hookLines(child.stdout, opts.onStdoutLine);
@@ -97,26 +74,27 @@ export async function spawnCeProcess(opts: CeProcessOpts): Promise<CeProcessHand
     pid: child.pid,
     kill: async (signal = 'SIGTERM') => {
       if (child.exitCode === null) child.kill(signal);
-      // Under Proton the Windows CE is reparented to the game's wineserver, so
-      // killing the `proton run` launcher leaves it running. Kill it directly.
-      // (We must NOT kill the wineserver — it's shared with the game.)
-      if (opts.proton) await killWineProcess(opts.proton.winCeExe).catch(() => {});
+      // Wine reparents CE to the prefix's wineserver, so killing the launcher
+      // leaves it running. Kill it directly. (Never the wineserver: for a
+      // Proton game it's shared with the game.)
+      await killWineProcess(opts.sessionId).catch(() => {});
       await exitPromise;
     },
     waitForExit: () => exitPromise,
   };
 }
 
+function hasTag(environ: string, name: string, value: string): boolean {
+  return environ.split('\0').includes(`${name}=${value}`);
+}
+
 /**
- * Kills the specific Windows CE process without touching the shared wineserver
- * or the game. Matches on the process `comm` (the CE binary name) AND the exe
- * path in the command line, so unrelated processes that merely mention the path
- * are never touched. Retries briefly since the Wine process can still be coming
- * up when the session ends.
+ * Kills the Cheat Engine started for one session, found by its session tag,
+ * without touching the wineserver, the game, or any other CE. Retries briefly
+ * since the Wine process can still be coming up when the session ends.
  */
-export async function killWineProcess(winCeExe: string): Promise<void> {
+export async function killWineProcess(sessionId: string): Promise<void> {
   const { readdir, readFile } = await import('node:fs/promises');
-  const basename = winCeExe.split('/').pop() ?? winCeExe;
   for (let attempt = 0; attempt < 4; attempt++) {
     const pids = (await readdir('/proc')).filter((d) => /^\d+$/.test(d));
     let killedAny = false;
@@ -125,8 +103,8 @@ export async function killWineProcess(winCeExe: string): Promise<void> {
         // Linux truncates comm to 15 chars: "cheatengine-x86".
         const comm = (await readFile(`/proc/${pid}/comm`, 'utf8')).trim();
         if (!comm.startsWith('cheatengine')) return;
-        const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8');
-        if (cmdline.includes(basename)) { process.kill(Number(pid), 'SIGKILL'); killedAny = true; }
+        const environ = await readFile(`/proc/${pid}/environ`, 'utf8');
+        if (hasTag(environ, SESSION_TAG, sessionId)) { process.kill(Number(pid), 'SIGKILL'); killedAny = true; }
       } catch { /* process gone or unreadable — ignore */ }
     }));
     if (killedAny) return;
@@ -135,11 +113,11 @@ export async function killWineProcess(winCeExe: string): Promise<void> {
 }
 
 /**
- * Kills any orphaned Cheat Engine processes left behind by a previous run that
- * exited without cleaning up (e.g. a crash, which bypasses the before-quit
- * handler). Matches CE processes (comm starts with "cheatengine") whose command
- * line references the Starlight runtime directory, so unrelated CE instances the
- * user launched themselves are never touched. Safe to call on startup.
+ * Kills any orphaned Cheat Engine and ceserver processes left behind by a
+ * previous run that exited without cleaning up (e.g. a crash, which bypasses
+ * the before-quit handler). Matches only processes Starlight started: tagged
+ * with this runtime root, or whose command line is inside it. Cheat Engine the
+ * user launched themselves is never touched. Safe to call on startup.
  */
 export async function killStaleCeProcesses(runtimeRoot: string): Promise<number> {
   const { readdir, readFile } = await import('node:fs/promises');
@@ -148,9 +126,13 @@ export async function killStaleCeProcesses(runtimeRoot: string): Promise<number>
   await Promise.all(pids.map(async (pid) => {
     try {
       const comm = (await readFile(`/proc/${pid}/comm`, 'utf8')).trim();
-      if (!comm.startsWith('cheatengine')) return;
+      if (!comm.startsWith('cheatengine') && comm !== 'ceserver') return;
       const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8');
-      if (cmdline.includes(runtimeRoot)) { process.kill(Number(pid), 'SIGKILL'); killed++; }
+      const environ = comm === 'ceserver' ? '' : await readFile(`/proc/${pid}/environ`, 'utf8').catch(() => '');
+      if (cmdline.includes(runtimeRoot) || hasTag(environ, ROOT_TAG, runtimeRoot)) {
+        process.kill(Number(pid), 'SIGKILL');
+        killed++;
+      }
     } catch { /* process gone or unreadable — ignore */ }
   }));
   return killed;

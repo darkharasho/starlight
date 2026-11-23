@@ -47,7 +47,19 @@ describe('generateControlScript', () => {
   it('opens the target process on boot when openProcessName is given', () => {
     const lua = generateControlScript({ bridgeUrl: 'http://x', openProcessName: '9Kings.exe' });
     expect(lua).toContain('local OPEN_PROCESS_NAME = "9Kings.exe"');
-    expect(lua).toMatch(/if firstLoad and OPEN_PROCESS_NAME then attachTo\(OPEN_PROCESS_NAME\)/);
+    expect(lua).toMatch(/elseif OPEN_PROCESS_NAME then attachTo\(OPEN_PROCESS_NAME\)/);
+    expect(lua).toContain('local CESERVER = nil');
+  });
+
+  it('connects to ceserver and opens the game by pid for a native game', () => {
+    const lua = generateControlScript({ bridgeUrl: 'http://x', openProcessPid: 4242, ceServer: { host: '127.0.0.1', port: 52736 } });
+    expect(lua).toContain('local OPEN_PROCESS_PID = 4242');
+    expect(lua).toContain('local CESERVER = { host = "127.0.0.1", port = 52736 }');
+    // Connect first: openProcess has to go through ceserver.
+    const connect = lua.indexOf('connectToCEServer(CESERVER.host, CESERVER.port)');
+    const open = lua.indexOf('if OPEN_PROCESS_PID then attachTo(OPEN_PROCESS_PID)');
+    expect(connect).toBeGreaterThan(0);
+    expect(open).toBeGreaterThan(connect);
   });
 
   it('leaves OPEN_PROCESS_NAME nil when no target is given', () => {
@@ -121,6 +133,7 @@ describe('generateControlScript', () => {
     for (const opts of [
       { bridgeUrl: 'http://127.0.0.1:1' },
       { bridgeUrl: 'http://127.0.0.1:1', openProcessName: '9Kings.exe', ctPath: 'Z:\\home\\me\\it\'s "a" table.ct' },
+      { bridgeUrl: 'http://127.0.0.1:1', openProcessPid: 77, ceServer: { host: '127.0.0.1', port: 4000 }, ctPath: 'Z:\\x.ct' },
     ]) {
       expect(() => parseLua(generateControlScript(opts), { luaVersion: '5.3' })).not.toThrow();
     }

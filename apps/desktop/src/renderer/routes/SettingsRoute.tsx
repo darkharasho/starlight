@@ -113,7 +113,9 @@ export function SettingsRoute(): JSX.Element {
           as its trainer engine. Cheat Engine is licensed under the{' '}
           <a href="https://www.gnu.org/licenses/gpl-2.0.html" target="_blank" rel="noreferrer"
              className="text-neon-cyan hover:underline">GNU General Public License v2</a>.
-          The Linux build downloaded by Starlight is unmodified from upstream; sources are available at
+          The Windows build Starlight downloads is unmodified from upstream. For native Linux games it
+          also uses ceserver, built from the Cheat Engine source with a small patch (the patch and build
+          script are in the runtimes repository below). Sources are available at
           <a href="https://github.com/cheat-engine/cheat-engine" target="_blank" rel="noreferrer"
              className="text-neon-cyan hover:underline"> github.com/cheat-engine/cheat-engine</a>.
         </div>

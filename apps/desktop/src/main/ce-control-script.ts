@@ -7,6 +7,13 @@ export interface ControlScriptOpts {
    * host can send an `attach` command later.
    */
   openProcessName?: string | undefined;
+  /** Process id to open instead of a name (native games through ceserver). */
+  openProcessPid?: number | undefined;
+  /**
+   * ceserver to connect to before opening the process. Set for native Linux
+   * games: Windows CE then reads and writes the game's memory through it.
+   */
+  ceServer?: { host: string; port: number } | undefined;
   /**
    * CE-openable path to the .CT to load (Linux path for native CE, `Z:\…` Wine
    * path for Windows CE). Loaded by the script AFTER dialogs are muted, so a
@@ -51,6 +58,10 @@ export function generateControlScript(opts: ControlScriptOpts): string {
   const url = JSON.stringify(opts.bridgeUrl);
   const openName = opts.openProcessName ? JSON.stringify(opts.openProcessName) : 'nil';
   const ctPath = opts.ctPath ? JSON.stringify(opts.ctPath) : 'nil';
+  const openPid = Number.isInteger(opts.openProcessPid) ? String(opts.openProcessPid) : 'nil';
+  const ceServer = opts.ceServer && Number.isInteger(opts.ceServer.port)
+    ? `{ host = ${JSON.stringify(opts.ceServer.host)}, port = ${opts.ceServer.port} }`
+    : 'nil';
   return `\
 -- Starlight CE control script. Auto-generated; do not edit by hand.
 
@@ -84,6 +95,8 @@ _hideTimer.Enabled = true
 
 local BRIDGE_URL = ${url}
 local OPEN_PROCESS_NAME = ${openName}
+local OPEN_PROCESS_PID = ${openPid}
+local CESERVER = ${ceServer}
 local CT_PATH = ${ctPath}
 local TRACE_PATH = "/tmp/starlight-ce.log"
 
@@ -657,7 +670,15 @@ boot.OnTimer = function()
   loadTimer.Interval = 50
   loadTimer.OnTimer = function()
     loadTimer.Enabled = false
-    if firstLoad and OPEN_PROCESS_NAME then attachTo(OPEN_PROCESS_NAME) end
+    if firstLoad then
+      if CESERVER then
+        -- From here on CE lists, reads and writes processes through ceserver.
+        local ok, err = pcall(function() connectToCEServer(CESERVER.host, CESERVER.port) end)
+        trace("ceserver " .. CESERVER.host .. ":" .. tostring(CESERVER.port) .. " ok=" .. tostring(ok) .. " err=" .. tostring(err))
+      end
+      if OPEN_PROCESS_PID then attachTo(OPEN_PROCESS_PID)
+      elseif OPEN_PROCESS_NAME then attachTo(OPEN_PROCESS_NAME) end
+    end
     firstLoad = false
     local path = pendingTable
     pendingTable = nil

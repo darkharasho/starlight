@@ -71,8 +71,9 @@ It needs no extra setup: better-sqlite3 is already built for Electron (see below
 
 ## Windows and macOS
 
-Not built yet. Starlight installs the Linux Cheat Engine runtime and runs
-Windows CE under Proton, so a Windows build couldn't cheat. When there is a
+Not built yet. Starlight runs Windows Cheat Engine under Proton or Wine (with
+ceserver for native Linux games), so a Windows build would need its own
+Cheat Engine path. When there is a
 Windows path, add a `windows-latest` job with Azure Artifact Signing, as in
 HML's `release.yml`. That job needs `win.azureSignOptions` in
 `electron-builder.yml`, the `AZURE_*` secrets, and the step that verifies the
