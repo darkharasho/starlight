@@ -218,6 +218,25 @@ describe('v2 cheats: verify and run', () => {
     expect((await bytesAt(s, siteAddr, 4)).equals(before)).toBe(true);
   });
 
+  it('a failed revert makes disable reject, keeps the cheat on, and a later disable retries (--writer)', async () => {
+    const { s, t } = await setup(['--writer']);
+    const { site } = await patchSite(s, t);
+    const siteAddr = hex(BigInt(t.addresses.bump_counter!));
+    const original = (await bytesAt(s, siteAddr, 1)).toString('hex');
+    const run = await enableCheat(s, patchCheat(site, [{ op: 'writeBytes', at: 'site', bytes: 'c3', original }]));
+    // Someone else changes the patched byte: the daemon refuses to revert over it (PatchConflict).
+    await write(s, siteAddr, 'uint8', 0x90);
+    const err = await run.disable().catch((e) => e);
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err.message).toMatch(/still on/);
+    expect((await bytesAt(s, siteAddr, 1)).toString('hex')).toBe('90');
+    // Put the patched byte back; the retry now reverts it.
+    await write(s, siteAddr, 'uint8', 0xc3);
+    await run.disable();
+    expect((await bytesAt(s, siteAddr, 1)).toString('hex')).toBe(original);
+    await run.disable();
+  });
+
   it('refuses a cheat with disable steps', async () => {
     const { s, t } = await setup(['--writer']);
     const { site } = await patchSite(s, t);

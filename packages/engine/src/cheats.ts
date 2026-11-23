@@ -314,16 +314,27 @@ async function enablePatch(s: Session, cheat: StarlightPatchCheat): Promise<Runn
     throw err;
   }
 
-  let on = true;
   return {
     kind: 'patch',
     address: site,
     async setValue() { throw new EngineError("patch cheats don't have a value"); },
     async disable() {
-      if (!on) return;
-      on = false;
-      if (!s.attached || s.client.closed) return; // the daemon reverts patches when the session ends
-      await rollback();
+      if (applied.length === 0) return;
+      if (!s.attached || s.client.closed) { applied.length = 0; return; } // the daemon reverts patches when the session ends
+      // Newest first. Patches that fail to revert stay in the list so a later disable() retries them.
+      const stuck: typeof applied = [];
+      const errors: string[] = [];
+      for (const p of [...applied].reverse()) {
+        try { await p.revert(); } catch (err) {
+          stuck.push(p);
+          errors.push(err instanceof Error ? err.message : String(err));
+        }
+      }
+      applied.length = 0;
+      applied.push(...stuck.reverse());
+      if (errors.length) {
+        throw new EngineError(`${errors.length} patch${errors.length === 1 ? '' : 'es'} could not be reverted, the cheat is still on: ${errors.join('; ')}`);
+      }
     },
   };
 }
