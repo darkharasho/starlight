@@ -1,4 +1,6 @@
 mod maps;
+mod mem;
+mod process;
 mod rpc;
 
 use std::io::{BufRead, BufReader, Read};
@@ -25,7 +27,11 @@ fn main() {
         std::process::exit(2);
     };
     let _ = std::fs::remove_file(&path);
-    let listener = match UnixListener::bind(&path) {
+    // Bind under a restrictive umask so the socket never exists with looser permissions.
+    let old_umask = unsafe { libc::umask(0o177) };
+    let bound = UnixListener::bind(&path);
+    unsafe { libc::umask(old_umask) };
+    let listener = match bound {
         Ok(l) => l,
         Err(e) => {
             eprintln!("starlightd: bind {}: {e}", path.display());

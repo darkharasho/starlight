@@ -49,3 +49,14 @@ fn target_helper_lists_addresses() {
     assert!(t.addr("g_health").starts_with("0x"));
     assert_eq!(t.offset("hp_in_stats"), 0);
 }
+
+#[test]
+fn non_object_json_gets_32602_with_null_id() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    for raw in ["[1]", "5"] {
+        let v = c.raw(raw);
+        assert_eq!(v["error"]["code"], -32602, "{raw}");
+        assert!(v["id"].is_null());
+    }
+}
