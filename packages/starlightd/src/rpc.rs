@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
 #![allow(dead_code)] // consumed by later tasks (attach/modules/etc.)
-use crate::{mem, modules, process::Handles};
+use crate::{aob, mem, modules, pointer, process::Handles};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -141,6 +141,45 @@ impl Session {
                 mem::write_bytes(&t, addr, &data)?;
                 Ok(json!({}))
             }
+            "aob_scan" => {
+                let t = self.handles.get(param_handle(params)?)?;
+                let module = params
+                    .get("module")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| RpcError::invalid_params("module must be a string"))?;
+                let pattern = params
+                    .get("pattern")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| RpcError::invalid_params("pattern must be a string"))?;
+                let max = match params.get("max") {
+                    None | Some(Value::Null) => 1000,
+                    Some(_) => param_u64(params, "max")?.min(usize::MAX as u64) as usize,
+                };
+                let pattern = aob::Pattern::parse(pattern)?;
+                let range = aob::module_range(&t, module)?;
+                let matches: Vec<String> = aob::scan(&t, range, &pattern, max)?.iter().map(|a| format!("{a:#x}")).collect();
+                Ok(json!({ "matches": matches }))
+            }
+            "resolve_pointer" => {
+                let t = self.handles.get(param_handle(params)?)?;
+                let base = param_addr(params, "base")?;
+                let offsets = params
+                    .get("offsets")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| RpcError::invalid_params("offsets must be an array of \"0x...\" strings"))?
+                    .iter()
+                    .map(|v| parse_hex(v.as_str()).ok_or_else(|| RpcError::invalid_params("offsets must be \"0x...\" hex strings")))
+                    .collect::<Result<Vec<u64>, _>>()?;
+                let module_base = match params.get("module") {
+                    None | Some(Value::Null) => 0,
+                    Some(v) => {
+                        let name = v.as_str().ok_or_else(|| RpcError::invalid_params("module must be a string"))?;
+                        aob::module_range(&t, name)?.0
+                    }
+                };
+                let addr = pointer::resolve(&t, module_base.wrapping_add(base), &offsets)?;
+                Ok(json!({ "address": format!("{addr:#x}") }))
+            }
             other => Err(RpcError::method_not_found(format!("unknown method: {other}"))),
         }
     }
@@ -163,10 +202,12 @@ fn param_handle(params: &Value) -> Result<u32, RpcError> {
     u32::try_from(param_u64(params, "handle")?).map_err(|_| RpcError::invalid_params("handle out of range"))
 }
 
+fn parse_hex(s: Option<&str>) -> Option<u64> {
+    s?.strip_prefix("0x").and_then(|h| u64::from_str_radix(h, 16).ok())
+}
+
 fn param_addr(params: &Value, key: &str) -> Result<u64, RpcError> {
-    let s = params.get(key).and_then(Value::as_str);
-    s.and_then(|s| s.strip_prefix("0x"))
-        .and_then(|h| u64::from_str_radix(h, 16).ok())
+    parse_hex(params.get(key).and_then(Value::as_str))
         .ok_or_else(|| RpcError::invalid_params(format!("{key} must be a \"0x...\" hex string")))
 }
 

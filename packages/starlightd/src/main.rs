@@ -1,6 +1,8 @@
+mod aob;
 mod maps;
 mod mem;
 mod modules;
+mod pointer;
 mod process;
 mod rpc;
 

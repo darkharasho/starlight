@@ -73,10 +73,22 @@ fn basename(path: &str) -> &str {
 }
 
 pub fn list(t: &Target) -> Result<Vec<Module>, RpcError> {
-    let regions = maps::read(t.pid)
-        .map_err(|e| RpcError::read_failed(format!("cannot read maps of pid {}: {e}", t.pid)))?;
+    let regions = maps::read(t.pid).map_err(|e| match e.raw_os_error() {
+        Some(libc::ENOENT) | Some(libc::ESRCH) => RpcError::process_not_found(format!("pid {} has exited", t.pid)),
+        _ => RpcError::read_failed(format!("cannot read maps of pid {}: {e}", t.pid)),
+    })?;
     Ok(build(&regions, |addr| mem::read_bytes(t, addr, PE_HEADER_LEN).ok()))
 }
+
+/// Lowest start and total span of a group's regions.
+fn extent(rs: &[&Region]) -> (u64, u64) {
+    let base = rs.iter().map(|r| r.start).min().unwrap();
+    let end = rs.iter().map(|r| r.end).max().unwrap();
+    (base, end - base)
+}
+
+/// Largest plausible PE `SizeOfImage`; anything bigger (or zero) is treated as a corrupt header.
+const MAX_IMAGE: u64 = 2 << 30;
 
 /// Group file-backed regions by path (first-seen order) into modules.
 fn build(regions: &[Region], read_header: impl Fn(u64) -> Option<Vec<u8>>) -> Vec<Module> {
@@ -95,20 +107,28 @@ fn build(regions: &[Region], read_header: impl Fn(u64) -> Option<Vec<u8>>) -> Ve
         let rs = &groups[path];
         let name = basename(path).to_string();
         if is_pe_path(path) {
-            let Some(first) = rs.iter().filter(|r| r.offset == 0).min_by_key(|r| r.start) else { continue };
-            let Some(size) = read_header(first.start).and_then(|h| pe_size_of_image(&h)) else { continue };
-            out.push(Module { name, base: first.start, size, path: path.to_string(), kind: Kind::Pe });
+            // Several offset-0 regions can exist; prefer a parseable header, then the image
+            // that covers the most of this path's regions, then the lowest address.
+            let best = rs
+                .iter()
+                .filter(|r| r.offset == 0)
+                .filter_map(|r| {
+                    let size = read_header(r.start).and_then(|h| pe_size_of_image(&h)).filter(|&s| s > 0 && s <= MAX_IMAGE)?;
+                    let covered = rs.iter().filter(|o| o.start >= r.start && o.start - r.start < size).count();
+                    Some((covered, r.start, size))
+                })
+                .max_by_key(|&(covered, start, _)| (covered, std::cmp::Reverse(start)));
+            let (base, size) = best.map(|(_, b, s)| (b, s)).unwrap_or_else(|| extent(rs));
+            out.push(Module { name, base, size, path: path.to_string(), kind: Kind::Pe });
         } else {
-            let base = rs.iter().map(|r| r.start).min().unwrap();
-            let end = rs.iter().map(|r| r.end).max().unwrap();
-            out.push(Module { name, base, size: end - base, path: path.to_string(), kind: Kind::Elf });
+            let (base, size) = extent(rs);
+            out.push(Module { name, base, size, path: path.to_string(), kind: Kind::Elf });
         }
     }
     out
 }
 
 /// ASCII case-insensitive lookup by module name.
-#[allow(dead_code)] // used by aob/pointer resolution (later tasks)
 pub fn find<'a>(list: &'a [Module], name: &str) -> Option<&'a Module> {
     list.iter().find(|m| m.name.eq_ignore_ascii_case(name))
 }
@@ -165,5 +185,51 @@ mod tests {
         assert_eq!(mods.len(), 2);
         assert_eq!((mods[0].name.as_str(), mods[0].base, mods[0].size, mods[0].kind), ("t", 0x400000, 0x3000, Kind::Elf));
         assert_eq!((mods[1].name.as_str(), mods[1].base, mods[1].size, mods[1].kind), ("A.DLL", 0x7f0000, 0x3000, Kind::Pe));
+    }
+
+    fn pe_mods(text: &str, headers: &[(u64, u32)]) -> Vec<Module> {
+        let regions = maps::parse(text);
+        build(&regions, |a| headers.iter().find(|(h, _)| *h == a).map(|(_, s)| minimal_pe(*s)))
+    }
+
+    #[test]
+    fn unreadable_pe_header_falls_back_to_extent() {
+        let text = "7f0000-7f1000 r--p 00000000 00:00 2 /g/GameAssembly.dll\n7f1000-7f3000 r-xp 00001000 00:00 2 /g/GameAssembly.dll\n";
+        let m = pe_mods(text, &[]);
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].base, m[0].size, m[0].kind), (0x7f0000, 0x3000, Kind::Pe));
+    }
+
+    #[test]
+    fn pe_without_offset_zero_region_falls_back_to_extent() {
+        let text = "7f1000-7f3000 r-xp 00001000 00:00 2 /g/a.dll\n";
+        let m = pe_mods(text, &[]);
+        assert_eq!((m[0].base, m[0].size, m[0].kind), (0x7f1000, 0x2000, Kind::Pe));
+    }
+
+    #[test]
+    fn insane_size_of_image_is_unparseable() {
+        let text = "7f0000-7f1000 r--p 00000000 00:00 2 /g/a.dll\n7f1000-7f3000 r-xp 00001000 00:00 2 /g/a.dll\n";
+        for bad in [0u32, 0x8000_0001] {
+            let m = pe_mods(text, &[(0x7f0000, bad)]);
+            assert_eq!((m[0].base, m[0].size), (0x7f0000, 0x3000), "size {bad:#x}");
+        }
+    }
+
+    #[test]
+    fn multiple_offset_zero_prefers_parseable_then_most_coverage_then_lowest() {
+        // Unparseable lowest region is skipped.
+        let text = "100000-101000 r--p 00000000 00:00 2 /g/a.dll\n200000-201000 r--p 00000000 00:00 2 /g/a.dll\n";
+        let m = pe_mods(text, &[(0x200000, 0x1000)]);
+        assert_eq!((m[0].base, m[0].size), (0x200000, 0x1000));
+        // Most same-path regions inside the image wins over a lower start.
+        let text = "100000-101000 r--p 00000000 00:00 2 /g/a.dll\n\
+                    200000-201000 r--p 00000000 00:00 2 /g/a.dll\n201000-203000 r-xp 00001000 00:00 2 /g/a.dll\n";
+        let m = pe_mods(text, &[(0x100000, 0x1000), (0x200000, 0x3000)]);
+        assert_eq!((m[0].base, m[0].size), (0x200000, 0x3000));
+        // Tie goes to the lowest start.
+        let text = "100000-101000 r--p 00000000 00:00 2 /g/a.dll\n200000-201000 r--p 00000000 00:00 2 /g/a.dll\n";
+        let m = pe_mods(text, &[(0x100000, 0x1000), (0x200000, 0x1000)]);
+        assert_eq!(m[0].base, 0x100000);
     }
 }
