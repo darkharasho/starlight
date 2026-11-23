@@ -14,7 +14,8 @@ import {
   enableCheat, freeze, read, resolveAddressExpr, setSpeed, verifyCheat, watchStart, write,
 } from '@starlight/engine';
 import type { Hit, ValueType, VerifyResult } from '@starlight/engine';
-import { validateAgentCheat } from '@starlight/ct-importer';
+import { AgentCheatDraftSchema, validateAgentCheat } from '@starlight/ct-importer';
+import { CHEAT_DRAFT_HELP } from './instructions.js';
 import type { StarlightCheat, StarlightPatchCheat, StarlightValueCheat } from '@starlight/ct-importer';
 import {
   ToolError, describeEngineError, hex, live, need,
@@ -238,7 +239,7 @@ export function modifyTools(engine: Partial<EngineApi> = {}): ToolDef<any>[] { /
   // ── test_cheat ─────────────────────────────────────────────────────────
   const testInput = {
     action: z.enum(['apply', 'revert']),
-    cheat: z.record(z.string(), z.unknown()).optional().describe('apply: a value or patch cheat draft (Starlight format without id).'),
+    cheat: AgentCheatDraftSchema.optional().describe('apply: a value or patch cheat draft (Starlight format without id; see the examples in the instructions).'),
     value: z.number().optional().describe('apply, value cheats: the value to hold instead of the draft\'s.'),
     test: z.number().int().optional().describe('revert: the id apply returned.'),
   };
@@ -247,7 +248,8 @@ export function modifyTools(engine: Partial<EngineApi> = {}): ToolDef<any>[] { /
     title: 'Test a cheat',
     description:
       'apply turns a cheat draft on in the running game without saving it (at most 8 at once); revert turns one off. ' +
-      'Check the effect with read, or ask the player, then save it with save_cheat.',
+      'Check the effect with read, or ask the player, then save it with save_cheat. ' +
+      CHEAT_DRAFT_HELP,
     tier: (args) => (args.action === 'apply' ? 'modify' : 'attached'),
     readOnly: false, input: testInput,
     async run(args, ctx) {

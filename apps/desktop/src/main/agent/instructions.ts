@@ -24,11 +24,42 @@ const RULES = `Rules:
 - Single-player games only. Starlight refuses games with anti-cheat; never help with online or multiplayer games.
 - Values are strings in tool inputs and results. Addresses look like "0x7ff6a1b2c3d4" or "module+0x4010".`;
 
+/** Two complete drafts that pass save_cheat's validator (instructions.test.ts checks them). */
+export const CHEAT_DRAFT_EXAMPLES = {
+  value: {
+    name: 'Infinite gold', type: 'freeze', valueType: 'int32', value: 9999,
+    address: { kind: 'pointer', module: 'game.exe', baseOffset: '0x5260', offsets: ['0x18', '0x0'] },
+    verify: { range: { min: 0, max: 10000000 } },
+  },
+  patch: {
+    name: 'No damage', type: 'patch',
+    site: { kind: 'aob', module: 'game.exe', pattern: '29 87 B0 01 00 00 8B 47 ??' },
+    enable: [{ op: 'writeBytes', at: 'site', bytes: '909090909090' }],
+    verify: {},
+  },
+} as const;
+
+/** Short help for test_cheat / save_cheat descriptions. */
+export const CHEAT_DRAFT_HELP =
+  'A value cheat looks like ' + JSON.stringify(CHEAT_DRAFT_EXAMPLES.value) +
+  '; a code patch built from make_signature\'s aob looks like ' + JSON.stringify(CHEAT_DRAFT_EXAMPLES.patch) + '.';
+
+const DRAFTS = `Cheat drafts (the cheat input of test_cheat and save_cheat):
+- A value cheat: type "freeze" (hold value), "set" or "toggle"; valueType ("int32", "float" …); value; address; verify.range.
+  address is { "kind": "pointer", "module", "baseOffset", "offsets" } from pointer_scan, { "kind": "aob", "module", "pattern", "offset"? } from make_signature, or { "kind": "module", "module", "offset" }. Offsets are hex strings.
+  Example: ${JSON.stringify(CHEAT_DRAFT_EXAMPLES.value)}
+- A code patch: type "patch"; site is make_signature's aob (it must match exactly once); enable is a list of steps.
+  Steps: { "op": "writeBytes", "at", "bytes" } (hex, e.g. "9090"), { "op": "alloc", "name", "size", "near"? }, { "op": "assemble", "at", "source" }, { "op": "registerSymbol", "name", "at" }.
+  "at" is "site", "site+0x10", "site-0xd", an alloc or symbol name (± hex), "module+0x1234" or "0x…". Leave out disable: Starlight reverts the steps itself. save_cheat records the original bytes.
+  Example: ${JSON.stringify(CHEAT_DRAFT_EXAMPLES.patch)}`;
+
 export const INSTRUCTIONS = `Starlight is a game trainer. These tools let you find and build cheats for a single-player game the player is running, together with the player.
 
 ${PLAYBOOK}
 
-${RULES}`;
+${RULES}
+
+${DRAFTS}`;
 
 export function findACheatPrompt(goal?: string): string {
   const want = goal?.trim();
@@ -36,5 +67,7 @@ export function findACheatPrompt(goal?: string): string {
 
 ${PLAYBOOK}
 
-${RULES}`;
+${RULES}
+
+${DRAFTS}`;
 }

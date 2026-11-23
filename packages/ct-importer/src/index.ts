@@ -22,4 +22,4 @@ export {
 export { importCt, type ImportOptions, type ImportResult } from './ct-importer.js';
 export { type ImportStats } from './stats.js';
 export { parseCt, listCtRecords, type CtRecord } from './xml-parser.js';
-export { validateAgentCheat, type AgentCheatDraft } from './agent-cheat.js';
+export { AgentCheatDraftSchema, validateAgentCheat, type AgentCheatDraft } from './agent-cheat.js';

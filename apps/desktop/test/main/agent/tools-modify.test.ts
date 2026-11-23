@@ -438,3 +438,35 @@ describe('modify tools', () => {
     expect(e.enableCheat).not.toHaveBeenCalled();
   });
 });
+
+describe('cheat draft input schema (I2)', () => {
+  it('test_cheat and save_cheat publish the real draft schema in tools/list', async () => {
+    const { libraryTools } = await import('../../../src/main/agent/tools-library.js');
+    const defs = [...modifyTools(), ...libraryTools({ dir: '/nonexistent', catalogTrainerFor: async () => null, onSaved: () => {} })];
+    const client = await connectTools(defs, { access: { require: async () => null }, activity: { start: () => 1, finish: () => undefined } });
+    const { tools } = await client.listTools();
+    for (const name of ['test_cheat', 'save_cheat']) {
+      const cheat = (tools.find((t) => t.name === name)!.inputSchema.properties as Record<string, Record<string, unknown>>)['cheat']!;
+      const text = JSON.stringify(cheat);
+      // Both draft kinds, with their discriminators and key fields, are described.
+      for (const k of ['"freeze"', '"patch"', 'valueType', 'baseOffset', 'offsets', 'pattern', 'enable', 'writeBytes', 'range']) {
+        expect(text, `${name} ${k}`).toContain(k);
+      }
+      expect(cheat['anyOf'] ?? cheat['oneOf']).toBeDefined();
+    }
+  });
+
+  it('the SDK rejects a draft with the wrong shape before it reaches the game', async () => {
+    const { ctx } = fakeCtx();
+    const enableCheat = vi.fn();
+    const defs = modifyTools({ enableCheat, verifyCheat: vi.fn() } as never);
+    const start = vi.fn(() => 1);
+    const client = await connectTools(defs, { access: { require: async () => ctx.attached }, activity: { start, finish: () => undefined } });
+    const r = await client.callTool({ name: 'test_cheat', arguments: { action: 'apply', cheat: { name: 'x', type: 'freeze', address: '0x10' } } });
+    expect(r.isError).toBe(true);
+    expect(JSON.stringify(r.content)).toMatch(/valueType|address/);
+    // R16: the SDK's input validation refused it, so no Starlight code ran.
+    expect(start).not.toHaveBeenCalled();
+    expect(enableCheat).not.toHaveBeenCalled();
+  });
+});

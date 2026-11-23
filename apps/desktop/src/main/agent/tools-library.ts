@@ -6,7 +6,8 @@
 import { z } from 'zod';
 import { verifyCheat } from '@starlight/engine';
 import type { VerifyResult } from '@starlight/engine';
-import { validateAgentCheat } from '@starlight/ct-importer';
+import { AgentCheatDraftSchema, validateAgentCheat } from '@starlight/ct-importer';
+import { CHEAT_DRAFT_HELP } from './instructions.js';
 import type { StarlightCheat, StarlightProvenance, StarlightTrainer } from '@starlight/ct-importer';
 import { loadUserTrainer, saveUserCheat } from '../user-cheats.js';
 import type { GameIdentity } from '../game-identity.js';
@@ -42,7 +43,7 @@ export function libraryTools(deps: LibraryToolsDeps): ToolDef<any>[] { // eslint
   const now = deps.now ?? (() => new Date());
 
   const saveInput = {
-    cheat: z.record(z.string(), z.unknown()).describe('A value or patch cheat (Starlight format, without id). Value cheats need verify.range.'),
+    cheat: AgentCheatDraftSchema.describe('A value or patch cheat (Starlight format, without id). Value cheats need verify.range.'),
     replaces: z.string().optional().describe('The id of a cheat in the library to repair in place.'),
     category: z.string().max(40).optional().describe('The category to file it under; default "My cheats".'),
   };
@@ -51,7 +52,8 @@ export function libraryTools(deps: LibraryToolsDeps): ToolDef<any>[] { // eslint
     title: 'Save a cheat',
     description:
       "Saves a cheat to the player's library for this game, after checking it against the running game. " +
-      'Test it first with test_cheat. Use replaces to repair a cheat that stopped working.',
+      'Test it first with test_cheat. Use replaces to repair a cheat that stopped working. ' +
+      CHEAT_DRAFT_HELP,
     tier: 'attached', readOnly: false, input: saveInput,
     async run(args, ctx) {
       const checked = validateAgentCheat(args.cheat);

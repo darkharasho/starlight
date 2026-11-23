@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { validateAgentCheat } from '../src/agent-cheat.js';
+import { AgentCheatDraftSchema, validateAgentCheat } from '../src/agent-cheat.js';
+import * as index from '../src/index.js';
 
 const value = (over: Record<string, unknown> = {}) => ({
   name: 'Gold', type: 'freeze', valueType: 'int32', value: 999,
@@ -16,6 +17,18 @@ const patch = (over: Record<string, unknown> = {}) => ({
 const errs = (r: ReturnType<typeof validateAgentCheat>) => (r.ok ? [] : r.errors);
 
 describe('validateAgentCheat', () => {
+  it('labels issues on the cheat itself "cheat: …", not ": …"', () => {
+    const r = validateAgentCheat('not a cheat');
+    expect(errs(r).length).toBeGreaterThan(0);
+    for (const e of errs(r)) expect(e).toMatch(/^cheat: /);
+    expect(errs(validateAgentCheat({ name: 'x', type: 'nope' }))[0]).toMatch(/^type: /);
+  });
+  it('exports the draft schema, which parses both kinds of draft', () => {
+    expect(index.AgentCheatDraftSchema).toBe(AgentCheatDraftSchema);
+    expect(AgentCheatDraftSchema.safeParse(value()).success).toBe(true);
+    expect(AgentCheatDraftSchema.safeParse(patch()).success).toBe(true);
+    expect(AgentCheatDraftSchema.safeParse({ ...value(), type: 'nope' }).success).toBe(false);
+  });
   it('accepts a pointer value cheat with a range', () => {
     expect(validateAgentCheat(value()).ok).toBe(true);
   });
