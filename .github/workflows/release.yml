@@ -1,0 +1,117 @@
+name: Release
+
+# Push a v* tag (scripts/release.mjs does it) to build the desktop app and
+# publish it as a GitHub release. See docs/RELEASING.md.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # electron-builder names the release after apps/desktop's version, so a
+      # tag that doesn't match would upload into a different release.
+      - name: Check the tag matches the app version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="$(jq -r .version apps/desktop/package.json)"
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Tag $tag doesn't match apps/desktop/package.json version $version (expected v$version)."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - name: Lower ptrace scope (so tests can attach)
+        run: echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+
+      - run: pnpm install --frozen-lockfile
+      - run: make -C packages/engine/test-target
+      - run: pnpm -r build
+      - run: pnpm -r lint
+      - run: pnpm -r test
+
+  # One draft for every build to upload into. electron-builder
+  # (releaseType: draft) uploads into the existing draft for the tag.
+  draft:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --draft --title "Starlight $tag" --notes ""
+
+  # Linux only for now: the CE runtime Starlight installs is the Linux build
+  # (Windows CE runs under Proton), so a Windows build couldn't cheat yet.
+  build-linux:
+    needs: [draft]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          # @electron/rebuild 4 needs Node >= 22.12.
+          node-version: 22
+          cache: pnpm
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - run: pnpm install --frozen-lockfile
+      # The desktop main process bundles the workspace packages' dist output.
+      - run: pnpm -r --filter '!@starlight/desktop' build
+
+      - name: Build the app
+        working-directory: apps/desktop
+        run: pnpm build
+
+      # better-sqlite3 has to match Electron's ABI. frida and uiohook-napi are
+      # N-API, so they're packaged as installed.
+      - name: Rebuild native modules for Electron
+        working-directory: apps/desktop
+        run: pnpm rebuild:native
+
+      - name: Package and upload the AppImage
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm exec electron-builder --linux AppImage --publish always
+
+  # Publishes only once every build has uploaded; a failed build leaves the
+  # release as a draft.
+  publish:
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write release notes and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          prev="$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          args=(-f tag_name="$tag")
+          [ -n "$prev" ] && args+=(-f previous_tag_name="$prev")
+          gh api "repos/$GH_REPO/releases/generate-notes" "${args[@]}" --jq .body > "$RUNNER_TEMP/notes.md"
+          gh release edit "$tag" --notes-file "$RUNNER_TEMP/notes.md" --draft=false --latest
