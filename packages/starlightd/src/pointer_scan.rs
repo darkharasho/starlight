@@ -82,7 +82,8 @@ fn module_ranges(t: &Target, only: &Option<Vec<String>>) -> Result<Vec<ModuleRan
 }
 
 /// Scan `t` for paths to `target`.
-pub fn scan(t: &Target, target: u64, opts: &Opts) -> Result<Vec<Path>, RpcError> {
+/// The second value is true if the frontier cap or `max_results` cut the results short.
+pub fn scan(t: &Target, target: u64, opts: &Opts) -> Result<(Vec<Path>, bool), RpcError> {
     if t.exited() {
         return Err(exited(t));
     }
@@ -92,7 +93,7 @@ pub fn scan(t: &Target, target: u64, opts: &Opts) -> Result<Vec<Path>, RpcError>
     })?;
     let ranges = regions::scannable(&maps);
     let mods = module_ranges(t, &opts.modules)?;
-    let paths = scan_with(&ranges, &mods, |a, n| mem::read_bytes(t, a, n).ok(), target, opts)?;
+    let paths = scan_with(&ranges, &mods, |a, n| mem::read_bytes(t, a, n).ok(), target, opts, INDEX_CAP)?;
     if t.exited() {
         return Err(exited(t));
     }
@@ -107,10 +108,11 @@ pub fn scan_with(
     read: impl Fn(u64, usize) -> Option<Vec<u8>>,
     target: u64,
     opts: &Opts,
-) -> Result<Vec<Path>, RpcError> {
+    index_cap: usize,
+) -> Result<(Vec<Path>, bool), RpcError> {
     let mut ranges = ranges.to_vec();
     ranges.sort_unstable();
-    let index = build_index(&ranges, &read)?;
+    let index = build_index(&ranges, &read, index_cap)?;
     Ok(walk(&index, mods, target, opts))
 }
 
@@ -120,7 +122,7 @@ fn in_ranges(ranges: &[(u64, u64)], v: u64) -> bool {
 }
 
 /// `(value, location)` of every aligned qword whose value points into `ranges`, sorted.
-fn build_index(ranges: &[(u64, u64)], read: &impl Fn(u64, usize) -> Option<Vec<u8>>) -> Result<Vec<(u64, u64)>, RpcError> {
+fn build_index(ranges: &[(u64, u64)], read: &impl Fn(u64, usize) -> Option<Vec<u8>>, cap: usize) -> Result<Vec<(u64, u64)>, RpcError> {
     let (Some(lo), Some(hi)) = (ranges.first().map(|r| r.0), ranges.iter().map(|r| r.1).max()) else {
         return Ok(vec![]);
     };
@@ -129,7 +131,7 @@ fn build_index(ranges: &[(u64, u64)], read: &impl Fn(u64, usize) -> Option<Vec<u
         for (i, q) in buf.chunks_exact(8).enumerate() {
             let v = u64::from_le_bytes(q.try_into().unwrap());
             if v >= lo && v < hi && in_ranges(ranges, v) {
-                if index.len() >= INDEX_CAP {
+                if index.len() >= cap {
                     return Err(RpcError::invalid_params("too much memory to pointer scan: the process has too many pointers; try a smaller max_depth or a more specific target"));
                 }
                 index.push((v, base + i as u64 * 8));
@@ -168,12 +170,13 @@ fn build_index(ranges: &[(u64, u64)], read: &impl Fn(u64, usize) -> Option<Vec<u
     Ok(index)
 }
 
-fn walk(index: &[(u64, u64)], mods: &[ModuleRange], target: u64, opts: &Opts) -> Vec<Path> {
+fn walk(index: &[(u64, u64)], mods: &[ModuleRange], target: u64, opts: &Opts) -> (Vec<Path>, bool) {
     let module_of = |loc: u64| -> Option<&ModuleRange> {
         let i = mods.partition_point(|m| m.base <= loc);
         (i > 0 && loc < mods[i - 1].end).then(|| &mods[i - 1])
     };
     let mut results: Vec<Path> = vec![];
+    let mut truncated = false;
     let mut visited: HashSet<u64> = HashSet::from([target]);
     // `(address to find pointers to, offsets of the chain from here to the target)`
     let mut frontier: Vec<(u64, Vec<u64>)> = vec![(target, vec![])];
@@ -183,15 +186,26 @@ fn walk(index: &[(u64, u64)], mods: &[ModuleRange], target: u64, opts: &Opts) ->
             let lo = addr.saturating_sub(opts.max_offset);
             let from = index.partition_point(|e| e.0 < lo);
             for &(value, loc) in index[from..].iter().take_while(|e| e.0 <= *addr) {
+                let hit = module_of(loc);
+                // Decide before allocating the chain: most index hits are neither.
+                if hit.is_none() && (depth >= opts.max_depth || visited.contains(&loc)) {
+                    continue;
+                }
+                if hit.is_none() && next.len() >= FRONTIER_CAP {
+                    truncated = true;
+                    continue;
+                }
                 let mut offsets = Vec::with_capacity(chain.len() + 1);
                 offsets.push(addr - value);
                 offsets.extend_from_slice(chain);
-                if let Some(m) = module_of(loc) {
+                if let Some(m) = hit {
                     results.push(Path { module: m.name.clone(), base: loc - m.base, offsets });
                     if results.len() >= opts.max_results {
+                        truncated = true;
                         break 'levels;
                     }
-                } else if depth < opts.max_depth && next.len() < FRONTIER_CAP && visited.insert(loc) {
+                } else {
+                    visited.insert(loc);
                     next.push((loc, offsets));
                 }
             }
@@ -205,13 +219,14 @@ fn walk(index: &[(u64, u64)], mods: &[ModuleRange], target: u64, opts: &Opts) ->
         let key = |p: &Path| (p.offsets.len(), p.offsets.iter().fold(0u64, |s, o| s.saturating_add(*o)));
         key(a).cmp(&key(b)).then_with(|| (&a.module, a.base, &a.offsets).cmp(&(&b.module, b.base, &b.offsets)))
     });
-    results
+    (results, truncated)
 }
 
 struct Session {
     paths: Mutex<Vec<Path>>,
-    /// The address the scan was started for; `rescan` without an address uses it again.
-    address: u64,
+    /// The last address the paths were known to resolve to (the scan's target, then the latest
+    /// successful rescan's); `rescan` without an address uses it.
+    address: AtomicU64,
     token: AtomicU64,
 }
 
@@ -227,11 +242,11 @@ impl PointerScans {
         PointerScans { owner, inner: Arc::new(Mutex::new((0, HashMap::new()))) }
     }
 
-    /// Scan `t` for paths to `address` and keep them as a session. Returns `(id, count)`.
-    pub fn start(&self, t: &Target, address: u64, opts: &Opts) -> Result<(u32, u64), RpcError> {
-        let paths = scan(t, address, opts)?;
+    /// Scan `t` for paths to `address` and keep them as a session. Returns `(id, count, truncated)`.
+    pub fn start(&self, t: &Target, address: u64, opts: &Opts) -> Result<(u32, u64, bool), RpcError> {
+        let (paths, truncated) = scan(t, address, opts)?;
         let count = paths.len() as u64;
-        let session = Arc::new(Session { paths: Mutex::new(paths), address, token: AtomicU64::new(0) });
+        let session = Arc::new(Session { paths: Mutex::new(paths), address: AtomicU64::new(address), token: AtomicU64::new(0) });
         let id = {
             let mut g = self.inner.lock().unwrap();
             g.0 += 1;
@@ -244,7 +259,7 @@ impl PointerScans {
             inner.lock().unwrap().1.remove(&id);
         }));
         session.token.store(token, Ordering::Relaxed);
-        Ok((id, count))
+        Ok((id, count, truncated))
     }
 
     fn get(&self, id: u32) -> Result<Arc<Session>, RpcError> {
@@ -263,7 +278,7 @@ impl PointerScans {
     /// in `t`. Returns the new count.
     pub fn rescan(&self, id: u32, t: &Target, address: Option<u64>) -> Result<u64, RpcError> {
         let s = self.get(id)?;
-        let want = address.unwrap_or(s.address);
+        let want = address.unwrap_or_else(|| s.address.load(Ordering::Relaxed));
         if t.exited() {
             return Err(exited(t));
         }
@@ -281,6 +296,7 @@ impl PointerScans {
         }
         let count = kept.len() as u64;
         *s.paths.lock().unwrap() = kept;
+        s.address.store(want, Ordering::Relaxed);
         Ok(count)
     }
 
@@ -313,7 +329,7 @@ mod tests {
     }
 
     fn run(words: &[(u64, u64)], target: u64, opts: Opts) -> Vec<Path> {
-        scan_with(&[(0x40_0000, 0x40_1000), (0x1_0000, 0x2_0000)], &mods(), mem(words), target, &opts).unwrap()
+        scan_with(&[(0x40_0000, 0x40_1000), (0x1_0000, 0x2_0000)], &mods(), mem(words), target, &opts, INDEX_CAP).unwrap().0
     }
 
     #[test]
@@ -364,8 +380,26 @@ mod tests {
         let words = [(0x40_0000u64, 0x1_0000u64)];
         let m = mem(&words);
         // Reads that span more than a page fail; single pages succeed.
-        let p = scan_with(&[(0x40_0000, 0x40_1000), (0x1_0000, 0x1_4000)], &mods(), |a, n| if n > 4096 { None } else { m(a, n) }, 0x1_0008, &Opts::default()).unwrap();
+        let p = scan_with(&[(0x40_0000, 0x40_1000), (0x1_0000, 0x1_4000)], &mods(), |a, n| if n > 4096 { None } else { m(a, n) }, 0x1_0008, &Opts::default(), INDEX_CAP).unwrap().0;
         assert_eq!(p.len(), 1);
+    }
+
+    #[test]
+    fn over_the_index_cap_is_too_much_memory() {
+        let words = [(0x40_0000, 0x1_0000), (0x40_0008, 0x1_0008), (0x40_0010, 0x1_0010)];
+        let e = scan_with(&[(0x40_0000, 0x40_1000), (0x1_0000, 0x2_0000)], &mods(), mem(&words), 0x1_0000, &Opts::default(), 2).unwrap_err();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("too much memory"), "{}", e.message);
+    }
+
+    #[test]
+    fn truncated_reports_a_max_results_cut() {
+        let words = [(0x40_0000, 0x1_0000), (0x40_0008, 0x1_0008)];
+        let go = |max_results| scan_with(&[(0x40_0000, 0x40_1000), (0x1_0000, 0x2_0000)], &mods(), mem(&words), 0x1_0010, &Opts { max_results, ..Opts::default() }, INDEX_CAP).unwrap();
+        let (p, cut) = go(1);
+        assert_eq!((p.len(), cut), (1, true));
+        let (p, cut) = go(10);
+        assert_eq!((p.len(), cut), (2, false));
     }
 
     #[test]

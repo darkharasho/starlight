@@ -101,6 +101,40 @@ fn rescan_without_address_reuses_the_original_target() {
 }
 
 #[test]
+fn bare_rescan_after_an_explicit_one_uses_the_last_good_address() {
+    let t = Target::spawn(&["--heap-chain", "--decoy"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let hv = t.addr("heap_value");
+    let r = c.call_timeout("pointer_scan", json!({"handle": h, "address": hv}), std::time::Duration::from_secs(60)).unwrap();
+    assert_eq!(r["truncated"], false);
+    let count = r["count"].as_u64().unwrap();
+    // Explicit rescan with a new (valid) address: the same paths resolve to the same address.
+    let a = c.call_timeout("pointer_rescan", json!({"id": r["id"], "handle": h, "address": hv}), std::time::Duration::from_secs(60)).unwrap();
+    assert_eq!(a["count"].as_u64().unwrap(), count);
+    let b = c.call_timeout("pointer_rescan", json!({"id": r["id"], "handle": h}), std::time::Duration::from_secs(60)).unwrap();
+    assert_eq!(b["count"].as_u64().unwrap(), count);
+}
+
+#[test]
+fn bare_rescan_after_restart_keeps_the_paths() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let id = {
+        let t = Target::spawn(&["--heap-chain"]);
+        let h = attach(&mut c, &t);
+        c.call_timeout("pointer_scan", json!({"handle": h, "address": t.addr("heap_value")}), std::time::Duration::from_secs(60)).unwrap()["id"].clone()
+    };
+    let t2 = Target::spawn(&["--heap-chain"]);
+    let h2 = attach(&mut c, &t2);
+    let first = c.call_timeout("pointer_rescan", json!({"id": id, "handle": h2, "address": t2.addr("heap_value")}), std::time::Duration::from_secs(60)).unwrap();
+    assert!(first["count"].as_u64().unwrap() >= 1);
+    let bare = c.call_timeout("pointer_rescan", json!({"id": id, "handle": h2}), std::time::Duration::from_secs(60)).unwrap();
+    assert_eq!(bare["count"], first["count"]);
+}
+
+#[test]
 fn depth_limit_is_respected() {
     let t = Target::spawn(&["--heap-chain", "--decoy"]);
     let d = Daemon::start();

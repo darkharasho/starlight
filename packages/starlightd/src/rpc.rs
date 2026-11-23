@@ -423,8 +423,8 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             let t = handles.get(param_handle(params)?)?;
             let address = param_addr(params, "address")?;
             let opts = pointer_opts(params)?;
-            let (id, count) = state.pointer_scans.start(&t, address, &opts)?;
-            Ok(json!({ "id": id, "count": count }))
+            let (id, count, truncated) = state.pointer_scans.start(&t, address, &opts)?;
+            Ok(json!({ "id": id, "count": count, "truncated": truncated }))
         }
         "pointer_results" => {
             let id = param_id(params)?;
