@@ -645,13 +645,13 @@ fn speed_targets(params: &Value) -> Result<Option<Vec<speed::targets::HookTarget
                 // Needs the original and GOT slots that only discovery finds.
                 Some(speed::Kind::GettimeofdayGot) | None => {
                     return Err(RpcError::invalid_params(
-                        "kind must be \"qpc\", \"tick32\", \"tick64\", \"clock_gettime\" or \"gettimeofday\"",
+                        "kind must be \"qpc\", \"nt_qpc\", \"tick32\", \"tick64\", \"clock_gettime\" or \"gettimeofday\"",
                     ))
                 }
                 Some(k) => k,
             };
             let slot = speed::targets::default_slot(kind, &name);
-            Ok(speed::targets::HookTarget { name, address, abi, kind, slot, original: None, got_slots: vec![] })
+            Ok(speed::targets::HookTarget { name, address, abi, kind, slot, original: None, got_slots: vec![], skipped: None })
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Some)

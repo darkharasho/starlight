@@ -20,7 +20,7 @@ use templates as tpl;
 
 pub const STATE_PAGE_SIZE: u64 = 0x2000;
 pub const MAGIC: [u8; 8] = *b"STLSPD01";
-/// Accepted speeds (D17). 1.0 removes the hooks.
+/// Accepted speeds (D17). 1.0 keeps the hooks (a speed like any other).
 pub const MIN_SPEED: f64 = 0.1;
 pub const MAX_SPEED: f64 = 10.0;
 const PAGE: u64 = 0x1000;
@@ -29,13 +29,14 @@ const RWX: i32 = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
 /// page the kernel merged with a neighbouring rwx mapping is still found.
 const ORPHAN_SCAN_MAX: u64 = 1 << 20;
 
-/// What a hooked function returns, and so how its hook converts time. The Win64 kinds are
-/// discovered by Proton targets (Task 12); until then only debug `targets` name them.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
+/// What a hooked function returns, and so how its hook converts time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// `QueryPerformanceCounter`/`NtQueryPerformanceCounter`: `i64` counter through a pointer.
+    /// `QueryPerformanceCounter`/`RtlQueryPerformanceCounter`: `i64` counter through a pointer;
+    /// returns a BOOL (nonzero = success).
     Qpc,
+    /// `NtQueryPerformanceCounter`: as `Qpc`, but returns an NTSTATUS (0 = success).
+    NtQpc,
     /// `GetTickCount`/`timeGetTime`: `u32` milliseconds in `eax`.
     Tick32,
     /// `GetTickCount64`: `u64` milliseconds in `rax`.
@@ -54,6 +55,7 @@ impl Kind {
     pub fn parse(s: &str) -> Option<Kind> {
         Some(match s {
             "qpc" => Kind::Qpc,
+            "nt_qpc" => Kind::NtQpc,
             "tick32" => Kind::Tick32,
             "tick64" => Kind::Tick64,
             "clock_gettime" => Kind::ClockGettime,
@@ -64,7 +66,6 @@ impl Kind {
     }
 }
 
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Abi {
     Win64,
@@ -206,11 +207,15 @@ impl Speeds {
         e.gen = write_speed(t, &tracer, state, speed, e.gen)?;
         let targets = match targets {
             Some(v) => v,
-            None => targets::native(t, &modules::list(t)?),
+            None => targets::discover(t, &modules::list(t)?),
         };
         let mut hooks = vec![];
         let mut hard_error = None;
         for tg in &targets {
+            if let Some(reason) = &tg.skipped {
+                hooks.push(HookReport { name: tg.name.clone(), address: tg.address, skipped: Some(reason.clone()) });
+                continue;
+            }
             let skipped = match self.install(handle, t, &tracer, state, &mut e, tg) {
                 Ok(()) => None,
                 Err(HookError::Skipped(reason)) => Some(reason),
@@ -228,7 +233,7 @@ impl Speeds {
                 return Err(err);
             }
             let why = if hooks.is_empty() {
-                "no clock_gettime or gettimeofday found".to_string()
+                "no timing functions found".to_string()
             } else {
                 hooks.iter().map(|h| format!("{}: {}", h.name, h.skipped.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("; ")
             };
@@ -317,11 +322,16 @@ impl Speeds {
         let body = |tramp| tpl::hook_source(tg.kind, tg.abi, state, tg.slot, tramp);
         match hook::install(t, tracer, &self.patches, handle, tg.address, &body) {
             Ok(h) => {
+                // Tracked first: a live hook must always be reverted at session end.
+                e.installed.push(Installed { patch_id: h.patch_id, addr: tg.address });
                 if h.displaced != original {
                     *e.record.last_mut().unwrap() = (tg.address, h.displaced);
-                    write_record(t, state, &e.record)?;
+                    // The hook is in and tracked; only a SIGKILLed daemon's successor would miss
+                    // the corrected entry, so this is reported rather than failing the hook.
+                    if let Err(err) = write_record(t, state, &e.record) {
+                        eprintln!("starlightd: recovery record for the hook at {:#x} not updated: {}", tg.address, err.message);
+                    }
                 }
-                e.installed.push(Installed { patch_id: h.patch_id, addr: tg.address });
                 Ok(())
             }
             // Refused before anything was written.
@@ -511,8 +521,9 @@ fn parse_record(rec: &[u8]) -> Option<Vec<(u64, Vec<u8>)>> {
 
 /// Whether the bytes `now` at `addr` look like a change of ours to `original`, so restoring them
 /// is safe: an entry jump (`E9 rel32`, padded with NOPs) into an rwx anonymous mapping (a hook
-/// page), a jump cut short by a torn write (its first bytes written, the rest still original),
-/// or a GOT slot pointing into an rwx anonymous mapping.
+/// page), a jump cut short by a torn write (its first 1–4 bytes written, the rest still
+/// original; a whole `E9 rel32` that doesn't reach a hook page is someone else's), or a GOT slot
+/// pointing into an rwx anonymous mapping.
 fn ours(addr: u64, original: &[u8], now: &[u8], hook_pages: &[(u64, u64)]) -> bool {
     let in_hook_page = |a: u64| hook_pages.iter().any(|&(s, e)| a >= s && a < e);
     if now.len() == 8 && in_hook_page(u64::from_le_bytes(now.try_into().unwrap())) {
@@ -529,7 +540,7 @@ fn ours(addr: u64, original: &[u8], now: &[u8], hook_pages: &[(u64, u64)]) -> bo
             return true;
         }
     }
-    (1..now.len()).any(|k| now[k..] == original[k..])
+    (1..now.len().min(5)).any(|k| now[k..] == original[k..])
 }
 
 /// D12: find state pages with the magic that this daemon isn't using (R6) and restore their
@@ -589,6 +600,7 @@ mod tests {
     fn kind_and_abi_names() {
         for (s, k) in [
             ("qpc", Kind::Qpc),
+            ("nt_qpc", Kind::NtQpc),
             ("tick32", Kind::Tick32),
             ("tick64", Kind::Tick64),
             ("clock_gettime", Kind::ClockGettime),
@@ -608,7 +620,7 @@ mod tests {
         assert_eq!(img.len() as u64, STATE_PAGE_SIZE);
         assert_eq!(&img[..8], b"STLSPD01");
         assert!(img[8..tpl::OFF_CODE as usize].iter().all(|&b| b == 0), "state starts zeroed");
-        for off in [tpl::OFF_SCALE, tpl::OFF_GUARD_ENTER, tpl::OFF_GUARD_LEAVE] {
+        for off in [tpl::OFF_SCALE, tpl::OFF_GUARD_ENTER, tpl::OFF_GUARD_LEAVE, tpl::OFF_SCALE32] {
             assert_ne!(img[off as usize], 0, "no routine at {off:#x}");
         }
     }
@@ -634,6 +646,10 @@ mod tests {
         torn[..3].copy_from_slice(&jmp(0x7f00_0000_0000)[..3]);
         assert!(ours(func, &original, &torn, &pages));
         assert!(!ours(func, &original, &[0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x05], &pages), "someone else's code");
+        // A whole jump to somewhere else, with the original after it, is not a torn write of ours.
+        let mut elsewhere = original.to_vec();
+        elsewhere[..5].copy_from_slice(&jmp(0x7f00_2000_0000)[..5]);
+        assert!(!ours(func, &original, &elsewhere, &pages), "a full jump elsewhere");
         // GOT slots: a pointer into a hook page, or not.
         let slot_orig = 0x7ffd_1234_5000u64.to_le_bytes();
         assert!(ours(0x404028, &slot_orig, &0x7f00_0000_0010u64.to_le_bytes(), &pages));

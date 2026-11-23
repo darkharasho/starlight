@@ -413,7 +413,7 @@ pub fn got_slots(t: &Target, m: &Module, name: &str) -> Result<Vec<u64>, RpcErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn module(name: &str, base: u64, size: u64, kind: Kind) -> Module {
@@ -421,7 +421,7 @@ mod tests {
     }
 
     /// Reader over several `(base, bytes)` images.
-    fn reader(images: Vec<(u64, Vec<u8>)>) -> impl Fn(u64, usize) -> Option<Vec<u8>> {
+    pub(crate) fn reader(images: Vec<(u64, Vec<u8>)>) -> impl Fn(u64, usize) -> Option<Vec<u8>> {
         move |addr, len| {
             images.iter().find_map(|(base, buf)| {
                 let off = addr.checked_sub(*base)? as usize;
@@ -430,13 +430,13 @@ mod tests {
         }
     }
 
-    fn put(buf: &mut [u8], off: usize, bytes: &[u8]) {
+    pub(crate) fn put(buf: &mut [u8], off: usize, bytes: &[u8]) {
         buf[off..off + bytes.len()].copy_from_slice(bytes);
     }
 
     /// PE32+ image (RVA == offset) exporting `(name, rva)` entries; an rva inside the export
     /// directory (0x200..0x400) is written as a forwarder string at that rva.
-    fn pe(exports: &[(&str, u32)], forwarders: &[(u32, &str)]) -> Vec<u8> {
+    pub(crate) fn pe(exports: &[(&str, u32)], forwarders: &[(u32, &str)]) -> Vec<u8> {
         let mut b = vec![0u8; 0x1000];
         put(&mut b, 0, b"MZ");
         put(&mut b, 0x3c, &0x40u32.to_le_bytes());

@@ -13,6 +13,9 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <link.h>
+#include <semaphore.h>
+#include <sys/syscall.h>
+#include <asm/prctl.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -177,6 +180,98 @@ static void* clock_staller(void* arg) {
     return NULL;
 }
 
+/* --win64-clocks: a thread with a fake TEB in GS (as Wine sets up its threads: gs:[0x30] is the
+ * TEB's own address) calls Win64-ABI stand-ins for the Windows timing functions every 20 ms and
+ * stores what they return (game speed on Proton). Counters tick at 10 MHz, tick counts in ms. */
+volatile int64_t   g_w_qpc      = 0;
+volatile int64_t   g_w_tick32   = 0;
+volatile int64_t   g_w_tick64   = 0;
+volatile int64_t   g_w_tgt      = 0;
+volatile int64_t   g_w_ntqpc    = 0;
+volatile int64_t   g_w_qpc_fail = 0;
+
+static int64_t mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/* QueryPerformanceCounter: BOOL f(LARGE_INTEGER*). */
+__attribute__((ms_abi, noinline)) int fake_qpc(int64_t* counter) {
+    *counter = mono_ns() / 100;
+    return 1;
+}
+
+/* GetTickCount: DWORD f(void). */
+__attribute__((ms_abi, noinline)) uint32_t fake_tick32(void) {
+    return (uint32_t)(mono_ns() / 1000000);
+}
+
+/* GetTickCount64: ULONGLONG f(void). */
+__attribute__((ms_abi, noinline)) uint64_t fake_tick64(void) {
+    return (uint64_t)(mono_ns() / 1000000);
+}
+
+/* Wine's timeGetTime calls QueryPerformanceCounter through its import table: an indirect call
+ * the compiler can't inline or see through. */
+typedef int (__attribute__((ms_abi)) *qpc_fn)(int64_t*);
+static qpc_fn volatile s_qpc_ptr = fake_qpc;
+
+__attribute__((ms_abi, noinline)) uint32_t fake_time_get_time(void) {
+    int64_t counter = 0;
+    s_qpc_ptr(&counter);
+    return (uint32_t)(counter / 10000);
+}
+
+/* NtQueryPerformanceCounter: NTSTATUS f(LARGE_INTEGER*, LARGE_INTEGER*); 0 is success. */
+__attribute__((ms_abi, noinline)) int32_t fake_nt_qpc(int64_t* counter) {
+    *counter = mono_ns() / 100;
+    return 0;
+}
+
+/* A QueryPerformanceCounter that reports failure (FALSE) yet leaves a value behind: a hook must
+ * not scale what a failed call returned. */
+__attribute__((ms_abi, noinline)) int fake_qpc_fail(int64_t* counter) {
+    *counter = mono_ns() / 100;
+    return 0;
+}
+
+static uint8_t s_teb[0x100] __attribute__((aligned(64)));
+static sem_t   s_win64_ready;
+
+static void* win64_clocks_loop(void* arg) {
+    (void)arg;
+    /* glibc keeps its thread pointer in FS; GS is free on x86-64 Linux. */
+    *(void**)(s_teb + 0x30) = s_teb;
+    if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)s_teb) != 0) { perror("arch_prctl"); exit(1); }
+    printf("addr fake_qpc=%p\n",           (void*)&fake_qpc);
+    printf("addr fake_tick32=%p\n",        (void*)&fake_tick32);
+    printf("addr fake_tick64=%p\n",        (void*)&fake_tick64);
+    printf("addr fake_time_get_time=%p\n", (void*)&fake_time_get_time);
+    printf("addr fake_nt_qpc=%p\n",        (void*)&fake_nt_qpc);
+    printf("addr fake_qpc_fail=%p\n",      (void*)&fake_qpc_fail);
+    printf("addr g_w_qpc=%p\n",            (void*)&g_w_qpc);
+    printf("addr g_w_tick32=%p\n",         (void*)&g_w_tick32);
+    printf("addr g_w_tick64=%p\n",         (void*)&g_w_tick64);
+    printf("addr g_w_tgt=%p\n",            (void*)&g_w_tgt);
+    printf("addr g_w_ntqpc=%p\n",          (void*)&g_w_ntqpc);
+    printf("addr g_w_qpc_fail=%p\n",       (void*)&g_w_qpc_fail);
+    fflush(stdout);
+    sem_post(&s_win64_ready);
+    for (;;) {
+        int64_t c = 0;
+        if (fake_qpc(&c)) g_w_qpc = c;
+        g_w_tick32 = fake_tick32();
+        g_w_tick64 = (int64_t)fake_tick64();
+        g_w_tgt = fake_time_get_time();
+        if (fake_nt_qpc(&c) == 0) g_w_ntqpc = c;
+        fake_qpc_fail(&c);
+        g_w_qpc_fail = c;
+        usleep(20 * 1000);
+    }
+    return NULL;
+}
+
 /* The GOT slot this executable calls gettimeofday through (its R_X86_64_JUMP_SLOT), or NULL. */
 static void* got_slot_of(const char* name) {
     ElfW(Rela)* rel = NULL;
@@ -245,6 +340,13 @@ int main(int argc, char** argv) {
             if (pthread_create(&stalled, NULL, clock_spin, NULL) != 0 ||
                 pthread_create(&other, NULL, clock_other, NULL) != 0 ||
                 pthread_create(&staller, NULL, clock_staller, &stalled) != 0) { perror("--clock-stall"); return 1; }
+        }
+        if (strcmp(argv[i], "--win64-clocks") == 0) {
+            /* The thread prints its part of the listing; wait for it so the listing stays whole. */
+            pthread_t th;
+            sem_init(&s_win64_ready, 0, 0);
+            if (pthread_create(&th, NULL, win64_clocks_loop, NULL) != 0) { perror("--win64-clocks"); return 1; }
+            sem_wait(&s_win64_ready);
         }
         if (strcmp(argv[i], "--spin") == 0) {
             pthread_t th;

@@ -1,4 +1,5 @@
-//! Game speed on native games (Task 11). Every test launches its own C test target and daemon.
+//! Game speed on native games (Task 11) and with Win64 hooks (Task 12; the target's
+//! `--win64-clocks` thread stands in for Wine's timing functions). Every test launches its own C test target and daemon.
 //!
 //! These tests are timing-sensitive: each measures how fast the target's clock values advance
 //! over one real second. The measuring tests hold `SERIAL` (ruling R15) so a plain
@@ -429,4 +430,61 @@ fn orphaned_hooks_are_recovered() {
     assert_rate(t.pid, mono, 1e9, 0.9, 1.1, "CLOCK_MONOTONIC after recovery");
     assert_rate(t.pid, hex(&t.addr("g_tod_us")), 1e6, 0.9, 1.1, "gettimeofday after recovery");
     assert_eq!(unsafe { libc::kill(t.pid, 0) }, 0, "target died");
+}
+
+/// A debug `targets` entry for one of the target's Win64 stand-ins.
+fn win64(t: &Target, name: &str, kind: &str) -> Value {
+    json!({"name": name, "address": t.addr(name), "abi": "win64", "kind": kind})
+}
+
+#[test]
+fn win64_templates_scale_qpc_and_ticks() {
+    let _serial = serial();
+    let t = Target::spawn(&["--win64-clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let targets = json!([win64(&t, "fake_qpc", "qpc"), win64(&t, "fake_tick32", "tick32"), win64(&t, "fake_tick64", "tick64")]);
+    let r = speed_set_targets(&mut c, &h, 2.0, targets).unwrap();
+    for name in ["fake_qpc", "fake_tick32", "fake_tick64"] {
+        assert_eq!(hook_status(&r, name).as_deref(), Some("hooked"), "{r}");
+    }
+    settle();
+    assert_rate(t.pid, hex(&t.addr("g_w_qpc")), 1e7, 1.8, 2.2, "QPC (Win64) at 2x");
+    assert_rate(t.pid, hex(&t.addr("g_w_tick32")), 1e3, 1.8, 2.2, "GetTickCount (Win64) at 2x");
+    assert_rate(t.pid, hex(&t.addr("g_w_tick64")), 1e3, 1.8, 2.2, "GetTickCount64 (Win64) at 2x");
+}
+
+#[test]
+fn nested_win64_calls_scale_once() {
+    let _serial = serial();
+    let t = Target::spawn(&["--win64-clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    // fake_time_get_time calls fake_qpc through a pointer: both hooked, the time is scaled once.
+    let targets = json!([win64(&t, "fake_qpc", "qpc"), win64(&t, "fake_time_get_time", "tick32")]);
+    let r = speed_set_targets(&mut c, &h, 2.0, targets).unwrap();
+    assert_eq!(hook_status(&r, "fake_time_get_time").as_deref(), Some("hooked"), "{r}");
+    settle();
+    assert_rate(t.pid, hex(&t.addr("g_w_tgt")), 1e3, 1.8, 2.2, "timeGetTime (nested QPC) at 2x");
+    assert_rate(t.pid, hex(&t.addr("g_w_qpc")), 1e7, 1.8, 2.2, "QPC (Win64) at 2x");
+}
+
+#[test]
+fn qpc_success_follows_each_functions_return_convention() {
+    // NtQueryPerformanceCounter returns an NTSTATUS (0 = success); QueryPerformanceCounter a BOOL
+    // (0 = failure). Only successful calls are scaled.
+    let _serial = serial();
+    let t = Target::spawn(&["--win64-clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let targets = json!([win64(&t, "fake_nt_qpc", "nt_qpc"), win64(&t, "fake_qpc_fail", "qpc")]);
+    let r = speed_set_targets(&mut c, &h, 2.0, targets).unwrap();
+    assert_eq!(hook_status(&r, "fake_nt_qpc").as_deref(), Some("hooked"), "{r}");
+    assert_eq!(hook_status(&r, "fake_qpc_fail").as_deref(), Some("hooked"), "{r}");
+    settle();
+    assert_rate(t.pid, hex(&t.addr("g_w_ntqpc")), 1e7, 1.8, 2.2, "NtQueryPerformanceCounter (STATUS_SUCCESS) at 2x");
+    assert_rate(t.pid, hex(&t.addr("g_w_qpc_fail")), 1e7, 0.9, 1.1, "a failed QueryPerformanceCounter at 2x");
 }

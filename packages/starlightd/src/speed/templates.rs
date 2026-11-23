@@ -19,8 +19,19 @@
 //!
 //! The spin is bounded (`SPIN_LIMIT` `pause`s): a lock holder can be suspended indefinitely (a
 //! GC's stop-the-world signal, Wine's `SuspendThread`, or a `fork` child that inherited a held
-//! lock). On timeout `guard_enter` reports "not entered" and `scale` returns the real time, so the
-//! call passes through unscaled instead of hanging the game.
+//! lock). On timeout `guard_enter` reports "not entered", so the call passes through unscaled
+//! instead of hanging the game, and `scale` reads its slot without the lock.
+//!
+//! # Lock-free slot reads
+//!
+//! Every write to a slot happens under the lock, bracketed by two increments of the slot's
+//! sequence number (odd while the write is in progress), as in a seqlock. When `scale` can't take
+//! the lock it reads the sequence, the slot, and the sequence again, and returns the game time
+//! from the slot if the sequence was even and unchanged. x86 keeps loads in order with loads and
+//! stores in order with stores, so such a read is consistent. A torn read is still possible in
+//! one case: a holder suspended *in the middle* of a slot write leaves the sequence odd, and the
+//! read then falls back to the real time (one unscaled reading). That needs the holder to stop
+//! within a handful of instructions, and the fallback is what every timed-out call returned before.
 //!
 //! Entries of the nesting table are claimed under the lock (`guard_enter` only takes key-0
 //! entries), so `guard_leave` needs no lock: only the owning thread changes its entry's depth,
@@ -45,6 +56,8 @@ pub const SLOT_FAKE0: u64 = 0x08;
 pub const SLOT_SPEED: u64 = 0x10;
 /// 0 = never used: the first call sets `real0 = fake0 = real`.
 pub const SLOT_GEN: u64 = 0x18;
+/// Sequence number (`u32`), odd while the slot is being written (lock-free reads).
+pub const SLOT_SEQ: u64 = 0x1c;
 /// Per-thread nesting table: 64 × `{key u64, depth u64}`; key 0 is a free entry.
 pub const OFF_NEST: u64 = 0x440;
 pub const NEST_ENTRY: u64 = 16;
@@ -61,6 +74,8 @@ pub const OFF_CODE: u64 = 0x1000;
 pub const OFF_SCALE: u64 = OFF_CODE;
 pub const OFF_GUARD_ENTER: u64 = OFF_CODE + ROUTINE_MAX;
 pub const OFF_GUARD_LEAVE: u64 = OFF_CODE + 2 * ROUTINE_MAX;
+/// `scale` for 32-bit millisecond counts (`GetTickCount`, `timeGetTime`), which wrap.
+pub const OFF_SCALE32: u64 = OFF_CODE + 3 * ROUTINE_MAX;
 /// Room for each shared routine.
 pub const ROUTINE_MAX: u64 = 0x200;
 
@@ -93,16 +108,73 @@ jmp {p}_acquire
 
 /// The shared routines for a state page at `state`: `(offset, source)`, each assembled at
 /// `state + offset`.
-pub fn shared_routines(state: u64) -> [(u64, String); 3] {
-    [(OFF_SCALE, scale(state)), (OFF_GUARD_ENTER, guard_enter(state)), (OFF_GUARD_LEAVE, guard_leave(state))]
+pub fn shared_routines(state: u64) -> [(u64, String); 4] {
+    [
+        (OFF_SCALE, scale(state, false)),
+        (OFF_GUARD_ENTER, guard_enter(state)),
+        (OFF_GUARD_LEAVE, guard_leave(state)),
+        (OFF_SCALE32, scale(state, true)),
+    ]
 }
 
 /// `scale(rcx = key, rdx = slot, r8 = real) -> rax = game time`, under the lock:
 /// rebase the slot when the generation changed, then `fake0 + (f64)max(real − real0, 0) × speed`.
-fn scale(state: u64) -> String {
+/// Without the lock (the spin gave up), the same from a consistent lock-free read of the slot,
+/// or the real time if there is none.
+///
+/// `wrap32`: `real` is a 32-bit millisecond count that wraps every 49.7 days. The delta is taken
+/// modulo 2^32 (a negative one, as a signed 32-bit value, is a reading from before `real0`), the
+/// slot is rebased once the delta passes 2^30 so it never overflows, and the caller uses the
+/// low 32 bits of the result.
+fn scale(state: u64, wrap32: bool) -> String {
+    let delta = if wrap32 {
+        format!(
+            "mov eax, r8d
+sub eax, dword ptr [r11+{SLOT_REAL0:#x}]
+jns s_forward"
+        )
+    } else {
+        format!(
+            "mov rax, r8
+sub rax, qword ptr [r11+{SLOT_REAL0:#x}]
+jge s_forward"
+        )
+    };
+    // At the same speed for more than 2^30 ms (12.4 days): move the base up to keep the
+    // 32-bit delta positive.
+    let keep_in_range = if wrap32 {
+        format!(
+            "mov eax, r8d
+sub eax, dword ptr [r11+{SLOT_REAL0:#x}]
+cmp eax, 40000000
+jl s_now
+inc dword ptr [r11+{SLOT_SEQ:#x}]
+call s_fake
+mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
+mov qword ptr [r11+{SLOT_REAL0:#x}], r8
+inc dword ptr [r11+{SLOT_SEQ:#x}]
+s_now:
+"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "mov r10, {state:#x}
 {acquire}s_reentered:
+// No lock: read the slot as a seqlock reader (never written here).
+shl rdx, {slot_shift}
+lea r11, [r10+rdx+{OFF_SLOTS:#x}]
+mov r9d, dword ptr [r11+{SLOT_SEQ:#x}]
+test r9d, 1
+jne s_real
+cmp dword ptr [r11+{SLOT_GEN:#x}], 0
+je s_real
+call s_fake
+cmp r9d, dword ptr [r11+{SLOT_SEQ:#x}]
+jne s_real
+ret
+s_real:
 mov rax, r8
 ret
 s_locked:
@@ -113,6 +185,7 @@ mov r9d, dword ptr [r10+{OFF_GEN:#x}]
 mov ecx, dword ptr [r11+{SLOT_GEN:#x}]
 cmp ecx, r9d
 je s_ready
+inc dword ptr [r11+{SLOT_SEQ:#x}]
 test ecx, ecx
 jne s_rebase
 // First use of this slot: game time starts at real time.
@@ -128,15 +201,15 @@ s_newgen:
 mov rcx, qword ptr [r10+{OFF_SPEED:#x}]
 mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
 mov dword ptr [r11+{SLOT_GEN:#x}], r9d
+inc dword ptr [r11+{SLOT_SEQ:#x}]
 s_ready:
-call s_fake
+{keep_in_range}call s_fake
 mov dword ptr [r10+{OFF_LOCK:#x}], 0
 ret
 // rax = fake0 + (i64)((f64)max(real - real0, 0) * speed) for slot r11 and real r8.
+// Clobbers only rax and xmm0.
 s_fake:
-mov rax, r8
-sub rax, qword ptr [r11+{SLOT_REAL0:#x}]
-jge s_forward
+{delta}
 // Another thread rebased with a later reading: never go back past fake0.
 xor eax, eax
 s_forward:
@@ -226,8 +299,9 @@ ret
     )
 }
 
-/// `rax = scale(slot in edx)` of the value in `rax`. The thread key is in `r14`.
-fn call_scale(state: u64, slot: &str) -> String {
+/// `rax = scale(slot in edx)` of the value in `rax`, with the routine at `state + routine`. The
+/// thread key is in `r14`.
+fn call_scale(state: u64, routine: u64, slot: &str) -> String {
     format!(
         "mov r8, rax
 mov rcx, r14
@@ -235,7 +309,7 @@ mov rcx, r14
 mov rax, {:#x}
 call rax
 ",
-        state + OFF_SCALE
+        state + routine
     )
 }
 
@@ -288,18 +362,24 @@ pub fn hook_source(kind: Kind, abi: Abi, state: u64, slot: u32, trampoline_or_or
     // After the original: r12 = first argument, rbx = second, r15 = its result. Jump to h_out
     // to leave the result alone.
     let body = match kind {
-        // QueryPerformanceCounter returns a BOOL and NtQueryPerformanceCounter an NTSTATUS, so
-        // success can't be read from the result; both only fail for a bad pointer.
-        Kind::Qpc => format!(
-            "test r12, r12
+        // QueryPerformanceCounter returns a BOOL (nonzero = success), NtQueryPerformanceCounter
+        // an NTSTATUS (0 = success; Wine returns STATUS_ACCESS_VIOLATION for a bad pointer).
+        // The pointer is checked too: Wine's RtlQueryPerformanceCounter returns TRUE whatever
+        // the NtQueryPerformanceCounter it calls returned.
+        Kind::Qpc | Kind::NtQpc => format!(
+            "test r15d, r15d
+{}
+test r12, r12
 je h_out
 mov rax, qword ptr [r12]
 {}mov qword ptr [r12], rax
 ",
-            call_scale(state, &slot_fixed)
+            if kind == Kind::Qpc { "je h_out" } else { "jne h_out" },
+            call_scale(state, OFF_SCALE, &slot_fixed)
         ),
-        Kind::Tick32 => format!("mov eax, r15d\n{}mov r15d, eax\n", call_scale(state, &slot_fixed)),
-        Kind::Tick64 => format!("mov rax, r15\n{}mov r15, rax\n", call_scale(state, &slot_fixed)),
+        // A 32-bit count, scaled with wraparound; the result is its low 32 bits, zero-extended.
+        Kind::Tick32 => format!("mov eax, r15d\n{}mov r15d, eax\n", call_scale(state, OFF_SCALE32, &slot_fixed)),
+        Kind::Tick64 => format!("mov rax, r15\n{}mov r15, rax\n", call_scale(state, OFF_SCALE, &slot_fixed)),
         Kind::ClockGettime => format!(
             "test r15d, r15d
 jne h_out
@@ -316,7 +396,7 @@ mov rax, qword ptr [rbx]
 imul rax, rax, #1000000000
 add rax, qword ptr [rbx+8]
 {}{}",
-            call_scale(state, &format!("lea edx, [r12+{slot:#x}]")),
+            call_scale(state, OFF_SCALE, &format!("lea edx, [r12+{slot:#x}]")),
             split_store("rbx", "1000000000")
         ),
         Kind::Gettimeofday | Kind::GettimeofdayGot => format!(
@@ -328,7 +408,7 @@ mov rax, qword ptr [r12]
 imul rax, rax, #1000000
 add rax, qword ptr [r12+8]
 {}{}",
-            call_scale(state, &slot_fixed),
+            call_scale(state, OFF_SCALE, &slot_fixed),
             split_store("r12", "1000000")
         ),
     };
@@ -389,14 +469,15 @@ mod tests {
     use iced_x86::{Decoder, DecoderOptions, Mnemonic};
 
     const STATE: u64 = 0x7f12_3456_0000;
-    const KINDS: [Kind; 6] = [Kind::Qpc, Kind::Tick32, Kind::Tick64, Kind::ClockGettime, Kind::Gettimeofday, Kind::GettimeofdayGot];
+    const KINDS: [Kind; 7] = [Kind::Qpc, Kind::NtQpc, Kind::Tick32, Kind::Tick64, Kind::ClockGettime, Kind::Gettimeofday, Kind::GettimeofdayGot];
 
     #[test]
     fn layout_fits_the_state_page() {
         assert_eq!(OFF_SLOTS + SLOT_SIZE * SLOT_COUNT as u64, OFF_NEST);
         assert_eq!(OFF_NEST + NEST_ENTRY * NEST_COUNT, OFF_RECOVERY);
         assert!(OFF_RECOVERY_ENTRIES + RECOVERY_ENTRY * RECOVERY_MAX as u64 <= OFF_CODE);
-        assert!(OFF_GUARD_LEAVE + ROUTINE_MAX <= super::super::STATE_PAGE_SIZE);
+        assert!(OFF_SCALE32 + ROUTINE_MAX <= super::super::STATE_PAGE_SIZE);
+        assert!(SLOT_SEQ + 4 <= SLOT_SIZE);
         // The speed (f64) and gen (u32) are one contiguous 12-byte write.
         assert_eq!(OFF_SPEED + 8, OFF_GEN);
         assert!(SLOT_SIZE.is_power_of_two());
@@ -486,5 +567,105 @@ mod tests {
             .find(|i| i.mnemonic() == Mnemonic::Call && i.is_ip_rel_memory_operand())
             .expect("an indirect call through the pointer");
         assert_eq!(call.ip_rel_memory_address(), ptr);
+    }
+
+    /// A state page in this test process (rwx, never freed while the test runs), at `speed`,
+    /// generation 1.
+    struct LocalState(u64);
+
+    impl LocalState {
+        fn new(speed: f64) -> LocalState {
+            let size = super::super::STATE_PAGE_SIZE as usize;
+            let prot = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
+            let p = unsafe { libc::mmap(std::ptr::null_mut(), size, prot, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) };
+            assert_ne!(p, libc::MAP_FAILED);
+            let page = p as u64;
+            let img = super::super::state_image(page).unwrap();
+            unsafe { std::ptr::copy_nonoverlapping(img.as_ptr(), p as *mut u8, img.len()) };
+            let st = LocalState(page);
+            st.put(OFF_SPEED, speed.to_bits());
+            st.put32(OFF_GEN, 1);
+            st
+        }
+        fn put(&self, off: u64, v: u64) {
+            unsafe { std::ptr::write_volatile((self.0 + off) as *mut u64, v) }
+        }
+        fn put32(&self, off: u64, v: u32) {
+            unsafe { std::ptr::write_volatile((self.0 + off) as *mut u32, v) }
+        }
+        /// Call the routine at `off` with the shared routines' own convention.
+        fn call(&self, off: u64, key: u64, slot: u64, real: u64) -> u64 {
+            let out: u64;
+            unsafe {
+                std::arch::asm!(
+                    "call {f}",
+                    f = in(reg) self.0 + off,
+                    inout("rcx") key => _,
+                    inout("rdx") slot => _,
+                    inout("r8") real => _,
+                    out("rax") out,
+                    out("r9") _,
+                    out("r10") _,
+                    out("r11") _,
+                    out("xmm0") _,
+                );
+            }
+            out
+        }
+    }
+
+    impl Drop for LocalState {
+        fn drop(&mut self) {
+            unsafe { libc::munmap(self.0 as *mut libc::c_void, super::super::STATE_PAGE_SIZE as usize) };
+        }
+    }
+
+    const KEY: u64 = 0x7f00_dead_b000;
+
+    #[test]
+    fn tick32_time_keeps_counting_across_the_32_bit_wrap() {
+        let st = LocalState::new(2.0);
+        let tick = |real: u64| st.call(OFF_SCALE32, KEY, 10, real) as u32;
+        // First use: game time starts at real time, 256 ms before GetTickCount wraps.
+        assert_eq!(tick(0xffff_ff00), 0xffff_ff00);
+        // A reading from before the slot's base (taken by a thread that got the lock later) never
+        // turns time back.
+        assert_eq!(tick(0xffff_fe00), 0xffff_ff00);
+        // 512 ms later, after the wrap: 1024 ms of game time, wrapped the same way.
+        assert_eq!(tick(0x100), 0xffff_ff00u32.wrapping_add(0x400));
+        // More than 2^31 ms (24.8 days) at one speed: the routine rebases on the way, so the
+        // delta never overflows a signed 32-bit value.
+        let mut real = 0x100u32;
+        let mut game = 0x300u32;
+        for _ in 0..4 {
+            real = real.wrapping_add(0x5000_0000);
+            game = game.wrapping_add(0xa000_0000);
+            assert_eq!(tick(real as u64), game, "real {real:#x}");
+        }
+    }
+
+    #[test]
+    fn scale_is_64_bit_and_clamps_backwards_readings() {
+        let st = LocalState::new(2.0);
+        let qpc = |real: u64| st.call(OFF_SCALE, KEY, 9, real);
+        assert_eq!(qpc(0x1_0000_0000), 0x1_0000_0000);
+        assert_eq!(qpc(0x0_ffff_0000), 0x1_0000_0000);
+        assert_eq!(qpc(0x1_0000_1000), 0x1_0000_2000);
+    }
+
+    #[test]
+    fn a_held_lock_still_gives_game_time_from_a_consistent_slot() {
+        let st = LocalState::new(2.0);
+        assert_eq!(st.call(OFF_SCALE, KEY, 9, 1000), 1000);
+        // Another thread holds the lock and never lets go: after the bounded spin, the slot is
+        // read without the lock, so the game keeps its game time instead of jumping to real time.
+        st.put32(OFF_LOCK, 0x1234_5679);
+        assert_eq!(st.call(OFF_SCALE, KEY, 9, 2000), 3000);
+        // A slot caught mid-update (odd sequence) can't be trusted: real time is passed through.
+        let seq = OFF_SLOTS + 9 * SLOT_SIZE + SLOT_SEQ;
+        st.put32(seq, 1);
+        assert_eq!(st.call(OFF_SCALE, KEY, 9, 2000), 2000);
+        // A slot never used has no game time yet.
+        assert_eq!(st.call(OFF_SCALE, KEY, 3, 5000), 5000);
     }
 }
