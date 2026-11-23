@@ -10,7 +10,8 @@
     "test": "ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs run",
     "test:watch": "ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "dist": "node scripts/native-electron.mjs && electron-vite build && electron-builder --linux AppImage --publish never",
+    "build:daemon": "cargo build --release --manifest-path ../../packages/starlightd/Cargo.toml",
+    "dist": "pnpm run build:daemon && node scripts/native-electron.mjs && electron-vite build && electron-builder --linux AppImage --publish never",
     "rebuild:native": "node scripts/native-electron.mjs",
     "postinstall": "node scripts/native-electron.mjs"
   },

@@ -303,12 +303,18 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.ceRuntimeStatus, async () => runtimeManager.status());
   ipcMain.handle(CHANNELS.allowMemoryAccess, async () => {
     if (await readPtraceScope() === 0) return { ok: true as const };
+    // Grant whichever of Starlight's memory readers exist: a missing one (no
+    // release build of starlightd in dev, a failed Cheat Engine download)
+    // doesn't block the other.
     const bins: string[] = [];
+    let daemonError: string | null = null;
     try { bins.push(await installedDaemonPath()); }
-    catch (err) { return { ok: false as const, error: `Couldn't set up the trainer engine: ${err instanceof Error ? err.message : String(err)}` }; }
-    // A failed Cheat Engine download no longer blocks granting starlightd.
+    catch (err) { daemonError = err instanceof Error ? err.message : String(err); }
     const r = await runtimeManager.ensure();
     if (r.ok) bins.push(r.status.ceserver);
+    if (bins.length === 0) {
+      return { ok: false as const, error: `Couldn't set up the trainer engine: ${daemonError ?? (r.ok ? 'unknown error' : r.error)}` };
+    }
     const g = await grantPtraceCap({ bins });
     if (g.ok) await restartEngine();
     return g;

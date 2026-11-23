@@ -18,6 +18,11 @@ pnpm --filter @starlight/desktop build
 
 Produces `out/{main,preload,renderer}/`.
 
+The memory engine daemon, starlightd, is Rust and built with cargo, not by the
+step above: run `cargo build --release -p starlightd` in `packages/starlightd`
+(or `pnpm --filter @starlight/desktop build:daemon` from anywhere) before `dev`
+so the trainer view can attach. `pnpm dist` builds it first and bundles it into the AppImage.
+
 ## Test
 
 ```bash
