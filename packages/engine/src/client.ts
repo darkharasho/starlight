@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createConnection, type Socket } from 'node:net';
-import { AttachError, EngineError, PermissionError, ReadError, ScanError, WriteError } from './errors.js';
+import { AttachError, EngineError, PermissionError, ReadError, RpcCode, ScanError, WriteError } from './errors.js';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export interface EngineClient {
   call<T>(method: string, params: object): Promise<T>;
@@ -10,18 +10,20 @@ export interface EngineClient {
   onClose(cb: () => void): void;
   close(): Promise<void>;
   readonly closed: boolean;
+  /** What the daemon supports, as reported by `hello`. */
+  readonly capabilities: readonly string[];
 }
 
 /** Maps a starlightd JSON-RPC error code to the engine's error classes. */
 export function mapRpcError(code: number, message: string): EngineError {
   const err = ((): EngineError => {
     switch (code) {
-      case -32001: return new PermissionError(message);
-      case -32002: return new AttachError(message);
-      case -32003: return new ReadError(message);
-      case -32004: return new WriteError(message);
-      case -32005:
-      case -32006: return new ScanError(message);
+      case RpcCode.PermissionDenied: return new PermissionError(message);
+      case RpcCode.ProcessNotFound: return new AttachError(message);
+      case RpcCode.ReadFailed: return new ReadError(message);
+      case RpcCode.WriteFailed: return new WriteError(message);
+      case RpcCode.ModuleNotFound:
+      case RpcCode.InvalidPattern: return new ScanError(message);
       default: return new EngineError(message);
     }
   })();
@@ -31,9 +33,10 @@ export function mapRpcError(code: number, message: string): EngineError {
 
 interface Pending { resolve(v: unknown): void; reject(e: unknown): void }
 
-function wrapSocket(socket: Socket): EngineClient {
+function wrapSocket(socket: Socket): { client: EngineClient; setCapabilities(c: readonly string[]): void } {
   let nextId = 1;
   let closed = false;
+  let capabilities: readonly string[] = [];
   const pending = new Map<number, Pending>();
   const notifyCbs = new Set<(method: string, params: any) => void>();
   const closeCbs: Array<() => void> = [];
@@ -75,8 +78,9 @@ function wrapSocket(socket: Socket): EngineClient {
   socket.on('error', () => { /* followed by 'close' */ });
   socket.on('close', onClosed);
 
-  return {
+  const client: EngineClient = {
     get closed() { return closed; },
+    get capabilities() { return capabilities; },
     call<T>(method: string, params: object): Promise<T> {
       if (closed) return Promise.reject(new EngineError('starlightd connection closed'));
       const id = nextId++;
@@ -101,6 +105,7 @@ function wrapSocket(socket: Socket): EngineClient {
       });
     },
   };
+  return { client, setCapabilities: (c) => { capabilities = Object.freeze([...c]); } };
 }
 
 export async function connectEngine(opts: { socketPath: string }): Promise<EngineClient> {
@@ -109,11 +114,14 @@ export async function connectEngine(opts: { socketPath: string }): Promise<Engin
     s.once('connect', () => { s.off('error', reject); resolve(s); });
     s.once('error', reject);
   });
-  const client = wrapSocket(socket);
+  const { client, setCapabilities } = wrapSocket(socket);
   try {
-    const hello = await client.call<{ protocol: number }>('hello', {});
+    const hello = await client.call<{ protocol: number; capabilities?: unknown }>('hello', {});
     if (hello.protocol !== PROTOCOL_VERSION) {
       throw new EngineError(`starlightd protocol ${hello.protocol}, expected ${PROTOCOL_VERSION}`);
+    }
+    if (Array.isArray(hello.capabilities)) {
+      setCapabilities(hello.capabilities.filter((c): c is string => typeof c === 'string'));
     }
   } catch (err) {
     await client.close();

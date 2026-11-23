@@ -5,7 +5,7 @@ export { read, write, type PrimitiveValue } from './memory.js';
 export * from './types.js';
 export {
   EngineError, AttachError, PermissionError,
-  ReadError, WriteError, ScanError,
+  ReadError, WriteError, ScanError, RpcCode,
 } from './errors.js';
 export { resolvePointerChain } from './pointer-chain.js';
 export { aobScan } from './aob-scan.js';

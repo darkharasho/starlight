@@ -11,12 +11,13 @@ pub const MAX_INTERVAL_MS: u64 = 3_600_000;
 const STOP_POLL: Duration = Duration::from_millis(20);
 
 struct Entry {
-    handle: u32,
+    /// The freeze's teardown action in the connection's `cleanup::Owner`.
+    token: Option<u64>,
     /// Held across the stop check and the write, so once `stop` returns no further write happens.
     stopped: Arc<Mutex<bool>>,
 }
 
-/// Freezes of one connection, shared with the exit watcher threads.
+/// Freezes of one connection, shared with their teardown actions.
 #[derive(Clone, Default)]
 pub struct Freezes {
     inner: Arc<Mutex<(u32, HashMap<u32, Entry>)>>,
@@ -24,7 +25,7 @@ pub struct Freezes {
 
 impl Freezes {
     /// Write once synchronously (failure creates no freeze), then keep writing on a thread.
-    pub fn start(&self, handle: u32, target: Arc<Target>, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
+    pub fn start(&self, target: Arc<Target>, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
         if interval_ms > MAX_INTERVAL_MS {
             return Err(RpcError::invalid_params(format!("interval_ms exceeds {MAX_INTERVAL_MS}")));
         }
@@ -35,7 +36,7 @@ impl Freezes {
             let mut g = self.inner.lock().unwrap();
             g.0 += 1;
             let id = g.0;
-            g.1.insert(id, Entry { handle, stopped: stopped.clone() });
+            g.1.insert(id, Entry { token: None, stopped: stopped.clone() });
             id
         };
         std::thread::spawn(move || {
@@ -60,30 +61,20 @@ impl Freezes {
         Ok(id)
     }
 
-    pub fn stop(&self, id: u32) -> Result<(), RpcError> {
-        match self.inner.lock().unwrap().1.remove(&id) {
-            Some(e) => {
-                *e.stopped.lock().unwrap() = true;
-                Ok(())
-            }
-            None => Err(RpcError::invalid_params(format!("unknown freeze id: {id}"))),
+    pub fn set_token(&self, id: u32, token: u64) {
+        if let Some(e) = self.inner.lock().unwrap().1.get_mut(&id) {
+            e.token = Some(token);
         }
     }
 
-    pub fn stop_handle(&self, handle: u32) {
-        self.inner.lock().unwrap().1.retain(|_, e| {
-            if e.handle == handle {
+    /// Stop a freeze; returns its teardown token, if one was set.
+    pub fn stop(&self, id: u32) -> Result<Option<u64>, RpcError> {
+        match self.inner.lock().unwrap().1.remove(&id) {
+            Some(e) => {
                 *e.stopped.lock().unwrap() = true;
-                false
-            } else {
-                true
+                Ok(e.token)
             }
-        });
-    }
-
-    pub fn stop_all(&self) {
-        for (_, e) in self.inner.lock().unwrap().1.drain() {
-            *e.stopped.lock().unwrap() = true;
+            None => Err(RpcError::invalid_params(format!("unknown freeze id: {id}"))),
         }
     }
 }

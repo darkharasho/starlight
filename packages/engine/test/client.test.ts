@@ -3,9 +3,9 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connectEngine } from '../src/client.js';
+import { connectEngine, mapRpcError } from '../src/client.js';
 import { attach } from '../src/session.js';
-import { PermissionError } from '../src/errors.js';
+import { EngineError, PermissionError, RpcCode } from '../src/errors.js';
 import { startTestEngine } from './helpers/daemon.js';
 import { spawnTarget, type SpawnedTarget } from './helpers/spawn-target.js';
 
@@ -51,15 +51,29 @@ describe('EngineClient', () => {
   });
 
   it('rejects a daemon with the wrong protocol', async () => {
-    const d = await fakeDaemon(() => ({ result: { protocol: 2, version: 'x', capabilities: [] } }));
+    const d = await fakeDaemon(() => ({ result: { protocol: 1, version: 'x', capabilities: [] } }));
     cleanups.push(d.close);
-    await expect(connectEngine({ socketPath: d.socketPath })).rejects.toThrow(/protocol 2, expected 1/);
+    await expect(connectEngine({ socketPath: d.socketPath })).rejects.toThrow(/protocol 1, expected 2/);
+  });
+
+  it('exposes capabilities from hello', async () => {
+    const d = await fakeDaemon(() => ({ result: { protocol: 2, version: 'x', capabilities: ['read', 'scan'] } }));
+    cleanups.push(d.close);
+    const client = await connectEngine({ socketPath: d.socketPath });
+    cleanups.push(() => client.close());
+    expect(client.capabilities).toEqual(['read', 'scan']);
+  });
+
+  it('reports the real daemon\'s capabilities', async () => {
+    const engine = await startTestEngine();
+    cleanups.push(engine.stop);
+    expect(engine.client.capabilities).toContain('freeze');
   });
 
   it('maps -32001 to PermissionError', async () => {
     const d = await fakeDaemon((method) =>
       method === 'hello'
-        ? { result: { protocol: 1, version: 'x', capabilities: [] } }
+        ? { result: { protocol: 2, version: 'x', capabilities: [] } }
         : { error: { code: -32001, message: 'ptrace denied' } });
     cleanups.push(d.close);
     const client = await connectEngine({ socketPath: d.socketPath });
@@ -67,9 +81,16 @@ describe('EngineClient', () => {
     await expect(attach(client, 1234)).rejects.toBeInstanceOf(PermissionError);
   });
 
+  it('keeps protocol v2 codes on a plain EngineError', () => {
+    const e = mapRpcError(RpcCode.Busy, 'site busy');
+    expect(e.constructor).toBe(EngineError);
+    expect(e.code).toBe(-32013);
+    expect(RpcCode.PatchConflict).toBe(-32014);
+  });
+
   it('rejects pending calls and fires onClose when the connection drops', async () => {
     const d = await fakeDaemon((method) =>
-      method === 'hello' ? { result: { protocol: 1, version: 'x', capabilities: [] } } : { result: {} });
+      method === 'hello' ? { result: { protocol: 2, version: 'x', capabilities: [] } } : { result: {} });
     cleanups.push(d.close);
     const client = await connectEngine({ socketPath: d.socketPath });
     let closed = false;

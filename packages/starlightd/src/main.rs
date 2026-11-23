@@ -1,4 +1,5 @@
 mod aob;
+mod cleanup;
 mod freeze;
 mod maps;
 mod mem;
@@ -27,6 +28,8 @@ fn parse_socket_arg() -> Option<PathBuf> {
 }
 
 fn main() {
+    // Before any other thread starts, so every thread inherits the blocked signal mask.
+    cleanup::spawn_signal_thread();
     let Some(path) = parse_socket_arg() else {
         eprintln!("usage: starlightd --socket <path>");
         std::process::exit(2);
@@ -48,7 +51,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Exit when the parent closes our stdin.
+    // Exit when the parent closes our stdin, after reverting every change to every game.
     std::thread::spawn(|| {
         let mut sink = [0u8; 256];
         let mut stdin = std::io::stdin();
@@ -57,6 +60,7 @@ fn main() {
                 break;
             }
         }
+        cleanup::shutdown_all(cleanup::SHUTDOWN_DEADLINE);
         std::process::exit(0);
     });
 
@@ -74,7 +78,7 @@ fn main() {
 
 fn serve(stream: std::os::unix::net::UnixStream) {
     let Ok(reader_stream) = stream.try_clone() else { return };
-    let mut session = rpc::Session::new(rpc::Conn::new(stream));
+    let session = rpc::Session::new(rpc::Conn::new(stream));
     for line in BufReader::new(reader_stream).lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -82,4 +86,5 @@ fn serve(stream: std::os::unix::net::UnixStream) {
         }
         session.handle_line(&line);
     }
+    session.close();
 }

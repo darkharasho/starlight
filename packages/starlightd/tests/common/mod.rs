@@ -44,6 +44,10 @@ impl Daemon {
         Client::connect(&self.socket)
     }
 
+    pub fn pid(&self) -> i32 {
+        self.child.id() as i32
+    }
+
     pub fn close_stdin(&mut self) {
         self.stdin.take();
     }
@@ -74,6 +78,8 @@ pub struct Client {
     stream: UnixStream,
     rx: Receiver<Value>,
     pending_notifications: Vec<Value>,
+    /// Responses that arrived while waiting for a different id (slow methods answer out of order).
+    pending_responses: HashMap<u64, Value>,
     next_id: u64,
 }
 
@@ -92,7 +98,7 @@ impl Client {
                 }
             }
         });
-        Client { stream, rx, pending_notifications: vec![], next_id: 1 }
+        Client { stream, rx, pending_notifications: vec![], pending_responses: HashMap::new(), next_id: 1 }
     }
 
     /// Send a raw line (for malformed-input tests) and return the next response.
@@ -108,22 +114,46 @@ impl Client {
     }
 
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        self.call_timeout(method, params, Duration::from_secs(5))
+    }
+
+    /// Like `call`, but panics if no response arrives within `timeout`.
+    pub fn call_timeout(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, (i64, String)> {
+        let id = self.send(method, params);
+        self.wait_response(id, timeout)
+            .unwrap_or_else(|| panic!("no response to {method} within {timeout:?}"))
+    }
+
+    /// Send a request without waiting; returns its id for `wait_response`.
+    pub fn send(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let req = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         writeln!(self.stream, "{req}").unwrap();
-        loop {
-            let v = self.rx.recv_timeout(Duration::from_secs(5)).expect("response");
-            if v.get("id") == Some(&json!(id)) {
-                if let Some(e) = v.get("error") {
-                    return Err((e["code"].as_i64().unwrap(), e["message"].as_str().unwrap_or("").to_string()));
+        id
+    }
+
+    /// The response to request `id`, or `None` if it doesn't arrive within `timeout`.
+    pub fn wait_response(&mut self, id: u64, timeout: Duration) -> Option<Result<Value, (i64, String)>> {
+        let deadline = Instant::now() + timeout;
+        let v = loop {
+            if let Some(v) = self.pending_responses.remove(&id) {
+                break v;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            let v = self.rx.recv_timeout(left).ok()?;
+            match v.get("id").and_then(Value::as_u64) {
+                Some(got) => {
+                    self.pending_responses.insert(got, v);
                 }
-                return Ok(v["result"].clone());
+                None if v.get("id").is_none() => self.pending_notifications.push(v),
+                None => {} // non-numeric id: not one of ours
             }
-            if v.get("id").is_none() {
-                self.pending_notifications.push(v);
-            }
+        };
+        if let Some(e) = v.get("error") {
+            return Some(Err((e["code"].as_i64().unwrap(), e["message"].as_str().unwrap_or("").to_string())));
         }
+        Some(Ok(v["result"].clone()))
     }
 
     pub fn next_notification(&mut self, timeout: Duration) -> Option<Value> {
