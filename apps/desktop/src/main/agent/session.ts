@@ -249,7 +249,21 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
     return { pid: g.pid, name: g.name, proton: g.proton, steamAppId: g.steamAppId, buildId: g.buildId, canModify: a.canModify };
   }
 
-  async function stop(reason: StopReason): Promise<void> {
+  /** The Stop in progress: a later caller waits for it to finish reverting and releasing the game. */
+  let stopping: Promise<void> | null = null;
+
+  function stop(reason: StopReason): Promise<void> {
+    const prev = stopping;
+    // Nothing new to stop: wait for the Stop in progress (quit order, "Use table instead").
+    if (prev && !cur && !asking) return prev;
+    const run = doStop(reason);
+    const p: Promise<void> = (prev ? Promise.all([prev, run]).then(() => undefined) : run)
+      .finally(() => { if (stopping === p) stopping = null; });
+    stopping = p;
+    return p;
+  }
+
+  async function doStop(reason: StopReason): Promise<void> {
     bumpGen();
     const a = cur;
     const ask = asking;

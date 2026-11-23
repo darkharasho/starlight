@@ -303,6 +303,29 @@ describe('agent session', () => {
     await vi.waitFor(() => expect(s.notes()).toContain('Stopped with the hotkey'));
   });
 
+  it('a second Stop waits until the first has finished reverting and released the game', async () => {
+    const s = setup();
+    await attached(s);
+    const ctx = (await s.agent.require('s1', 'modify'))!;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const slow = { active: true, cancel: vi.fn(async () => { await gate; s.log.push('cancel slow'); }) };
+    ctx.track.freeze(ctx.gen, slow, { address: '0x10', type: 'int32', value: '1' });
+    const first = s.agent.stop('player');
+    let secondDone = false;
+    const second = s.agent.stop('app-quit').then(() => { secondDone = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(secondDone).toBe(false);
+    expect(s.owner.ownerOf(PID)).not.toBeNull();  // still held while the first Stop reverts
+    release();
+    await second;
+    expect(s.log).toContain('cancel slow');
+    expect(s.log).toContain('detach');
+    expect(s.owner.ownerOf(PID)).toBeNull();
+    await first;
+    expect(slow.cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('Stop resolves a pending question and the snapshot lists it', async () => {
     const s = setup();
     await attached(s);
