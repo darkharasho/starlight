@@ -87,6 +87,26 @@ export interface ToolContext {
   signal?: AbortSignal;
 }
 
+/** The attached context of an attached- or modify-tier call. */
+export function need(ctx: ToolContext): AttachedContext {
+  if (!ctx.attached) throw new ToolError(NOT_ATTACHED);
+  return ctx.attached;
+}
+
+/**
+ * Refuses to start an engine call once the player has stopped the agent (or the
+ * switch went off, which makes this context's `gen` stale) or the client has gone.
+ * Call it right before every engine call that changes the game, not just at tool entry.
+ */
+export function live(ctx: ToolContext): AttachedContext {
+  const a = need(ctx);
+  if (a.signal.aborted || ctx.signal?.aborted) throw new ToolError(STOPPED_MIDWAY);
+  return a;
+}
+
+/** Lowercase "0x…" for an engine address. */
+export const hex = (a: string | bigint): string => '0x' + BigInt(a).toString(16);
+
 export interface ToolChange { address: string; old: string; new: string }
 
 export interface ToolDef<S extends z.ZodRawShape> {

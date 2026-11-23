@@ -9,7 +9,7 @@ import {
 } from '@starlight/engine';
 import type { EngineApi } from './tools.js';
 import type { Session, ValueType } from '@starlight/engine';
-import { NOT_ATTACHED, STOPPED_MIDWAY, ToolError, type AttachedContext, type ToolContext, type ToolDef } from './tools.js';
+import { ToolError, hex, live, type AttachedContext, type ToolDef } from './tools.js';
 
 const VALUE_TYPES = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64', 'float', 'double', 'string'] as const;
 const FIRST_MODES = ['exact', 'bigger', 'smaller', 'range', 'unknown'] as const;
@@ -19,20 +19,6 @@ const NEXT_MODES = ['exact', 'bigger', 'smaller', 'range', 'changed', 'unchanged
 const scanIds = new WeakMap<Session, Set<number>>();
 
 const addressDoc = 'An address expression: "0x7ff6a1b2c3d4", "<module>+<hex>" (e.g. "target+0x4010"), or a quoted module name ("\\"My Game.exe\\"+10").';
-
-const hex = (a: string | bigint): string => '0x' + BigInt(a).toString(16);
-
-function need(ctx: ToolContext): AttachedContext {
-  if (!ctx.attached) throw new ToolError(NOT_ATTACHED);
-  return ctx.attached;
-}
-
-/** Refuses to start an engine call once the player has stopped the agent or the client has gone. */
-function live(ctx: ToolContext): AttachedContext {
-  const a = need(ctx);
-  if (a.signal.aborted || ctx.signal?.aborted) throw new ToolError(STOPPED_MIDWAY);
-  return a;
-}
 
 interface Pathish { module: string; base: string; offsets: string[]; text: string }
 

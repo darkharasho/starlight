@@ -37,6 +37,7 @@ import { createPlayerPrompts } from './agent/player-prompt.js';
 import { electronNotifier } from './agent/notifier.js';
 import { askPlayerTool } from './agent/tools-ask.js';
 import { discoveryTools } from './agent/tools-discovery.js';
+import { modifyTools } from './agent/tools-modify.js';
 import { createAgentSession } from './agent/session.js';
 import { listModules as engineListModules } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
@@ -140,6 +141,7 @@ const agentTools: ToolDef<any>[] = [
   askPlayerTool(agentPrompts, async () => (await getConfig()).agent),
   gameInfoTool({ listModules: engineListModules, readMaps: (pid) => readFile(`/proc/${pid}/maps`, 'utf8') }),
   ...discoveryTools(),
+  ...modifyTools(),
 ];
 
 /** Starts, restarts or stops the MCP server to match the agent preferences. Serialized. */
