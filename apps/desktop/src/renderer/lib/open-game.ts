@@ -66,7 +66,7 @@ export async function openCatalogGame(entry: CatalogIndexEntry, navigate: Naviga
     await starting;
     return;
   }
-  // Legacy pre-built trainers (static JSON, Frida engine).
+  // Legacy pre-built trainers (static JSON, starlightd engine).
   const trainer = await useCatalogStore.getState().trainer(entry);
   if (!trainer) return;
   await useTrainerStore.getState().setActiveTrainerFromCatalog(trainer);

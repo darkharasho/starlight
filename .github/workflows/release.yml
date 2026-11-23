@@ -82,7 +82,7 @@ jobs:
       - run: pnpm -r --filter '!@starlight/desktop' build
 
       # better-sqlite3 was built for Electron on install (apps/desktop
-      # postinstall). frida and uiohook-napi are N-API, so they're packaged as
+      # postinstall). uiohook-napi is N-API, so it's packaged as
       # installed.
       - name: Build the app
         working-directory: apps/desktop

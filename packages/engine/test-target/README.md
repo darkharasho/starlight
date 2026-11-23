@@ -17,5 +17,5 @@ Produces `build/target`.
 ```
 
 Prints addresses of all instrumented globals on startup, then idles.
-Tests parse this output to learn addresses, attach via Frida, and
+Tests parse this output to learn addresses, attach via starlightd, and
 exercise read/write/scan/freeze.

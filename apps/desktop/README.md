@@ -137,7 +137,7 @@ Note: the live catalog URL becomes reachable only after the `Publish Pages` GitH
     checked.
 30. **Lutris detection** (Linux): opens `~/.local/share/lutris/games/lutris.db` read-only
     via `better-sqlite3`. Only installed games (`installed = 1`) appear as tiles.
-31. **Native module:** `better-sqlite3` is the first native dep beyond Frida itself. If
+31. **Native module:** `better-sqlite3` is the first native dep beyond uiohook-napi. If
     `pnpm install` fails to build it, install platform build tools (Linux: `build-essential
     python3-dev`; macOS: Xcode CLI tools; Windows: MSVC build tools), then `pnpm rebuild
     better-sqlite3`. The Electron app rebuilds via electron-builder during packaging
