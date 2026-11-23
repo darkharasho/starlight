@@ -116,3 +116,16 @@ fn closing_connection_cancels_freezes() {
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(read_health(&mut b, &hb, &t), "01000000");
 }
+
+#[test]
+fn huge_interval_is_invalid_params() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let e = c
+        .call("freeze", json!({"handle": h, "address": t.addr("g_health"), "bytes": "e7030000", "interval_ms": u64::MAX}))
+        .unwrap_err();
+    assert_eq!(e.0, -32602);
+    assert!(c.call("freeze", json!({"handle": h, "address": t.addr("g_health"), "bytes": "e7030000", "interval_ms": 3_600_000})).is_ok());
+}

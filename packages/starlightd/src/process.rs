@@ -119,7 +119,18 @@ impl Handles {
 
     pub fn freeze(&self, handle: u32, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
         let target = self.get(handle)?;
-        self.freezes.start(handle, target, addr, data, interval_ms)
+        self.freeze_target(handle, target, addr, data, interval_ms)
+    }
+
+    /// The exit watcher removes the handle and then cancels its freezes. Rechecking after the
+    /// freeze is registered means one side always sees the other, so no freeze outlives its handle.
+    fn freeze_target(&self, handle: u32, target: Arc<Target>, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
+        let id = self.freezes.start(handle, target, addr, data, interval_ms)?;
+        if !self.map.lock().unwrap().contains_key(&handle) {
+            let _ = self.freezes.stop(id);
+            return Err(RpcError::unknown_handle(format!("unknown handle: {handle}")));
+        }
+        Ok(id)
     }
 
     pub fn unfreeze(&self, id: u32) -> Result<(), RpcError> {
@@ -145,5 +156,30 @@ impl Handles {
 impl Drop for Handles {
     fn drop(&mut self) {
         self.detach_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    static CELL: u32 = 0;
+
+    #[test]
+    fn freeze_on_a_dead_handle_is_cancelled_by_the_recheck() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let handles = Handles::new(Conn::new(a));
+        let pid = std::process::id() as i32;
+        let target = Arc::new(Target {
+            pid,
+            pidfd: pidfd_open(pid).unwrap(),
+            mem: OpenOptions::new().read(true).write(true).open("/proc/self/mem").unwrap(),
+        });
+        // Handle 7 was never inserted: models the watcher having removed it between get and insert.
+        let addr = &CELL as *const u32 as u64;
+        let e = handles.freeze_target(7, target, addr, vec![0; 4], 20).unwrap_err();
+        assert_eq!(e.code, -32007);
+        assert!(handles.unfreeze(1).is_err(), "freeze must not survive");
     }
 }
