@@ -99,7 +99,9 @@ pub struct Status {
 }
 
 /// State pages of this daemon whose hooks are live (or going in), as (pid, address). Orphan
-/// recovery leaves them alone (R6). A page at speed 1.0 is not listed: its record is empty.
+/// recovery leaves them alone (R6). A page stays listed while its hooks are installed, at speed
+/// 1.0 too (the hooks then pass time through unchanged); it is unlisted when its hooks are removed
+/// at session end, or when none could be installed.
 static LIVE: Mutex<Vec<(i32, u64)>> = Mutex::new(Vec::new());
 
 fn is_live(pid: i32, page: u64) -> bool {

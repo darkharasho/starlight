@@ -22,7 +22,8 @@ Everything takes a `Session` (`assemble` also accepts a bare `EngineClient`). Ad
 - **Pointer scans:** `pointerScan` (reports `truncated` when it hit a limit), `pointerResults` (paths are
   `PointerChainSpec`s, so `resolvePointerChain` accepts them directly), `pointerRescan`, `pointerEnd`.
   `pointerRescan` without `address` reuses the session's last good target address; a successful rescan with
-  a new `address` becomes the new target. Scan ids belong to the connection, so a rescan works against a new
+  a new `address` becomes the new target; a rescan that keeps no path returns 0 and leaves the paths and
+  target unchanged. Scan ids belong to the connection, so a rescan works against a new
   session after a game restart.
 - **Watchpoints:** `watchStart` uses debug registers on every thread and is time-boxed (default 10 s, max 60 s).
   `poll()` / `stop()` return a report; `onEnded(cb)` fires once when the watch ends by itself (not after
@@ -35,8 +36,10 @@ Everything takes a `Session` (`assemble` also accepts a bare `EngineClient`). Ad
   drop or daemon exit).
 - **Symbols:** `moduleExports`, `resolveSymbol` (export forwarders are followed).
 
-Scans, watches, patches and speed need the same ptrace permission as attach (see below). If another
-debugger such as Cheat Engine is attached, those calls fail with `RpcCode.PtraceFailed`.
+Scans and memory reads use `process_vm_readv` (writes go through `/proc/<pid>/mem`), so they keep working while
+another debugger such as Cheat Engine is attached. Watches, patches, `alloc`/`free` and speed stop the
+game with ptrace: they need the ptrace permission (see below), and fail with `RpcCode.PtraceFailed` while
+another debugger is attached.
 
 ## Test target
 

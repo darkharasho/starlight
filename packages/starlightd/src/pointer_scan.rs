@@ -274,8 +274,10 @@ impl PointerScans {
         Ok((paths.len() as u64, paths[from..].iter().take(limit).cloned().collect()))
     }
 
-    /// Keep only the paths that still resolve to `address` (default: the scan's original target)
-    /// in `t`. Returns the new count.
+    /// Keep only the paths that still resolve to `address` (default: the session's last good
+    /// target) in `t`. Returns the new count. A rescan that keeps nothing returns 0 and leaves the
+    /// session's paths and target as they were, so a rescan at a bad moment (the game still
+    /// loading, a wrong address) never throws the results away.
     pub fn rescan(&self, id: u32, t: &Target, address: Option<u64>) -> Result<u64, RpcError> {
         let s = self.get(id)?;
         let want = address.unwrap_or_else(|| s.address.load(Ordering::Relaxed));
@@ -295,6 +297,9 @@ impl PointerScans {
             return Err(exited(t));
         }
         let count = kept.len() as u64;
+        if count == 0 {
+            return Ok(0);
+        }
         *s.paths.lock().unwrap() = kept;
         s.address.store(want, Ordering::Relaxed);
         Ok(count)

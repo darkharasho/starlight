@@ -55,6 +55,19 @@ describe('discovery', () => {
     expect((await pointerRescan(s, scan.id)).count).toBeGreaterThanOrEqual(1);
     expect((await pointerRescan(s, scan.id, t.addresses.heap_value)).count).toBeGreaterThanOrEqual(1);
 
+    // A rescan that keeps nothing reports 0 but leaves the paths and the target alone.
+    const wrong = `0x${(BigInt(t.addresses.heap_value!) + 0x20n).toString(16)}`;
+    expect((await pointerRescan(s, scan.id, wrong)).count).toBe(0);
+    expect((await pointerResults(s, scan.id, { limit: 1000 })).count).toBe(count);
+    expect((await pointerRescan(s, scan.id)).count).toBe(count);
+
+    // maxOffset takes a number or a "0x" string.
+    for (const maxOffset of [0x100, '0x100'] as const) {
+      const r = await pointerScan(s, { address: t.addresses.heap_value!, maxOffset });
+      expect(r.count).toBeGreaterThanOrEqual(1);
+      await pointerEnd(s, r.id);
+    }
+
     await pointerEnd(s, scan.id);
     const err = await pointerResults(s, scan.id).catch((e) => e);
     expect(err).toMatchObject({ code: RpcCode.UnknownId });

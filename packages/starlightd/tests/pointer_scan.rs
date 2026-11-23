@@ -98,6 +98,10 @@ fn rescan_without_address_reuses_the_original_target() {
         .call_timeout("pointer_rescan", json!({"id": r["id"], "handle": h, "address": format!("{:#x}", hex(&t.addr("heap_value")) + 0x20)}), std::time::Duration::from_secs(60))
         .unwrap();
     assert_eq!(other["count"], 0);
+    // An empty rescan keeps the session's paths and target: nothing is lost.
+    assert_eq!(all_paths(&mut c, &r["id"]).len() as u64, before);
+    let bare = c.call_timeout("pointer_rescan", json!({"id": r["id"], "handle": h}), std::time::Duration::from_secs(60)).unwrap();
+    assert_eq!(bare["count"].as_u64().unwrap(), before);
 }
 
 #[test]

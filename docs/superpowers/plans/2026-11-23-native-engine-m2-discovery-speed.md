@@ -137,9 +137,9 @@ Every v1 method is unchanged. Additions:
 | `unpatch` | `{ id, force? }` | `{}` |
 | `watch_start` | `{ handle, address, size, kind, duration_ms?, max_hits? }` | `{ id }` |
 | `watch_poll` / `watch_stop` | `{ id }` | `{ active, reason: null \| "timeout" \| "max_hits" \| "stopped" \| "process_exited" \| "detached", hits: [Hit] }` |
-| `pointer_scan` | `{ handle, address, max_depth?, max_offset?, max_results?, modules?: string[] }` | `{ id, count }` |
-| `pointer_results` | `{ id, offset?, limit? }` | `{ count, paths: [{ module, base, offsets: string[] }] }` |
-| `pointer_rescan` | `{ id, handle, address? }` | `{ count }` |
+| `pointer_scan` | `{ handle, address, max_depth?, max_offset?, max_results?, modules?: string[] }` | `{ id, count, truncated }` (`truncated`: a frontier or `max_results` limit was hit) |
+| `pointer_results` | `{ id, offset?, limit? }` | `{ count, results: [{ module, base, offsets: string[] }] }` |
+| `pointer_rescan` | `{ id, handle, address? }` | `{ count }`. A rescan that keeps no path returns `count: 0` and leaves the session's paths and target unchanged. |
 | `pointer_end` | `{ id }` | `{}` |
 | `speed_set` | `{ handle, speed, targets? (debug builds only) }` | `{ speed, hooks: [{ name, address, status: "hooked" \| "skipped", reason? }] }` |
 | `speed_get` | `{ handle }` | same as `speed_set` |
