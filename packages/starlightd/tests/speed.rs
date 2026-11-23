@@ -88,6 +88,30 @@ fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
     }
 }
 
+/// Send `speed_set(speed)` while sampling the clock at `addr` every 20 ms for a second; returns
+/// the samples. Asserts the change succeeded.
+fn sample_across_change(c: &mut Client, h: &Value, pid: i32, addr: u64, speed: f64) -> Vec<i64> {
+    let id = c.send("speed_set", json!({"handle": h, "speed": speed}));
+    let mut samples = vec![proc_i64(pid, addr)];
+    let end = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+        samples.push(proc_i64(pid, addr));
+    }
+    let r = c.wait_response(id, Duration::from_secs(15)).expect("speed_set answered").unwrap();
+    assert_eq!(r["speed"], speed, "{r}");
+    samples
+}
+
+/// The clock never goes back, and never jumps (20 ms of real time is at most 40 ms of game time
+/// here; a rebase bug or a removed hook is a jump of the time gained, or back to real time).
+fn assert_continuous(samples: &[i64], what: &str) {
+    for w in samples.windows(2) {
+        assert!(w[1] >= w[0], "{what} went backwards across the change: {} -> {}", w[0], w[1]);
+        assert!(w[1] - w[0] < 300_000_000, "{what} jumped {} ns across the change", w[1] - w[0]);
+    }
+}
+
 /// Lets the clocks thread store a value read through the (new) hooks.
 fn settle() {
     std::thread::sleep(Duration::from_millis(100));
@@ -132,50 +156,66 @@ fn speed_change_keeps_time_continuous() {
     speed_set(&mut c, &h, 2.0).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     // Change the speed while sampling the clock every 20 ms for a second.
-    let id = c.send("speed_set", json!({"handle": h, "speed": 0.5}));
-    let mut samples = vec![proc_i64(t.pid, mono)];
-    let end = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < end {
-        std::thread::sleep(Duration::from_millis(20));
-        samples.push(proc_i64(t.pid, mono));
-    }
-    let r = c.wait_response(id, Duration::from_secs(15)).expect("speed_set 0.5 answered").unwrap();
-    assert_eq!(r["speed"], 0.5, "{r}");
-    for w in samples.windows(2) {
-        assert!(w[1] >= w[0], "CLOCK_MONOTONIC went backwards across the change: {} -> {}", w[0], w[1]);
-        // 20 ms of real time is at most 40 ms of game time here; allow scheduling slack, but a
-        // rebase bug (a jump to real time) is far larger.
-        assert!(w[1] - w[0] < 300_000_000, "CLOCK_MONOTONIC jumped {} ns across the change", w[1] - w[0]);
-    }
+    let samples = sample_across_change(&mut c, &h, t.pid, mono, 0.5);
+    assert_continuous(&samples, "CLOCK_MONOTONIC");
     assert_rate(t.pid, mono, 1e9, 0.45, 0.55, "CLOCK_MONOTONIC at 0.5x");
 }
 
 #[test]
-fn speed_1_restores_original_bytes() {
+fn speed_1_never_turns_time_back() {
+    // Speed 1.0 keeps the hooks: the game keeps the time it gained instead of jumping back.
     let _serial = serial();
     let t = Target::spawn(&["--clocks"]);
     let d = Daemon::start();
     let mut c = d.client();
     let h = attach(&mut c, &t);
-    let f = hex(&t.addr("libc_clock_gettime"));
-    let before = proc_read(t.pid, f, 16);
+    let (mono, tod) = (hex(&t.addr("g_mono_ns")), hex(&t.addr("g_tod_us")));
     speed_set(&mut c, &h, 2.0).unwrap();
-    assert_ne!(proc_read(t.pid, f, 16), before, "clock_gettime was not hooked");
+    std::thread::sleep(Duration::from_millis(500));
+    let samples = sample_across_change(&mut c, &h, t.pid, mono, 1.0);
+    assert_continuous(&samples, "CLOCK_MONOTONIC");
+    // gettimeofday (the GOT route) keeps its gained time too.
+    let ahead = proc_i64(t.pid, tod) - std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as i64;
+    assert!(ahead > 200_000, "gettimeofday is only {ahead} us ahead of real time after 2x then 1x");
+    assert_rate(t.pid, mono, 1e9, 0.9, 1.1, "CLOCK_MONOTONIC at 1x after 2x");
+}
+
+#[test]
+fn speed_1_keeps_hooks_and_detach_restores_bytes() {
+    let _serial = serial();
+    let t = Target::spawn(&["--clocks"]);
+    // Let the clocks thread call gettimeofday once, so its lazily bound GOT slot is resolved.
+    settle();
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let (f, got) = (hex(&t.addr("libc_clock_gettime")), hex(&t.addr("got_gettimeofday")));
+    let (before, got_before) = (proc_read(t.pid, f, 16), proc_read(t.pid, got, 8));
+    speed_set(&mut c, &h, 2.0).unwrap();
+    let (hooked, got_hooked) = (proc_read(t.pid, f, 16), proc_read(t.pid, got, 8));
+    assert_ne!(hooked, before, "clock_gettime was not hooked");
+    assert_ne!(got_hooked, got_before, "the executable's gettimeofday GOT slot was not hooked");
+    // 1.0 is a speed change like any other: the hooks stay.
     let r = speed_set(&mut c, &h, 1.0).unwrap();
     assert_eq!(r["speed"], 1.0, "{r}");
-    assert_eq!(r["hooks"], json!([]), "{r}");
-    assert_eq!(proc_read(t.pid, f, 16), before, "speed 1.0 did not restore clock_gettime");
-    // Nothing needs the game traced any more (ruling R12).
-    assert!(wait_until(Duration::from_secs(1), || tracer_pid(t.pid) == 0), "still traced at speed 1.0");
+    assert_eq!(hook_status(&r, "clock_gettime").as_deref(), Some("hooked"), "{r}");
+    assert_eq!((proc_read(t.pid, f, 16), proc_read(t.pid, got, 8)), (hooked.clone(), got_hooked.clone()));
     settle();
     assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 0.9, 1.1, "CLOCK_MONOTONIC at 1x");
     assert_rate(t.pid, hex(&t.addr("g_tod_us")), 1e6, 0.9, 1.1, "gettimeofday at 1x");
     let g = speed_get(&mut c, &h);
-    assert_eq!((g["speed"].clone(), g["hooks"].clone()), (json!(1.0), json!([])), "{g}");
-    // Hooking again after a revert works, and scales again.
+    assert_eq!(g["speed"], 1.0, "{g}");
+    assert_eq!(hook_status(&g, "gettimeofday").as_deref(), Some("hooked"), "{g}");
+    // Speeding up again reuses the same hooks.
     speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!((proc_read(t.pid, f, 16), proc_read(t.pid, got, 8)), (hooked, got_hooked), "the hooks were reinstalled");
     settle();
-    assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 1.8, 2.2, "CLOCK_MONOTONIC at 2x after a revert");
+    assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 1.8, 2.2, "CLOCK_MONOTONIC at 2x after 1x");
+    // Session end restores every original byte and lets go of the game.
+    c.call_timeout("detach", json!({"handle": h}), Duration::from_secs(10)).unwrap();
+    assert_eq!(proc_read(t.pid, f, 16), before, "detach did not restore clock_gettime");
+    assert_eq!(proc_read(t.pid, got, 8), got_before, "detach did not restore the gettimeofday GOT slot");
+    assert!(wait_until(Duration::from_secs(1), || tracer_pid(t.pid) == 0), "still traced after detach");
 }
 
 #[test]
@@ -218,7 +258,30 @@ fn signal_handler_clock_calls_do_not_deadlock() {
     }
     // Still hooked, and the game is still answering.
     assert_eq!(speed_get(&mut c, &h)["speed"], 2.0);
-    assert_eq!(speed_set(&mut c, &h, 1.0).unwrap()["hooks"], json!([]));
+    assert_eq!(speed_set(&mut c, &h, 1.0).unwrap()["speed"], 1.0);
+}
+
+#[test]
+fn a_thread_suspended_in_the_lock_does_not_hang_the_game() {
+    // The target suspends a thread for 500 ms at a time inside a signal handler, as a GC's
+    // stop-the-world does, possibly while it holds the hooks' lock. Another thread's
+    // clock_gettime calls must keep returning (the spin gives up and passes the call through).
+    let _serial = serial();
+    let t = Target::spawn(&["--clock-stall"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let (other, loops) = (hex(&t.addr("g_clock_other")), hex(&t.addr("g_clock_loops")));
+    speed_set(&mut c, &h, 2.0).unwrap();
+    let loops0 = proc_i64(t.pid, loops);
+    for window in 0..16 {
+        let o0 = proc_i64(t.pid, other);
+        std::thread::sleep(Duration::from_millis(250));
+        let o1 = proc_i64(t.pid, other);
+        assert!(o1 > o0, "window {window}: clock_gettime hung while another thread was suspended ({o0} -> {o1})");
+    }
+    assert!(proc_i64(t.pid, loops) > loops0, "the suspended thread never resumed");
+    assert_eq!(speed_get(&mut c, &h)["speed"], 2.0);
 }
 
 #[test]
@@ -288,8 +351,10 @@ fn live_hooks_of_another_session_are_left_alone() {
     let e = speed_set(&mut b, &hb, 3.0).unwrap_err();
     assert_eq!(e.0, -32014, "{e:?}");
     assert_eq!(speed_get(&mut a, &ha)["speed"], 2.0);
-    // Once A is back at 1.0, B may.
+    // A at 1.0 still has its hooks in; once A detaches, B may.
     speed_set(&mut a, &ha, 1.0).unwrap();
+    assert_eq!(speed_set(&mut b, &hb, 3.0).unwrap_err().0, -32014);
+    a.call_timeout("detach", json!({"handle": ha}), Duration::from_secs(10)).unwrap();
     assert_eq!(proc_read(t.pid, f, 16), before);
     let r = speed_set(&mut b, &hb, 3.0).unwrap();
     assert_eq!(hook_status(&r, "clock_gettime").as_deref(), Some("hooked"), "{r}");
@@ -336,9 +401,10 @@ fn stdin_eof_restores_speed_hooks() {
 fn orphaned_hooks_are_recovered() {
     let _serial = serial();
     let t = Target::spawn(&["--clocks"]);
-    let f = hex(&t.addr("libc_clock_gettime"));
+    settle(); // the GOT slot is bound
+    let (f, got) = (hex(&t.addr("libc_clock_gettime")), hex(&t.addr("got_gettimeofday")));
     let mono = hex(&t.addr("g_mono_ns"));
-    let before = proc_read(t.pid, f, 16);
+    let (before, got_before) = (proc_read(t.pid, f, 16), proc_read(t.pid, got, 8));
     let mut a = Daemon::start();
     {
         let mut c = a.client();
@@ -348,6 +414,7 @@ fn orphaned_hooks_are_recovered() {
         a.kill();
     }
     assert_ne!(proc_read(t.pid, f, 16), before, "the hooks should survive a SIGKILLed daemon");
+    assert_ne!(proc_read(t.pid, got, 8), got_before, "the GOT hook should survive a SIGKILLed daemon");
     assert!(wait_until(Duration::from_secs(2), || tracer_pid(t.pid) == 0), "A's ptrace attach outlived it");
     settle();
     assert_rate(t.pid, mono, 1e9, 1.8, 2.2, "CLOCK_MONOTONIC with orphaned hooks");
@@ -357,6 +424,7 @@ fn orphaned_hooks_are_recovered() {
     let g = speed_get(&mut c, &h);
     assert_eq!((g["speed"].clone(), g["hooks"].clone()), (json!(1.0), json!([])), "{g}");
     assert_eq!(proc_read(t.pid, f, 16), before, "daemon B did not restore the orphaned hooks");
+    assert_eq!(proc_read(t.pid, got, 8), got_before, "daemon B did not restore the gettimeofday GOT slot");
     settle();
     assert_rate(t.pid, mono, 1e9, 0.9, 1.1, "CLOCK_MONOTONIC after recovery");
     assert_rate(t.pid, hex(&t.addr("g_tod_us")), 1e6, 0.9, 1.1, "gettimeofday after recovery");

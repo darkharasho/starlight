@@ -15,7 +15,17 @@
 //! handler that called a hooked function: spinning would deadlock, so `guard_enter` reports
 //! "not entered" and the hook passes the call through unscaled. `scale` only runs between a
 //! successful `guard_enter` and its `guard_leave`, so a handler can never reach it while its own
-//! thread holds the lock. The nesting table is guarded by the same lock (ruling R16).
+//! thread holds the lock.
+//!
+//! The spin is bounded (`SPIN_LIMIT` `pause`s): a lock holder can be suspended indefinitely (a
+//! GC's stop-the-world signal, Wine's `SuspendThread`, or a `fork` child that inherited a held
+//! lock). On timeout `guard_enter` reports "not entered" and `scale` returns the real time, so the
+//! call passes through unscaled instead of hanging the game.
+//!
+//! Entries of the nesting table are claimed under the lock (`guard_enter` only takes key-0
+//! entries), so `guard_leave` needs no lock: only the owning thread changes its entry's depth,
+//! and at depth 0 it frees the entry with `lock cmpxchg key → 0`, which can't erase an entry
+//! that was freed and reclaimed meanwhile (R16 as amended).
 use super::{Abi, Kind};
 
 /// `"STLSPD01"`.
@@ -56,13 +66,17 @@ pub const ROUTINE_MAX: u64 = 0x200;
 
 /// `guard_enter` results.
 const NOT_ENTERED: u32 = 2;
+/// Most `pause`s spent waiting for the lock before giving up (about 2^20).
+pub const SPIN_LIMIT: u32 = 1 << 20;
 
-/// Takes the lock with owner tag `ecx | 1` (state base in `r10`). Jumps to `{p}_locked` once
-/// held, or to `{p}_reentered` if this thread already holds it.
+/// Takes the lock with owner tag `ecx | 1` (state base in `r10`; clobbers `r11`). Jumps to
+/// `{p}_locked` once held, or to `{p}_reentered` if this thread already holds it or the holder
+/// doesn't let go within `SPIN_LIMIT` pauses.
 fn acquire(p: &str) -> String {
     format!(
         "mov r9d, ecx
 or r9d, 1
+mov r11d, {SPIN_LIMIT:#x}
 {p}_acquire:
 xor eax, eax
 lock cmpxchg dword ptr [r10+{OFF_LOCK:#x}], r9d
@@ -70,6 +84,8 @@ je {p}_locked
 cmp eax, r9d
 je {p}_reentered
 pause
+dec r11d
+je {p}_reentered
 jmp {p}_acquire
 "
     )
@@ -136,7 +152,7 @@ ret
 }
 
 /// `guard_enter(rcx = key) -> eax`: 0 = outermost (entered), 1 = nested (entered), 2 = not
-/// entered (the table is full, or this thread holds the lock: R16 and the signal case). Callers
+/// entered (the table is full, this thread holds the lock, or the lock stayed taken). Callers
 /// treat 1 and 2 as nested, and call `guard_leave` unless the result was 2.
 fn guard_enter(state: u64) -> String {
     format!(
@@ -168,8 +184,11 @@ mov qword ptr [r8+8], 1
 xor eax, eax
 jmp e_unlock
 e_found:
+// Depth 0: interrupted in guard_leave between its dec and its key release; outermost again.
+xor eax, eax
+cmp qword ptr [rdx+8], 0
+setne al
 inc qword ptr [rdx+8]
-mov eax, 1
 jmp e_unlock
 e_full:
 mov eax, {NOT_ENTERED}
@@ -182,10 +201,10 @@ ret
 }
 
 /// `guard_leave(rcx = key)`: one level less for this thread; the entry is freed at depth 0.
+/// Lock-free: only this thread changes its entry's depth, and claims only take key-0 entries.
 fn guard_leave(state: u64) -> String {
     format!(
         "mov r10, {state:#x}
-{acquire}l_locked:
 lea rdx, [r10+{OFF_NEST:#x}]
 mov r11d, #{NEST_COUNT}
 l_find:
@@ -194,17 +213,16 @@ je l_found
 add rdx, {NEST_ENTRY:#x}
 dec r11d
 jne l_find
-jmp l_unlock
+ret
 l_found:
 dec qword ptr [rdx+8]
-jne l_unlock
-mov qword ptr [rdx], 0
-l_unlock:
-mov dword ptr [r10+{OFF_LOCK:#x}], 0
-l_reentered:
+jne l_done
+mov rax, rcx
+xor r8d, r8d
+lock cmpxchg qword ptr [rdx], r8
+l_done:
 ret
-",
-        acquire = acquire("l")
+"
     )
 }
 
@@ -389,9 +407,20 @@ mod tests {
         for (off, src) in shared_routines(STATE) {
             let a = asm::assemble(&src, STATE + off, &|_| None).unwrap_or_else(|e| panic!("routine at {off:#x}: {e}\n{src}"));
             assert!(a.bytes.len() as u64 <= ROUTINE_MAX, "routine at {off:#x} is {} bytes", a.bytes.len());
-            // The lock is taken with `lock cmpxchg` and spins with `pause`.
-            let m: Vec<Mnemonic> = Decoder::with_ip(64, &a.bytes, STATE + off, DecoderOptions::NONE).iter().map(|i| i.mnemonic()).collect();
-            assert!(m.contains(&Mnemonic::Cmpxchg) && m.contains(&Mnemonic::Pause), "{m:?}");
+            let ins: Vec<_> = Decoder::with_ip(64, &a.bytes, STATE + off, DecoderOptions::NONE).iter().collect();
+            let m: Vec<Mnemonic> = ins.iter().map(|i| i.mnemonic()).collect();
+            // Every routine uses `lock cmpxchg`: to take the lock, or (guard_leave) to free its entry.
+            assert!(ins.iter().any(|i| i.mnemonic() == Mnemonic::Cmpxchg && i.has_lock_prefix()), "{m:?}");
+            if off == OFF_GUARD_LEAVE {
+                // Lock-free: it never spins and never touches the lock word.
+                assert!(!m.contains(&Mnemonic::Pause), "{m:?}");
+                let lock_word = |i: &iced_x86::Instruction| i.memory_base() == iced_x86::Register::R10 && i.memory_displacement64() == OFF_LOCK;
+                assert!(!ins.iter().any(lock_word), "{m:?}");
+            } else {
+                // The spin is bounded: the counter starts at SPIN_LIMIT.
+                assert!(m.contains(&Mnemonic::Pause), "{m:?}");
+                assert!(ins.iter().any(|i| i.mnemonic() == Mnemonic::Mov && i.op1_kind() == iced_x86::OpKind::Immediate32 && i.immediate32() == SPIN_LIMIT), "{m:?}");
+            }
         }
     }
 

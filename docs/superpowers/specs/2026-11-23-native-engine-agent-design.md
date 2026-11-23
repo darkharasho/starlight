@@ -205,7 +205,8 @@ writes. Proton games: hook the Windows-side functions in the PE modules
 (`QueryPerformanceCounter`, `GetTickCount`/`GetTickCount64`, `timeGetTime`,
 and `NtQueryPerformanceCounter` if games bypass kernel32). Native games: hook
 `clock_gettime`/`gettimeofday` in libc. **Don't** patch the vDSO. Speed 1.0
-removes the hooks and restores the original bytes. This is the one feature
+keeps the hooks installed so the game's time stays continuous; the original
+bytes are restored when the session ends. This is the one feature
 that writes code into the game outside of a cheat; it's still done from
 outside via ptrace, nothing is loaded as a library.
 

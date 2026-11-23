@@ -12,6 +12,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <signal.h>
+#include <link.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -139,6 +140,61 @@ static void* clock_kicker(void* arg) {
     return NULL;
 }
 
+/* --clock-stall: like --clock-signals, but the SIGUSR1 handler blocks (sigsuspend) until SIGRTMIN
+ * arrives 500 ms later, so the spinning thread may stay suspended while it holds a speed hook's
+ * lock, as a GC's stop-the-world would leave it. Another thread keeps calling clock_gettime and
+ * counts g_clock_other: it must keep making progress. */
+volatile uint64_t  g_clock_other = 0;
+
+static void on_stall(int sig) {
+    (void)sig;
+    sigset_t wait;
+    sigfillset(&wait);
+    sigdelset(&wait, SIGRTMIN);
+    sigsuspend(&wait);
+}
+
+static void on_resume(int sig) { (void)sig; }
+
+static void* clock_other(void* arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        g_clock_other += 1;
+    }
+    return NULL;
+}
+
+static void* clock_staller(void* arg) {
+    pthread_t target = *(pthread_t*)arg;
+    for (;;) {
+        usleep(50 * 1000);
+        pthread_kill(target, SIGUSR1);
+        usleep(500 * 1000);
+        pthread_kill(target, SIGRTMIN);
+    }
+    return NULL;
+}
+
+/* The GOT slot this executable calls gettimeofday through (its R_X86_64_JUMP_SLOT), or NULL. */
+static void* got_slot_of(const char* name) {
+    ElfW(Rela)* rel = NULL;
+    size_t relsz = 0;
+    ElfW(Sym)* syms = NULL;
+    const char* strs = NULL;
+    for (ElfW(Dyn)* d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
+        if (d->d_tag == DT_JMPREL) rel = (ElfW(Rela)*)d->d_un.d_ptr;
+        if (d->d_tag == DT_PLTRELSZ) relsz = d->d_un.d_val;
+        if (d->d_tag == DT_SYMTAB) syms = (ElfW(Sym)*)d->d_un.d_ptr;
+        if (d->d_tag == DT_STRTAB) strs = (const char*)d->d_un.d_ptr;
+    }
+    for (size_t i = 0; rel && syms && strs && i < relsz / sizeof *rel; i++) {
+        if (strcmp(strs + syms[ELF64_R_SYM(rel[i].r_info)].st_name, name) == 0) return (void*)rel[i].r_offset;
+    }
+    return NULL;
+}
+
 static void* writer_loop(void* arg) {
     (void)arg;
     for (;;) {
@@ -176,6 +232,19 @@ int main(int argc, char** argv) {
             sigaction(SIGUSR1, &su, NULL);
             if (pthread_create(&spinner, NULL, clock_spin, NULL) != 0 ||
                 pthread_create(&kicker, NULL, clock_kicker, &spinner) != 0) { perror("--clock-signals"); return 1; }
+        }
+        if (strcmp(argv[i], "--clock-stall") == 0) {
+            static pthread_t stalled;
+            pthread_t other, staller;
+            struct sigaction ss;
+            memset(&ss, 0, sizeof ss);
+            ss.sa_handler = on_stall;
+            sigaction(SIGUSR1, &ss, NULL);
+            ss.sa_handler = on_resume;
+            sigaction(SIGRTMIN, &ss, NULL);
+            if (pthread_create(&stalled, NULL, clock_spin, NULL) != 0 ||
+                pthread_create(&other, NULL, clock_other, NULL) != 0 ||
+                pthread_create(&staller, NULL, clock_staller, &stalled) != 0) { perror("--clock-stall"); return 1; }
         }
         if (strcmp(argv[i], "--spin") == 0) {
             pthread_t th;
@@ -242,6 +311,8 @@ int main(int argc, char** argv) {
     printf("addr clock_wrapper=%p\n", (void*)&clock_wrapper);
     printf("addr g_clock_loops=%p\n", (void*)&g_clock_loops);
     printf("addr g_clock_sigs=%p\n",  (void*)&g_clock_sigs);
+    printf("addr g_clock_other=%p\n", (void*)&g_clock_other);
+    printf("addr got_gettimeofday=%p\n", got_slot_of("gettimeofday"));
     if (mapped) printf("addr mapped=%p\n", mapped);
     if (heap_chain) {
         printf("addr g_root=%p\n",       (void*)&g_root);

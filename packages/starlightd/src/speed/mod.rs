@@ -1,8 +1,8 @@
 //! Game speed (D11–D17): timing functions are hooked with code from `templates`, which scales
 //! the time they return through one shared rwx state page per handle. Every hook and GOT slot
-//! write is a recorded patch (reverted at speed 1.0 and at session end), and is also listed in
-//! the page's recovery record so a later daemon can undo hooks a SIGKILLed one left (D12).
-//! State pages and hook pages are never freed (D9).
+//! write is a recorded patch, and is also listed in the page's recovery record so a later daemon
+//! can undo hooks a SIGKILLed one left (D12). Speed 1.0 keeps the hooks (time stays continuous);
+//! they are reverted when the session ends. State pages and hook pages are never freed (D9).
 pub mod targets;
 pub mod templates;
 
@@ -126,7 +126,6 @@ fn unclaim(pid: i32, page: u64) {
 struct Installed {
     patch_id: u32,
     addr: u64,
-    original: Vec<u8>,
 }
 
 /// One handle's speed state.
@@ -135,8 +134,11 @@ struct Entry {
     state: Option<u64>,
     speed: f64,
     gen: u32,
-    /// In install order, which is also the recovery record's order.
+    /// Live hooks and GOT slot writes, in install order.
     installed: Vec<Installed>,
+    /// The page's recovery record: (address, original bytes). A superset of `installed`: an entry
+    /// stays when a change may have been written even though it failed.
+    record: Vec<(u64, Vec<u8>)>,
     hooks: Vec<HookReport>,
     token: Option<u64>,
     /// Torn down: the handle is going away.
@@ -164,8 +166,8 @@ impl Speeds {
     }
 
     /// Set `handle`'s game speed. Orphaned hooks are recovered first (D12). The first non-1.0
-    /// speed hooks `targets` (debug builds) or the discovered ones; later speeds only change the
-    /// speed; 1.0 removes every hook.
+    /// speed hooks `targets` (debug builds) or the discovered ones; later speeds, 1.0 included,
+    /// only change the speed (a new generation), so the game's time stays continuous.
     pub fn set(&self, handle: u32, t: &Arc<Target>, speed: f64, targets: Option<Vec<HookTarget>>) -> Result<Status, RpcError> {
         if !speed.is_finite() || !(MIN_SPEED..=MAX_SPEED).contains(&speed) {
             return Err(RpcError::invalid_params(format!("speed must be between {MIN_SPEED} and {MAX_SPEED}, got {speed}")));
@@ -180,16 +182,16 @@ impl Speeds {
         if e.dead {
             return Err(RpcError::unknown_handle(format!("unknown handle: {handle}")));
         }
-        if speed == 1.0 {
-            self.revert(&mut e)?;
-            return Ok(e.status());
-        }
-        let tracer = t.tracer()?;
         if let (Some(state), false) = (e.state, e.installed.is_empty()) {
-            e.gen = write_speed(t, &tracer, state, speed, e.gen)?;
+            e.gen = write_speed(t, &*t.tracer()?, state, speed, e.gen)?;
             e.speed = speed;
             return Ok(e.status());
         }
+        if speed == 1.0 {
+            // Nothing is hooked: 1.0 is the game's own speed.
+            return Ok(e.status());
+        }
+        let tracer = t.tracer()?;
         let state = match e.state {
             Some(s) => s,
             None => {
@@ -201,8 +203,6 @@ impl Speeds {
         if !claim(t.pid, state) {
             return Err(RpcError::patch_conflict("another session already controls this game's speed"));
         }
-        // No hook is live: start every clock afresh (slots, nesting table, empty record).
-        mem::write_bytes(t, state + tpl::OFF_SLOTS, &vec![0; (tpl::OFF_RECOVERY + 4 - tpl::OFF_SLOTS) as usize])?;
         e.gen = write_speed(t, &tracer, state, speed, e.gen)?;
         let targets = match targets {
             Some(v) => v,
@@ -273,6 +273,7 @@ impl Speeds {
                 speed: 1.0,
                 gen: 0,
                 installed: vec![],
+                record: vec![],
                 hooks: vec![],
                 token: None,
                 dead: false,
@@ -316,17 +317,21 @@ impl Speeds {
         let body = |tramp| tpl::hook_source(tg.kind, tg.abi, state, tg.slot, tramp);
         match hook::install(t, tracer, &self.patches, handle, tg.address, &body) {
             Ok(h) => {
-                let changed = h.displaced != original;
-                e.installed.push(Installed { patch_id: h.patch_id, addr: tg.address, original: h.displaced });
-                if changed {
-                    write_record(t, state, &e.installed)?;
+                if h.displaced != original {
+                    *e.record.last_mut().unwrap() = (tg.address, h.displaced);
+                    write_record(t, state, &e.record)?;
                 }
+                e.installed.push(Installed { patch_id: h.patch_id, addr: tg.address });
                 Ok(())
             }
-            Err(err) => {
-                let _ = write_record(t, state, &e.installed);
+            // Refused before anything was written.
+            Err(err @ HookError::Skipped(_)) => {
+                record_pop(t, state, e);
                 Err(err)
             }
+            // The entry jump may have been written (and reverted): the entry stays, since
+            // restoring a change that never happened rewrites the same bytes.
+            Err(err) => Err(err),
         }
     }
 
@@ -357,9 +362,11 @@ impl Speeds {
                 break;
             }
             match self.patches.apply_with(handle, t, tracer.clone(), slot, &hook, Some(&current)) {
-                Ok((patch_id, _)) => e.installed.push(Installed { patch_id, addr: slot, original: current }),
+                Ok((patch_id, _)) => e.installed.push(Installed { patch_id, addr: slot }),
+                // Possibly written: the record entry stays.
+                Err(ApplyError::Written(err)) => failure = Some(err.into()),
                 Err(err) => {
-                    let _ = write_record(t, state, &e.installed);
+                    record_pop(t, state, e);
                     failure = Some(match err {
                         ApplyError::Changed(_) => HookError::Skipped(format!("the GOT slot at {slot:#x} changed while hooking")),
                         other => HookError::Rpc(other.into()),
@@ -372,43 +379,28 @@ impl Speeds {
         }
         Err(failure.unwrap_or_else(|| HookError::Skipped("every GOT slot already points at a hook".into())))
     }
-
-    /// Remove every hook, newest first. A hook whose patch the session's teardown already
-    /// reverted counts as removed.
-    fn revert(&self, e: &mut Entry) -> Result<(), RpcError> {
-        while let Some(last) = e.installed.last() {
-            match self.patches.revert(last.patch_id, false) {
-                Ok(()) => {}
-                Err(err) if err.code == -32009 => {}
-                Err(err) => return Err(err),
-            }
-            e.installed.pop();
-            if let Some(state) = e.state {
-                let _ = write_count(&e.target, state, e.installed.len());
-            }
-        }
-        if let Some(state) = e.state {
-            unclaim(e.target.pid, state);
-        }
-        e.speed = 1.0;
-        e.hooks.clear();
-        Ok(())
-    }
 }
 
-/// Session end for `handle`: revert its hooks (newest first), keep in the recovery record only
-/// what is still not restored, and let orphan recovery see the page again.
+/// Session end for `handle`: revert its hooks (newest first; one that fails doesn't stop the
+/// rest), keep in the recovery record only what is still not restored, and let orphan recovery
+/// see the page again.
 fn teardown(map: &Map, patches: &Patches, handle: u32, entry: &Arc<Mutex<Entry>>) {
     let mut e = entry.lock().unwrap();
     if !e.dead {
         e.dead = true;
-        for i in e.installed.iter().rev() {
-            let _ = patches.revert(i.patch_id, false);
+        for i in std::mem::take(&mut e.installed).iter().rev() {
+            match patches.revert(i.patch_id, false) {
+                // -32009: the patch's own session teardown already restored it.
+                Ok(()) => {}
+                Err(err) if err.code == -32009 => {}
+                // E.g. -32014: the game changed those bytes since. Left for orphan recovery.
+                Err(err) => eprintln!("starlightd: speed hook at {:#x} not restored: {}", i.addr, err.message),
+            }
         }
         let t = e.target.clone();
-        let left: Vec<Installed> = std::mem::take(&mut e.installed)
+        let left: Vec<(u64, Vec<u8>)> = std::mem::take(&mut e.record)
             .into_iter()
-            .filter(|i| mem::read_bytes(&t, i.addr, i.original.len()).is_ok_and(|now| now != i.original))
+            .filter(|(addr, original)| mem::read_bytes(&t, *addr, original.len()).is_ok_and(|now| now != *original))
             .collect();
         if let Some(state) = e.state {
             let _ = write_record(&t, state, &left);
@@ -474,21 +466,29 @@ fn write_count(t: &Target, state: u64, n: usize) -> Result<(), RpcError> {
 /// Append one entry to the recovery record, before the change it describes is made: the entry
 /// first, then the count, so a daemon killed at any point leaves a record that covers every live
 /// change (restoring an entry whose change never happened rewrites the same bytes).
-fn record_push(t: &Target, state: u64, e: &Entry, addr: u64, original: &[u8]) -> Result<(), HookError> {
-    let n = e.installed.len();
+fn record_push(t: &Target, state: u64, e: &mut Entry, addr: u64, original: &[u8]) -> Result<(), HookError> {
+    let n = e.record.len();
     if n >= tpl::RECOVERY_MAX {
         return Err(HookError::Skipped(format!("at most {} speed hooks per game", tpl::RECOVERY_MAX)));
     }
     mem::write_bytes(t, state + tpl::OFF_RECOVERY_ENTRIES + n as u64 * tpl::RECOVERY_ENTRY, &record_entry(addr, original))?;
     write_count(t, state, n + 1)?;
+    e.record.push((addr, original.to_vec()));
     Ok(())
 }
 
-/// Rewrite the whole recovery record as `installed`.
-fn write_record(t: &Target, state: u64, installed: &[Installed]) -> Result<(), RpcError> {
-    let entries: Vec<u8> = installed.iter().flat_map(|i| record_entry(i.addr, &i.original)).collect();
+/// Drop the newest record entry: its change was certainly not written.
+fn record_pop(t: &Target, state: u64, e: &mut Entry) {
+    if e.record.pop().is_some() {
+        let _ = write_count(t, state, e.record.len());
+    }
+}
+
+/// Rewrite the whole recovery record.
+fn write_record(t: &Target, state: u64, record: &[(u64, Vec<u8>)]) -> Result<(), RpcError> {
+    let entries: Vec<u8> = record.iter().flat_map(|(addr, original)| record_entry(*addr, original)).collect();
     mem::write_bytes(t, state + tpl::OFF_RECOVERY_ENTRIES, &entries)?;
-    write_count(t, state, installed.len())
+    write_count(t, state, record.len())
 }
 
 /// Parse a recovery record (`count` then the entries) into (address, original bytes), or `None`
@@ -509,16 +509,41 @@ fn parse_record(rec: &[u8]) -> Option<Vec<(u64, Vec<u8>)>> {
         .collect()
 }
 
+/// Whether the bytes `now` at `addr` look like a change of ours to `original`, so restoring them
+/// is safe: an entry jump (`E9 rel32`, padded with NOPs) into an rwx anonymous mapping (a hook
+/// page), a jump cut short by a torn write (its first bytes written, the rest still original),
+/// or a GOT slot pointing into an rwx anonymous mapping.
+fn ours(addr: u64, original: &[u8], now: &[u8], hook_pages: &[(u64, u64)]) -> bool {
+    let in_hook_page = |a: u64| hook_pages.iter().any(|&(s, e)| a >= s && a < e);
+    if now.len() == 8 && in_hook_page(u64::from_le_bytes(now.try_into().unwrap())) {
+        return true;
+    }
+    if now.first() != Some(&0xE9) {
+        return false;
+    }
+    if now.len() >= 5 {
+        let rel = i32::from_le_bytes(now[1..5].try_into().unwrap()) as i64;
+        let to = (addr as i64).wrapping_add(5).wrapping_add(rel) as u64;
+        let padding = now[5..].iter().zip(&original[5..]).all(|(&b, &o)| b == 0x90 || b == o);
+        if in_hook_page(to) && padding {
+            return true;
+        }
+    }
+    (1..now.len()).any(|k| now[k..] == original[k..])
+}
+
 /// D12: find state pages with the magic that this daemon isn't using (R6) and restore their
-/// recorded bytes, newest first, then empty their record. A page whose hooks another daemon
-/// still holds can't be restored: that daemon keeps the game traced, so the attach fails.
+/// recorded bytes, newest first, then empty their record. Only bytes that still look like our
+/// hooks are restored (`ours`); others are skipped and reported. A page whose hooks another
+/// daemon still holds can't be restored: that daemon keeps the game traced, so the attach fails.
 pub fn recover_orphans(t: &Target) -> Result<(), RpcError> {
     let regions = maps::read(t.pid).map_err(|e| RpcError::process_not_found(format!("cannot read maps of {}: {e}", t.pid)))?;
+    let anon_rwx = |r: &maps::Region| r.perms.read && r.perms.write && r.perms.exec && !r.perms.shared && r.path.is_none();
+    let hook_pages: Vec<(u64, u64)> = regions.iter().filter(|r| anon_rwx(r)).map(|r| (r.start, r.end)).collect();
     let mut tracer: Option<Arc<Tracer>> = None;
-    for r in regions {
+    for r in regions.iter().filter(|r| anon_rwx(r)) {
         let size = r.end - r.start;
-        let anon_rwx = r.perms.read && r.perms.write && r.perms.exec && !r.perms.shared && r.path.is_none();
-        if !anon_rwx || !(STATE_PAGE_SIZE..=ORPHAN_SCAN_MAX).contains(&size) {
+        if !(STATE_PAGE_SIZE..=ORPHAN_SCAN_MAX).contains(&size) {
             continue;
         }
         for page in (r.start..=r.end - STATE_PAGE_SIZE).step_by(PAGE as usize) {
@@ -533,6 +558,13 @@ pub fn recover_orphans(t: &Target) -> Result<(), RpcError> {
                 // Gone (e.g. its library was unloaded) or already restored: nothing to do.
                 let Ok(now) = mem::read_bytes(t, *addr, original.len()) else { continue };
                 if now == *original {
+                    continue;
+                }
+                if !ours(*addr, original, &now, &hook_pages) {
+                    eprintln!(
+                        "starlightd: orphaned speed hook at {addr:#x} skipped: the bytes there ({}) are not a hook of ours",
+                        crate::rpc::to_hex(&now)
+                    );
                     continue;
                 }
                 let tr = match &tracer {
@@ -579,6 +611,33 @@ mod tests {
         for off in [tpl::OFF_SCALE, tpl::OFF_GUARD_ENTER, tpl::OFF_GUARD_LEAVE] {
             assert_ne!(img[off as usize], 0, "no routine at {off:#x}");
         }
+    }
+
+    #[test]
+    fn only_bytes_that_look_like_our_hooks_are_restored() {
+        let pages = [(0x7f00_0000_0000u64, 0x7f00_0000_1000u64)];
+        let func = 0x7f00_1000_0000u64;
+        let original = [0xf3, 0x0f, 0x1e, 0xfa, 0x48, 0x8b, 0x05];
+        let jmp = |to: u64| {
+            let mut b = vec![0xE9];
+            b.extend_from_slice(&((to as i64 - (func as i64 + 5)) as i32).to_le_bytes());
+            b.extend_from_slice(&[0x90, 0x90]);
+            b
+        };
+        assert!(ours(func, &original, &jmp(0x7f00_0000_0000), &pages), "a jump into a hook page");
+        assert!(!ours(func, &original, &jmp(0x7f00_2000_0000), &pages), "a jump elsewhere");
+        let mut other = jmp(0x7f00_0000_0000);
+        other[6] = 0xCC;
+        assert!(!ours(func, &original, &other, &pages), "padding that is neither NOP nor original");
+        // Torn write: the first bytes of a jump, then the original.
+        let mut torn = original.to_vec();
+        torn[..3].copy_from_slice(&jmp(0x7f00_0000_0000)[..3]);
+        assert!(ours(func, &original, &torn, &pages));
+        assert!(!ours(func, &original, &[0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x05], &pages), "someone else's code");
+        // GOT slots: a pointer into a hook page, or not.
+        let slot_orig = 0x7ffd_1234_5000u64.to_le_bytes();
+        assert!(ours(0x404028, &slot_orig, &0x7f00_0000_0010u64.to_le_bytes(), &pages));
+        assert!(!ours(0x404028, &slot_orig, &0x7f55_0000_0010u64.to_le_bytes(), &pages));
     }
 
     #[test]
