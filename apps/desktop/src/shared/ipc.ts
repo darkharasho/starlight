@@ -44,6 +44,9 @@ export const CHANNELS = {
   userCheatsSetValue:    'starlight:userCheats:setValue',
   userCheatsRemove:      'starlight:userCheats:remove',
   userCheatsDisableAll:  'starlight:userCheats:disableAll',
+  // The agent (MCP) connection
+  agentConnectInfo:  'starlight:agent:connectInfo',
+  agentRotateToken:  'starlight:agent:rotateToken',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -324,6 +327,11 @@ export interface StarlightApi {
   userCheatsSetValue(req: { key: string; pid: number; id: string; value: number }): Promise<IpcResult>;
   userCheatsRemove(req: { key: string; id: string }): Promise<IpcResult>;
   userCheatsDisableAll(req: { pid: number }): Promise<void>;
+  // The agent (MCP) connection
+  /** The URL, token and copy-paste setup for Claude Code and Codex. */
+  agentConnectInfo(): Promise<AgentConnectInfo>;
+  /** Makes a new token; every connected agent is disconnected. */
+  agentRotateToken(): Promise<AgentConnectInfo>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;
@@ -391,6 +399,42 @@ export interface UserConfig {
   tableChoices: Record<string, number>;
   /** Game key → cheat name → hotkey accelerator (null = explicitly no hotkey). */
   cheatHotkeys: Record<string, Record<string, string | null>>;
+  /** The local MCP server that Claude Code / Codex connect to. */
+  agent: AgentPreferences;
+}
+
+export interface AgentPreferences {
+  enabled: boolean;
+  /** 1024–65535. If it's taken, an OS-assigned port is used instead. */
+  port: number;
+  confirmYes: string;
+  confirmNo: string;
+  stop: string;
+  /** How long ask_player waits by default, 10–3600. */
+  askTimeoutSec: number;
+  /** How long an attach request waits for the player, 30–600. */
+  approvalTimeoutSec: number;
+}
+
+export const DEFAULT_AGENT_PREFS: AgentPreferences = {
+  enabled: true,
+  port: 47771,
+  confirmYes: 'Ctrl+Shift+Y',
+  confirmNo: 'Ctrl+Shift+N',
+  stop: 'Ctrl+Shift+End',
+  askTimeoutSec: 300,
+  approvalTimeoutSec: 120,
+};
+
+export interface AgentConnectInfo {
+  enabled: boolean;
+  url: string;
+  port: number;
+  /** True when the configured port was taken and the OS picked this one. */
+  portIsFallback: boolean;
+  token: string;
+  claudeCommand: string;
+  codexConfig: string;
 }
 
 // DeepPartial type used by updateConfig patches.

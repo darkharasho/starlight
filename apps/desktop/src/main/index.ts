@@ -25,6 +25,15 @@ import { matchGameToProcess } from './game-matcher.js';
 import { killStaleCeProcesses } from './ce-process.js';
 import { buildCatalogIndex, type CatalogEntry } from './game-matcher.js';
 import { join } from 'node:path';
+import { readlink } from 'node:fs/promises';
+import { startMcpHost, type McpHost } from './agent/mcp-host.js';
+import { loadOrCreateToken, rotateToken } from './agent/token.js';
+import { buildConnectInfo } from './agent/connect-info.js';
+import { createAgentServer } from './agent/server.js';
+import { ToolError, NOT_ATTACHED, type ActivitySink, type AgentAccess, type ToolDef } from './agent/tools.js';
+import { listGamesTool } from './agent/tools-session.js';
+import { identifyGame } from './game-identity.js';
+import { detectAntiCheat } from './anti-cheat.js';
 import { createUpdater, type AutoUpdaterLike } from './updater.js';
 
 let lastDetectedGames: import('../shared/ipc.js').DetectedGame[] = [];
@@ -53,6 +62,85 @@ const userCheatsHost = createUserCheatsHost({
   owner: gameOwner,
   onChange: (key) => broadcast({ type: 'userCheats:changed', key }),
 });
+
+// --- The agent's MCP server (Claude Code / Codex) ---
+
+const USER_DATA = app.getPath('userData');
+let agentToken: string | null = null;
+let mcpHost: McpHost | null = null;
+/** The configured port `mcpHost` was started for (it may run on a fallback). */
+let mcpHostConfiguredPort: number | null = null;
+let mcpHostChain: Promise<void> = Promise.resolve();
+
+async function loadAgentToken(): Promise<string> {
+  agentToken ??= await loadOrCreateToken(USER_DATA);
+  return agentToken;
+}
+
+// Until the agent session exists (Task 9), only open-tier tools run.
+const agentAccess: AgentAccess = {
+  async require(_mcpSessionId, tier) {
+    if (tier === 'open') return null;
+    throw new ToolError(NOT_ATTACHED);
+  },
+};
+let agentActivityIds = 0;
+const agentActivity: ActivitySink = { start: () => ++agentActivityIds, finish: () => {} };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const agentTools: ToolDef<any>[] = [
+  listGamesTool({
+    listProcesses: () => processHost.listOnce(),
+    manualExePaths: async () => (await getConfig()).manualGames.map((g) => g.exePath),
+    installDirs: () => lastDetectedGames.map((g) => g.installDir).filter(Boolean),
+    exePath: (pid) => readlink(`/proc/${pid}/exe`).catch(() => null),
+    identify: (pid) => identifyGame(pid, { catalogIndex: () => catalogIndex, detectedGames: () => lastDetectedGames }, { hash: false }),
+    detectAntiCheatFn: (pid) => detectAntiCheat(pid),
+    attachedPid: () => null,
+  }),
+];
+
+/** Starts, restarts or stops the MCP server to match the agent preferences. Serialized. */
+function applyAgentHost(prefs: { enabled: boolean; port: number }): Promise<void> {
+  mcpHostChain = mcpHostChain.then(async () => {
+    if (prefs.enabled && mcpHost && mcpHostConfiguredPort === prefs.port) return;
+    if (mcpHost) {
+      const old = mcpHost;
+      mcpHost = null;
+      mcpHostConfiguredPort = null;
+      await old.close().catch(() => {});
+    }
+    if (!prefs.enabled) return;
+    await loadAgentToken();
+    mcpHost = await startMcpHost({
+      port: prefs.port,
+      token: () => agentToken ?? '',
+      createServer: (mcpSessionId) => createAgentServer(mcpSessionId, {
+        version: app.getVersion(),
+        tools: agentTools,
+        access: agentAccess,
+        activity: agentActivity,
+        onClientInfo: () => {},
+      }),
+      onSessionClosed: () => {},
+    });
+    mcpHostConfiguredPort = prefs.port;
+  }).catch((err) => {
+    console.error('[agent] the MCP server failed to start:', err instanceof Error ? err.message : err);
+  });
+  return mcpHostChain;
+}
+
+async function agentConnectInfo(): Promise<import('../shared/ipc.js').AgentConnectInfo> {
+  await mcpHostChain;
+  const cfg = await getConfig();
+  return buildConnectInfo({
+    enabled: cfg.agent.enabled,
+    port: mcpHost?.port ?? cfg.agent.port,
+    portIsFallback: mcpHost?.portIsFallback ?? false,
+    token: await loadAgentToken(),
+  });
+}
 
 /** Remembers the table that worked for a game so the next launch starts with it. */
 async function rememberTable(cacheKey: string, tableId: number | null): Promise<void> {
@@ -172,6 +260,7 @@ app.whenReady().then(async () => {
 
   const initialConfig = await getConfig();
   processHost.setIntervalMs(initialConfig.preferences.pollIntervalMs);
+  void applyAgentHost(initialConfig.agent);
 
   // Reap Cheat Engine processes orphaned by a previous crash (which bypasses the
   // before-quit cleanup). Leftover CE holds the game open and makes the next
@@ -272,6 +361,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.updateConfig, async (_evt, req: { patch: import('../shared/ipc.js').DeepPartial<import('../shared/ipc.js').UserConfig> }) => {
     const next = await updateConfig(req.patch);
     processHost.setIntervalMs(next.preferences.pollIntervalMs);
+    void applyAgentHost(next.agent);  // restarts only when enabled or port changed
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.event, { type: 'config:changed', config: next });
     }
@@ -439,6 +529,14 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.userCheatsRemove, (_evt, req: { key: string; id: string }) => userCheatsHost.remove(req.key, req.id));
   ipcMain.handle(CHANNELS.userCheatsDisableAll, (_evt, req: { pid: number }) => userCheatsHost.disableAll(req.pid));
 
+  ipcMain.handle(CHANNELS.agentConnectInfo, () => agentConnectInfo());
+  ipcMain.handle(CHANNELS.agentRotateToken, async () => {
+    await mcpHostChain;
+    agentToken = await rotateToken(USER_DATA);
+    await mcpHost?.closeSessions();
+    return agentConnectInfo();
+  });
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);
@@ -486,6 +584,7 @@ app.on('before-quit', async () => {
   shutdownHotkeys();
   unregisterHotkeys();
   try { await userCheatsHost.end(); } catch { /* quitting */ }
+  try { await mcpHostChain; await mcpHost?.close(); } catch { /* quitting */ }
   await engineHost.detach();
   await stopEngine();
   const s = ceGetActiveSession();
