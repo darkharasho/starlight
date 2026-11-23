@@ -37,7 +37,7 @@ describe('game identity', () => {
       if (p === '/lib/steamapps/appmanifest_2784470.acf') return ACF;
       throw new Error('ENOENT');
     });
-    const id = await identifyGame(1, deps({ env: 'STEAM_COMPAT_DATA_PATH=/lib/steamapps/compatdata/2784470\0', name: '9Kings.exe', readText }));
+    const id = await identifyGame(1, deps({ env: 'STEAM_COMPAT_DATA_PATH=/lib/steamapps/compatdata/2784470\0', name: '9Kings.exe', readText, readMaps: async () => '7f00-7f01 r-xp 0 08:01 2 /lib/steamapps/common/G/9Kings.exe' }));
     expect(id).toMatchObject({ proton: true, steamAppId: 2784470, buildId: '17012345' });
   });
 
@@ -92,6 +92,15 @@ describe('game identity', () => {
     ].join('\n');
     await identifyGame(1, deps({ env: 'STEAM_COMPAT_DATA_PATH=/lib/steamapps/compatdata/5\0', name: '9Kings.exe', readMaps: async () => maps, hashFile }));
     expect(hashFile).toHaveBeenCalledWith('/lib/steamapps/common/G/9Kings.exe');
+  });
+
+  it('Steam Linux Runtime native game with a compat path is not proton', async () => {
+    const maps = '7f00-7f01 r-xp 00000000 08:01 1 /lib/steamapps/common/G/libfoo.so\n7f02-7f03 r-xp 0 08:01 2 /usr/lib/libc.so.6';
+    const id = await identifyGame(1, deps({
+      env: 'STEAM_COMPAT_DATA_PATH=/lib/steamapps/compatdata/2784470\0SteamAppId=2784470\0', name: 'game', readMaps: async () => maps,
+    }));
+    expect(id.proton).toBe(false);
+    expect(id.steamAppId).toBe(2784470);
   });
 
   it('userCheatsKey strips tools-', () => {

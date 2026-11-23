@@ -112,7 +112,6 @@ export async function identifyGame(pid: number, deps: IdentityDeps, o?: { hash?:
 
   const env = await readEnviron(pid).then(parseEnviron, () => new Map<string, string>());
   const compatDataPath = env.get('STEAM_COMPAT_DATA_PATH');
-  const proton = !!compatDataPath;
   const procExe = await exePathOf(pid).catch(() => '');
 
   const exeName =
@@ -121,9 +120,14 @@ export async function identifyGame(pid: number, deps: IdentityDeps, o?: { hash?:
     `pid-${pid}`;
 
   // The file that holds the game's code: the mapped .exe under Proton.
+  // STEAM_COMPAT_DATA_PATH is also set for native games run through the Steam
+  // Linux Runtime, so Proton needs a Windows exe or the wine loader mapped too.
+  let proton = false;
   let exeFile: string | null = procExe || null;
-  if (proton) {
-    exeFile = await readMaps(pid).then((m) => mappedExe(m, exeName), () => null);
+  if (compatDataPath) {
+    const maps = await readMaps(pid).catch(() => '');
+    proton = /\.exe\s*$|\/wine(64)?(-preloader)?\s*$|ntdll\.(so|dll)\s*$/im.test(maps);
+    if (proton) exeFile = mappedExe(maps, exeName);
   }
 
   const fromCompat = compatDataPath ? toAppId(basename(compatDataPath.replace(/\/+$/, ''))) : null;
