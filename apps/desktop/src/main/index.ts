@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { guardStdio } from './stdio-guard.js';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
@@ -22,6 +23,9 @@ import { killStaleCeProcesses } from './ce-process.js';
 import { buildCatalogIndex, type CatalogEntry } from './game-matcher.js';
 import { join } from 'node:path';
 import { createUpdater, type AutoUpdaterLike } from './updater.js';
+
+// Before anything logs: a closed stdout must not crash Starlight (see stdio-guard.ts).
+guardStdio();
 
 let lastDetectedGames: import('../shared/ipc.js').DetectedGame[] = [];
 let catalogIndex = new Map<string, CatalogEntry>();

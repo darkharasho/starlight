@@ -78,6 +78,28 @@ describe('dev build', () => {
 })
 
 describe('packaged build', () => {
+  test("electron-updater's own log lines never reach the console", async () => {
+    const { u, warn, updater } = setup()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    try {
+      await updater.check()
+      expect(u.logger).toBeTruthy()
+      u.logger!.info('Checking for update')
+      u.logger!.debug?.('details')
+      expect(log).not.toHaveBeenCalled()
+      expect(info).not.toHaveBeenCalled()
+      expect(warn).not.toHaveBeenCalled()
+      u.logger!.error('Error: net::ERR_INTERNET_DISCONNECTED')
+      u.logger!.warn('slow')
+      expect(warn).toHaveBeenCalledWith('electron-updater: Error: net::ERR_INTERNET_DISCONNECTED')
+      expect(warn).toHaveBeenCalledWith('electron-updater: slow')
+    } finally {
+      log.mockRestore()
+      info.mockRestore()
+    }
+  })
+
   test('a check loads the updater once and turns on auto download and install on quit', async () => {
     const { updater, u, load } = setup()
     expect(await updater.check()).toEqual({ ok: true })
