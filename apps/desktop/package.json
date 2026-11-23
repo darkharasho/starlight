@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
+    "electron-updater": "^6.8.11",
     "frida": "^16.5.0",
     "ps-list": "^8.1.1",
     "uiohook-napi": "^1.5.4",

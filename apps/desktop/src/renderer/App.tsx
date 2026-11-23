@@ -12,6 +12,7 @@ import { useCatalogStore } from './stores/catalog-store.js';
 import { useCeSessionStore } from './stores/ce-session-store.js';
 import { attachProcessEvents } from './stores/process-store.js';
 import { useLibraryStore } from './stores/library-store.js';
+import { attachUpdateEvents } from './stores/update-store.js';
 import { useFollowSession } from './lib/use-follow-session.js';
 
 import { HomeRoute } from './routes/HomeRoute.js';
@@ -42,6 +43,8 @@ export default function App(): JSX.Element {
       }
     })();
   }, []);
+
+  useEffect(() => (window.starlight ? attachUpdateEvents() : undefined), []);
 
   useEffect(() => {
     if (!window.starlight) {

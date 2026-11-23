@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { PageHeader } from '../components/PageHeader.js';
 import { useConfigStore } from '../stores/config-store.js';
+import { useUpdateStore } from '../stores/update-store.js';
+import { updateStatusText } from '../lib/update-view.js';
 
 export function SettingsRoute(): JSX.Element {
   const config = useConfigStore((s) => s.config);
@@ -100,6 +102,8 @@ export function SettingsRoute(): JSX.Element {
         </label>
       </div>
 
+      <UpdatesSection />
+
       <div className="mt-8 pt-6 border-t border-line max-w-[480px]">
         <h2 className="text-[10px] tracking-wider uppercase text-muted mb-2">Attributions</h2>
         <div className="text-xs text-muted leading-relaxed">
@@ -120,5 +124,35 @@ export function SettingsRoute(): JSX.Element {
         </div>
       </div>
     </>
+  );
+}
+
+function UpdatesSection(): JSX.Element {
+  const { state, version, asked, result, check, restart } = useUpdateStore();
+  const status = updateStatusText(state, asked, result);
+  const checking = asked && (result === null || state.status === 'checking');
+  return (
+    <div className="mt-8 pt-6 border-t border-line max-w-[480px]">
+      <h2 className="text-[10px] tracking-wider uppercase text-muted mb-2">Updates</h2>
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span>
+          <div className="text-ink">Starlight {version ? `v${version}` : ''}</div>
+          <div className="text-[10px] text-muted" role="status">
+            {status ?? 'Starlight checks for updates on launch and installs them when you quit.'}
+          </div>
+        </span>
+        {state.status === 'downloaded' ? (
+          <button type="button" onClick={() => void restart()}
+            className="shrink-0 px-3 py-1.5 text-xs rounded-sm border border-neon-cyan text-neon-cyan hover:bg-neon-cyan/10">
+            Restart to update
+          </button>
+        ) : (
+          <button type="button" onClick={() => void check()} disabled={checking || state.status === 'downloading'}
+            className="shrink-0 px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan disabled:opacity-50 disabled:pointer-events-none">
+            Check for updates
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
