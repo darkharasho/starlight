@@ -13,6 +13,8 @@ import { attachProcessEvents } from './stores/process-store.js';
 import { useLibraryStore } from './stores/library-store.js';
 import { attachUpdateEvents } from './stores/update-store.js';
 import { attachCeRuntimeEvents } from './stores/ce-runtime-store.js';
+import { ApprovalCard } from './components/agent/ApprovalCard.js';
+import { AgentEvents } from './components/agent/AgentEvents.js';
 import { useFollowSession } from './lib/use-follow-session.js';
 
 import { HomeRoute } from './routes/HomeRoute.js';
@@ -21,6 +23,7 @@ import { BrowseRoute } from './routes/BrowseRoute.js';
 import { SearchRoute } from './routes/SearchRoute.js';
 import { ActiveTrainerRoute } from './routes/ActiveTrainerRoute.js';
 import { SettingsRoute } from './routes/SettingsRoute.js';
+import { AgentRoute } from './routes/AgentRoute.js';
 
 export default function App(): JSX.Element {
   const latchState = useLatchState((s) => s.state);
@@ -85,6 +88,7 @@ export default function App(): JSX.Element {
                 <Route path="/browse"  element={<BrowseRoute />} />
                 <Route path="/search"  element={<SearchRoute />} />
                 <Route path="/active"  element={<ActiveTrainerRoute />} />
+                <Route path="/agent"   element={<AgentRoute />} />
                 <Route path="/settings" element={<SettingsRoute />} />
               </Routes>
             </ErrorBoundary>
@@ -92,6 +96,8 @@ export default function App(): JSX.Element {
         </div>
       </div>
       <TrainerLoadingOverlay />
+      {window.starlight && <AgentEvents />}
+      <ApprovalCard />
     </div>
   );
 }

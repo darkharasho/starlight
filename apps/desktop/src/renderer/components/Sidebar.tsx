@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { useAgentStore } from '../stores/agent-store.js';
 
 const NAV = [
   { to: '/',          label: 'Home',           icon: 'M3 9.5 10 3l7 6.5V16a1 1 0 0 1-1 1h-3.5v-4.5h-5V17H4a1 1 0 0 1-1-1Z' },
@@ -6,10 +7,12 @@ const NAV = [
   { to: '/browse',    label: 'Browse',         icon: 'M3 3h5.5v5.5H3ZM11.5 3H17v5.5h-5.5ZM3 11.5h5.5V17H3ZM11.5 11.5H17V17h-5.5Z' },
   { to: '/search',    label: 'Search',         icon: 'M13.2 13.2 17 17M15 9A6 6 0 1 1 3 9a6 6 0 0 1 12 0Z' },
   { to: '/active',    label: 'Active Trainer', icon: 'M11 2 4 11.5h5L8.5 18l7-9.5h-5Z' },
+  { to: '/agent',     label: 'Agent',          icon: 'M10 3v2M5 7h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1ZM8 10.5v1M12 10.5v1' },
   { to: '/settings',  label: 'Settings',       icon: 'M3 6h8M15 6h2M3 14h2M9 14h8M13 4v4M7 12v4' },
 ];
 
 export function Sidebar(): JSX.Element {
+  const attached = useAgentStore((s) => s.state?.status === 'attached');
   return (
     <aside className="w-[216px] shrink-0 bg-shell px-3 py-4 flex flex-col gap-1">
       <nav className="flex flex-col gap-0.5 flex-1">
@@ -31,6 +34,9 @@ export function Sidebar(): JSX.Element {
               <path d={n.icon} />
             </svg>
             <span>{n.label}</span>
+            {n.to === '/agent' && attached && (
+              <span role="status" aria-label="Agent attached" className="ml-auto size-2 rounded-full bg-neon-cyan" />
+            )}
           </NavLink>
         ))}
       </nav>
