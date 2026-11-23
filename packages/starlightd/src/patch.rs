@@ -65,7 +65,6 @@ impl From<ApplyError> for RpcError {
 
 /// Write `bytes` at `addr` with every thread stopped, once no thread's RIP is strictly inside the
 /// site. Returns the original bytes. `-32013 Busy` if a thread stays inside for 200 attempts.
-#[allow(dead_code)] // used by the speed hooks' GOT slot writes (Task 12)
 pub fn write_code(t: &Target, tracer: &Tracer, addr: u64, bytes: &[u8]) -> Result<Vec<u8>, RpcError> {
     match write_checked(t, tracer, addr, bytes, None)? {
         Write::Done(original) | Write::Changed(original) => Ok(original),

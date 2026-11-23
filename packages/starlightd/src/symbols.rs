@@ -408,7 +408,6 @@ pub fn resolve(t: &Target, mods: &[Module], module: &str, name: &str) -> Result<
     resolve_with(&target_reader(t), mods, module, name)
 }
 
-#[allow(dead_code)] // first caller: GOT-based speed hooks
 pub fn got_slots(t: &Target, m: &Module, name: &str) -> Result<Vec<u64>, RpcError> {
     Ok(got_slots_with(&target_reader(t), m, name))
 }

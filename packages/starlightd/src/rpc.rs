@@ -3,9 +3,10 @@ use crate::cleanup::{self, Owner};
 use crate::scan::{FirstReq, NextReq, Scans};
 use crate::patch::Patches;
 use crate::pointer_scan::{self, PointerScans};
+use crate::speed::Speeds;
 use crate::tracer::DrRw;
 use crate::watch::{self, Watches};
-use crate::{aob, asm, disasm, mem, modules, pointer, process::Handles, signature, symbols};
+use crate::{aob, asm, disasm, mem, modules, pointer, process::Handles, signature, speed, symbols};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -87,8 +88,9 @@ pub struct ConnState {
     pub owner: Arc<Owner>,
     pub scans: Scans,
     pub pointer_scans: PointerScans,
-    pub patches: Patches,
+    pub patches: Arc<Patches>,
     pub watches: Watches,
+    pub speeds: Speeds,
 }
 
 /// Methods that can take long; they run on their own thread and answer out of order,
@@ -122,11 +124,13 @@ impl Session {
     pub fn new(conn: Conn) -> Self {
         let owner = Arc::new(Owner::default());
         cleanup::register(&owner);
+        let patches = Arc::new(Patches::new(owner.clone()));
         let state = Arc::new(ConnState {
             handles: Handles::new(conn.clone(), owner.clone()),
             scans: Scans::new(owner.clone()),
             pointer_scans: PointerScans::new(owner.clone()),
-            patches: Patches::new(owner.clone()),
+            speeds: Speeds::new(owner.clone(), patches.clone()),
+            patches,
             watches: Watches::new(owner.clone(), conn.clone()),
             owner,
         });
@@ -536,6 +540,28 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             }
             Ok(json!({ "id": id }))
         }
+        "speed_set" => {
+            let handle = param_handle(params)?;
+            let t = handles.get(handle)?;
+            let speed = params
+                .get("speed")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| RpcError::invalid_params("speed must be a number"))?;
+            let targets = speed_targets(params)?;
+            let status = state.speeds.set(handle, &t, speed, targets)?;
+            // As for patches: if detach ran the handle's teardown before the speed state's was
+            // registered (or while hooks were going in), undo it here so no hook outlives it.
+            if handles.get(handle).is_err() {
+                state.speeds.release(handle);
+                return Err(RpcError::unknown_handle(format!("unknown handle: {handle}")));
+            }
+            Ok(speed_json(&status))
+        }
+        "speed_get" => {
+            let handle = param_handle(params)?;
+            let t = handles.get(handle)?;
+            Ok(speed_json(&state.speeds.get(handle, &t)?))
+        }
         "watch_poll" => state.watches.poll(param_id(params)?),
         "watch_stop" => state.watches.stop(param_id(params)?),
         "freeze" => {
@@ -580,6 +606,62 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             Ok(json!({}))
         }
         other => Err(RpcError::method_not_found(format!("unknown method: {other}"))),
+    }
+}
+
+fn speed_json(s: &speed::Status) -> Value {
+    let hooks: Vec<Value> = s
+        .hooks
+        .iter()
+        .map(|h| {
+            let mut v = json!({
+                "name": h.name,
+                "address": format!("{:#x}", h.address),
+                "status": if h.skipped.is_some() { "skipped" } else { "hooked" },
+            });
+            if let Some(r) = &h.skipped {
+                v["reason"] = Value::String(r.clone());
+            }
+            v
+        })
+        .collect();
+    json!({ "speed": s.speed, "hooks": hooks })
+}
+
+/// `speed_set.targets` (debug builds only): `[{ name, address, abi, kind }]` replaces discovery.
+#[cfg(debug_assertions)]
+fn speed_targets(params: &Value) -> Result<Option<Vec<speed::targets::HookTarget>>, RpcError> {
+    let list = match params.get("targets") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v.as_array().ok_or_else(|| RpcError::invalid_params("targets must be an array"))?,
+    };
+    list.iter()
+        .map(|it| {
+            let name = param_str(it, "name")?.to_string();
+            let address = param_addr(it, "address")?;
+            let abi = speed::Abi::parse(param_str(it, "abi")?)
+                .ok_or_else(|| RpcError::invalid_params("abi must be \"win64\" or \"sysv\""))?;
+            let kind = match speed::Kind::parse(param_str(it, "kind")?) {
+                // Needs the original and GOT slots that only discovery finds.
+                Some(speed::Kind::GettimeofdayGot) | None => {
+                    return Err(RpcError::invalid_params(
+                        "kind must be \"qpc\", \"tick32\", \"tick64\", \"clock_gettime\" or \"gettimeofday\"",
+                    ))
+                }
+                Some(k) => k,
+            };
+            let slot = speed::targets::default_slot(kind, &name);
+            Ok(speed::targets::HookTarget { name, address, abi, kind, slot, original: None, got_slots: vec![] })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+#[cfg(not(debug_assertions))]
+fn speed_targets(params: &Value) -> Result<Option<Vec<speed::targets::HookTarget>>, RpcError> {
+    match params.get("targets") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => Err(RpcError::invalid_params("targets is only accepted by debug builds")),
     }
 }
 

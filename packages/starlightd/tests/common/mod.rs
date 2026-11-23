@@ -52,6 +52,12 @@ impl Daemon {
         self.stdin.take();
     }
 
+    /// SIGKILL this daemon (only ever the one the test started), so none of its teardown runs.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
     pub fn wait_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         let deadline = Instant::now() + timeout;
         loop {

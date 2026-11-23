@@ -17,20 +17,21 @@ const PAGE: u64 = 4096;
 const ALIGN: u64 = 16;
 
 /// An installed hook.
-#[allow(dead_code)] // used by the speed hooks (Tasks 11-12)
 #[derive(Debug, Clone)]
 pub struct Hook {
+    #[allow(dead_code)] // read by tests
     pub func: u64,
     /// The entry jump's patch, in the connection's `Patches`.
     pub patch_id: u32,
     /// Start of the hook body (and of its page).
+    #[allow(dead_code)] // read by tests
     pub code: u64,
+    #[allow(dead_code)] // read by tests
     pub trampoline: u64,
     /// The original bytes the entry jump replaced.
     pub displaced: Vec<u8>,
 }
 
-#[allow(dead_code)] // used by the speed hooks (Tasks 11-12)
 #[derive(Debug)]
 pub enum HookError {
     /// The function can't be hooked safely; nothing was changed. Holds the reason.
@@ -44,10 +45,17 @@ impl From<RpcError> for HookError {
     }
 }
 
+/// The bytes at `func` an entry jump would displace (what `install` records as `displaced`, unless
+/// the code changes meanwhile), or why `func` can't be hooked.
+pub fn entry_bytes(t: &Target, func: u64) -> Result<Vec<u8>, HookError> {
+    let code = disasm::read_code(t, func, 2 * disasm::MAX_INSN_LEN)?;
+    let len: usize = displaced(&code, func).map_err(HookError::Skipped)?.iter().map(Instruction::len).sum();
+    Ok(code[..len].to_vec())
+}
+
 /// Hook `func` for `handle`. `body(trampoline)` returns the hook's assembly source; it runs in
 /// place of the function and continues the original by jumping to `trampoline`. The caller holds
 /// `tracer` so the allocation and the patch share one attach.
-#[allow(dead_code)] // used by the speed hooks (Tasks 11-12)
 pub fn install(
     t: &Arc<Target>,
     tracer: &Arc<Tracer>,

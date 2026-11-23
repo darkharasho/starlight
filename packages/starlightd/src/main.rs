@@ -17,6 +17,7 @@ mod remote;
 mod rpc;
 mod signature;
 mod scan;
+mod speed;
 mod symbols;
 mod tracer;
 mod watch;

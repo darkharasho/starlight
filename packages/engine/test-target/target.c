@@ -83,6 +83,62 @@ static void on_usr2(int sig, siginfo_t* si, void* uc) {
     g_sig[0] += 1;
 }
 
+/* --clocks: a thread that every 20 ms stores the time as seen through libc's clock_gettime,
+ * gettimeofday, and clock_wrapper (game speed tests). */
+volatile int64_t   g_mono_ns    = 0;
+volatile int64_t   g_tod_us     = 0;
+volatile int64_t   g_wrapped_ns = 0;
+
+/* A game-side function that calls clock_gettime: hooking both must scale the time once. */
+__attribute__((noinline)) int clock_wrapper(clockid_t id, struct timespec* ts) {
+    return clock_gettime(id, ts);
+}
+
+static void* clocks_loop(void* arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec ts;
+        struct timeval tv;
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) g_mono_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        if (gettimeofday(&tv, NULL) == 0) g_tod_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+        if (clock_wrapper(CLOCK_MONOTONIC, &ts) == 0) g_wrapped_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        usleep(20 * 1000);
+    }
+    return NULL;
+}
+
+/* --clock-signals: a thread calls clock_gettime in a tight loop while another interrupts it with
+ * SIGUSR1 every 2 ms; the handler calls clock_gettime too, so some signals land while the loop
+ * is inside a speed hook (and its lock). Both counters must keep rising. */
+volatile uint64_t  g_clock_loops = 0;
+volatile uint64_t  g_clock_sigs  = 0;
+
+static void on_usr1(int sig) {
+    (void)sig;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    g_clock_sigs += 1;
+}
+
+static void* clock_spin(void* arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        g_clock_loops += 1;
+    }
+    return NULL;
+}
+
+static void* clock_kicker(void* arg) {
+    pthread_t target = *(pthread_t*)arg;
+    for (;;) {
+        pthread_kill(target, SIGUSR1);
+        usleep(2 * 1000);
+    }
+    return NULL;
+}
+
 static void* writer_loop(void* arg) {
     (void)arg;
     for (;;) {
@@ -105,6 +161,21 @@ int main(int argc, char** argv) {
         if (strcmp(argv[i], "--writer") == 0) {
             pthread_t th;
             if (pthread_create(&th, NULL, writer_loop, NULL) != 0) { perror("--writer"); return 1; }
+        }
+        if (strcmp(argv[i], "--clocks") == 0) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, clocks_loop, NULL) != 0) { perror("--clocks"); return 1; }
+        }
+        if (strcmp(argv[i], "--clock-signals") == 0) {
+            static pthread_t spinner;
+            pthread_t kicker;
+            struct sigaction su;
+            memset(&su, 0, sizeof su);
+            su.sa_handler = on_usr1;
+            su.sa_flags = SA_RESTART;
+            sigaction(SIGUSR1, &su, NULL);
+            if (pthread_create(&spinner, NULL, clock_spin, NULL) != 0 ||
+                pthread_create(&kicker, NULL, clock_kicker, &spinner) != 0) { perror("--clock-signals"); return 1; }
         }
         if (strcmp(argv[i], "--spin") == 0) {
             pthread_t th;
@@ -165,6 +236,12 @@ int main(int argc, char** argv) {
     printf("addr g_main_ticks=%p\n",  (void*)&g_main_ticks);
     printf("addr g_sig=%p\n",         (void*)g_sig);
     printf("addr libc_clock_gettime=%p\n", dlsym(RTLD_DEFAULT, "clock_gettime"));
+    printf("addr g_mono_ns=%p\n",    (void*)&g_mono_ns);
+    printf("addr g_tod_us=%p\n",     (void*)&g_tod_us);
+    printf("addr g_wrapped_ns=%p\n", (void*)&g_wrapped_ns);
+    printf("addr clock_wrapper=%p\n", (void*)&clock_wrapper);
+    printf("addr g_clock_loops=%p\n", (void*)&g_clock_loops);
+    printf("addr g_clock_sigs=%p\n",  (void*)&g_clock_sigs);
     if (mapped) printf("addr mapped=%p\n", mapped);
     if (heap_chain) {
         printf("addr g_root=%p\n",       (void*)&g_root);
