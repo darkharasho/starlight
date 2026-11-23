@@ -39,6 +39,35 @@ const Hotkeys = z.object({
   dec: z.string().optional(),
 }).optional();
 
+const Ident = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+const Hex = z.string().regex(/^([0-9a-fA-F]{2})+$/);
+
+const Verify = z.object({
+  bytes: z.array(z.object({
+    at: z.string().optional(),
+    expect: z.string(),            // AOB pattern, ?? allowed
+  })).optional(),
+  range: z.object({ min: z.number(), max: z.number() }).optional(),
+});
+
+const Provenance = z.object({
+  kind: z.enum(['ct-import', 'agent', 'manual']),
+  agent: z.string().optional(),
+  createdAt: z.string().datetime(),
+  game: z.object({
+    steamAppId: z.number().int().optional(),
+    buildId: z.string().optional(),
+    exeHash: z.string().optional(),
+  }),
+});
+
+const PatchStep = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('alloc'), name: Ident, size: z.number().int().min(1).max(65536), near: z.string().optional() }),
+  z.object({ op: z.literal('assemble'), at: z.string(), source: z.string().max(16384) }),
+  z.object({ op: z.literal('writeBytes'), at: z.string(), bytes: Hex, original: Hex.optional() }),
+  z.object({ op: z.literal('registerSymbol'), name: Ident, at: z.string() }),
+]);
+
 const SupportedCheat = z.object({
   id: z.string(),
   name: z.string(),
@@ -57,6 +86,25 @@ const SupportedCheat = z.object({
   unsupported: z.literal(false).optional(),
 });
 
+const ValueCheat = SupportedCheat.extend({
+  verify: Verify.optional(),
+  provenance: Provenance.optional(),
+});
+
+const PatchCheat = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  type: z.literal('patch'),
+  site: AobAddress,
+  enable: z.array(PatchStep).min(1),
+  disable: z.array(PatchStep).optional(),
+  verify: Verify.optional(),
+  provenance: Provenance.optional(),
+  hotkeys: Hotkeys,
+  unsupported: z.literal(false).optional(),
+});
+
 const UnsupportedCheat = z.object({
   id: z.string(),
   name: z.string(),
@@ -66,15 +114,13 @@ const UnsupportedCheat = z.object({
   originalSource: z.string().optional(),
 });
 
-const Cheat = z.union([SupportedCheat, UnsupportedCheat]);
+const CheatV1 = z.union([SupportedCheat, UnsupportedCheat]);
+const Cheat = z.union([ValueCheat, PatchCheat, UnsupportedCheat]);
 
-const Category = z.object({
-  name: z.string(),
-  cheats: z.array(Cheat),
-});
+const CategoryV1 = z.object({ name: z.string(), cheats: z.array(CheatV1) });
+const Category = z.object({ name: z.string(), cheats: z.array(Cheat) });
 
-export const StarlightTrainerSchema = z.object({
-  schemaVersion: z.literal(1),
+const trainerShape = {
   id: z.string(),
   game: z.object({
     name: z.string(),
@@ -83,22 +129,63 @@ export const StarlightTrainerSchema = z.object({
     version: z.string().optional(),
     platform: z.array(z.enum(['windows', 'linux', 'linux-proton', 'macos'])).min(1),
   }),
+};
+const metadataShape = {
+  author: z.string().optional(),
+  convertedAt: z.string().datetime().optional(),
+  warnings: z.array(z.string()).optional(),
+};
+
+export const StarlightTrainerSchemaV1 = z.object({
+  schemaVersion: z.literal(1),
+  ...trainerShape,
   metadata: z.object({
-    author: z.string().optional(),
-    source: z.object({
-      url: z.string().url().optional(),
-      convertedFrom: z.literal('.CT'),
-    }),
-    convertedAt: z.string().datetime().optional(),
-    warnings: z.array(z.string()).optional(),
+    ...metadataShape,
+    source: z.object({ url: z.string().url().optional(), convertedFrom: z.literal('.CT') }),
+  }),
+  categories: z.array(CategoryV1),
+});
+
+export const StarlightTrainerSchemaV2 = z.object({
+  schemaVersion: z.literal(2),
+  ...trainerShape,
+  metadata: z.object({
+    ...metadataShape,
+    source: z.object({ url: z.string().url().optional(), convertedFrom: z.enum(['.CT', 'starlight']) }),
   }),
   categories: z.array(Category),
 });
 
-export type StarlightTrainer = z.infer<typeof StarlightTrainerSchema>;
+export type StarlightTrainerV1 = z.infer<typeof StarlightTrainerSchemaV1>;
+export type StarlightTrainerV2 = z.infer<typeof StarlightTrainerSchemaV2>;
+
+export function upgradeTrainer(t: StarlightTrainerV1 | StarlightTrainerV2): StarlightTrainerV2 {
+  return { ...t, schemaVersion: 2 };
+}
+
+export const StarlightTrainerSchema = z
+  .union([StarlightTrainerSchemaV2, StarlightTrainerSchemaV1])
+  .transform(upgradeTrainer);
+
+export { ValueCheat as StarlightValueCheatSchema, PatchCheat as StarlightPatchCheatSchema };
+
+export type StarlightTrainer = z.output<typeof StarlightTrainerSchema>;
 export type StarlightCheat = z.infer<typeof Cheat>;
-export type StarlightSupportedCheat = z.infer<typeof SupportedCheat>;
+export type StarlightSupportedCheat = z.infer<typeof ValueCheat>;
 export type StarlightUnsupportedCheat = z.infer<typeof UnsupportedCheat>;
 export type StarlightCategory = z.infer<typeof Category>;
 export type StarlightAddress = z.infer<typeof Address>;
 export type StarlightValueType = z.infer<typeof ValueType>;
+export type StarlightValueCheat = StarlightSupportedCheat;
+export type StarlightPatchCheat = z.infer<typeof PatchCheat>;
+export type StarlightPatchStep = z.infer<typeof PatchStep>;
+export type StarlightVerify = z.infer<typeof Verify>;
+export type StarlightProvenance = z.infer<typeof Provenance>;
+export type StarlightAobAddress = z.infer<typeof AobAddress>;
+
+export function isValueCheat(c: StarlightCheat): c is StarlightValueCheat {
+  return !('unsupported' in c && c.unsupported === true) && c.type !== 'patch';
+}
+export function isPatchCheat(c: StarlightCheat): c is StarlightPatchCheat {
+  return !('unsupported' in c && c.unsupported === true) && c.type === 'patch';
+}

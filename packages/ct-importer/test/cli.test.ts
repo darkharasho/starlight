@@ -39,7 +39,7 @@ describe('cli', () => {
       ]);
       expect(r.code).toBe(0);
       const json = JSON.parse(readFileSync(out, 'utf8'));
-      expect(json.schemaVersion).toBe(1);
+      expect(json.schemaVersion).toBe(2);
       expect(json.game.name).toBe('Test');
       expect(json.categories[0].cheats).toHaveLength(2);
     } finally {

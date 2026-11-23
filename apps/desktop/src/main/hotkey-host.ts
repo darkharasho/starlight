@@ -1,6 +1,6 @@
 import { uIOhook, type UiohookKeyboardEvent } from 'uiohook-napi';
 import { BrowserWindow } from 'electron';
-import type { StarlightTrainer, StarlightSupportedCheat } from '@starlight/ct-importer';
+import { isValueCheat, type StarlightTrainer, type StarlightSupportedCheat } from '@starlight/ct-importer';
 import * as engineHost from './engine-host.js';
 import { CHANNELS, type StarlightEvent } from '../shared/ipc.js';
 import { parseAccelerator, type AcceleratorMatcher } from './hotkey-matcher.js';
@@ -27,10 +27,6 @@ let onInitFailure: ((message: string) => void) | null = null;
 
 function broadcast(e: StarlightEvent): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(CHANNELS.event, e);
-}
-
-function isSupported(c: unknown): c is StarlightSupportedCheat {
-  return !!c && typeof c === 'object' && !('unsupported' in c && (c as { unsupported: unknown }).unsupported === true);
 }
 
 function resolveHotkeys(
@@ -92,7 +88,7 @@ export function registerForTrainer(t: StarlightTrainer | null, overrides: Traine
   if (!t) return;
   for (const cat of t.categories) {
     for (const cheat of cat.cheats) {
-      if (!isSupported(cheat)) continue;
+      if (!isValueCheat(cheat)) continue;
       const hk = resolveHotkeys(cheat, overrides[cheat.id]);
       const reg: RegisteredCheat = {
         cheatId: cheat.id,

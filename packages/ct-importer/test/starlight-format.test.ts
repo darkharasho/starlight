@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { StarlightTrainerSchema, type StarlightTrainer } from '../src/starlight-format.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { StarlightTrainerSchema, isValueCheat, isPatchCheat, type StarlightTrainer, type StarlightCheat } from '../src/starlight-format.js';
 
 describe('StarlightTrainerSchema', () => {
   it('accepts a minimal valid trainer', () => {
     const t: StarlightTrainer = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: 'starlight-elden-ring-frx-1',
       game: {
         name: 'Elden Ring',
@@ -81,5 +84,74 @@ describe('StarlightTrainerSchema', () => {
       }] }],
     };
     expect(() => StarlightTrainerSchema.parse(t)).not.toThrow();
+  });
+
+  const base = (cheats: unknown[], over: Record<string, unknown> = {}) => ({
+    schemaVersion: 2, id: 'x',
+    game: { name: 'X', processName: ['x.exe'], platform: ['windows'] },
+    metadata: { source: { convertedFrom: '.CT' } },
+    categories: [{ name: 'C', cheats }],
+    ...over,
+  });
+  const site = { kind: 'aob', module: 'x.exe', pattern: '48 8B ?? 89' };
+  const patch = (extra: Record<string, unknown> = {}) => ({
+    id: 'p', name: 'P', type: 'patch', site,
+    enable: [
+      { op: 'alloc', name: 'cave', size: 64 },
+      { op: 'assemble', at: 'cave', source: 'ret' },
+      { op: 'writeBytes', at: 'site', bytes: '90ab', original: '4889' },
+      { op: 'registerSymbol', name: 'hook', at: 'cave' },
+    ],
+    ...extra,
+  });
+
+  it('loads a v1 file and upgrades it to schemaVersion 2 unchanged otherwise', () => {
+    const cats = [{ name: 'C', cheats: [{
+      id: 'a', name: 'A', type: 'freeze', valueType: 'int32', value: 1,
+      address: { kind: 'absolute', address: '0x1' },
+    }] }];
+    const v1 = base([], { schemaVersion: 1, categories: cats });
+    const out = StarlightTrainerSchema.parse(v1);
+    expect(out.schemaVersion).toBe(2);
+    expect(out.categories).toEqual(cats);
+  });
+
+  it('accepts a v2 patch cheat with alloc/assemble/writeBytes/registerSymbol steps', () => {
+    expect(() => StarlightTrainerSchema.parse(base([patch()]))).not.toThrow();
+  });
+
+  it('accepts convertedFrom "starlight"', () => {
+    expect(() => StarlightTrainerSchema.parse(
+      base([], { metadata: { source: { convertedFrom: 'starlight' } } }))).not.toThrow();
+  });
+
+  it('rejects a patch site that is not an aob address', () => {
+    expect(() => StarlightTrainerSchema.parse(
+      base([patch({ site: { kind: 'module', module: 'x.exe', offset: '0x10' } })]))).toThrow();
+  });
+
+  it('rejects writeBytes with odd-length hex', () => {
+    expect(() => StarlightTrainerSchema.parse(base([patch({
+      enable: [{ op: 'writeBytes', at: 'site', bytes: '9' }],
+    })]))).toThrow();
+  });
+
+  it('isValueCheat/isPatchCheat tell the three cheat kinds apart', () => {
+    const t = StarlightTrainerSchema.parse(base([
+      { id: 'a', name: 'A', type: 'freeze', valueType: 'int32', address: { kind: 'absolute', address: '0x1' } },
+      patch(),
+      { id: 'u', name: 'U', unsupported: true, unsupportedReason: 'no' },
+    ]));
+    const [v, p, u] = t.categories[0].cheats as StarlightCheat[];
+    expect([isValueCheat(v), isValueCheat(p), isValueCheat(u)]).toEqual([true, false, false]);
+    expect([isPatchCheat(v), isPatchCheat(p), isPatchCheat(u)]).toEqual([false, true, false]);
+  });
+
+  it('every catalog trainer in packages/catalog/trainers still parses', () => {
+    const dir = join(dirname(fileURLToPath(import.meta.url)), '../../catalog/trainers');
+    const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+    for (const f of files) {
+      expect(() => StarlightTrainerSchema.parse(JSON.parse(readFileSync(join(dir, f), 'utf8'))), f).not.toThrow();
+    }
   });
 });
