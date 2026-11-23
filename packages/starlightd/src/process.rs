@@ -2,7 +2,9 @@
 use crate::cleanup::{Owner, Teardown, ON_TARGET_EXIT};
 use crate::freeze::Freezes;
 use crate::maps;
+use crate::remote;
 use crate::rpc::{Conn, RpcError};
+use crate::tracer::{self, Tracer};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -18,12 +20,16 @@ pub struct Target {
 }
 
 type Map = Arc<Mutex<HashMap<u32, Arc<Target>>>>;
+/// Per handle: address -> size of each live remote allocation. Only records: the memory itself is
+/// never freed automatically (D9).
+type Allocs = Arc<Mutex<HashMap<u32, HashMap<u64, u64>>>>;
 
 pub struct Handles {
     conn: Conn,
     owner: Arc<Owner>,
     map: Map,
     freezes: Freezes,
+    allocs: Allocs,
     next: AtomicU32,
 }
 
@@ -85,11 +91,35 @@ impl Target {
     pub fn exited(&self) -> bool {
         poll_exited(&self.pidfd, Duration::ZERO)
     }
+
+    /// The process's ptrace tracer, attaching if nobody holds it. Keep the `Arc` only while
+    /// something needs the game traced (a patch, hook, watch, or an operation in progress):
+    /// dropping the last one detaches. Plain attach, read, write and scan never call this.
+    pub fn tracer(&self) -> Result<Arc<Tracer>, RpcError> {
+        let gone = || RpcError::process_not_found(format!("process {} has exited", self.pid));
+        if self.exited() {
+            return Err(gone());
+        }
+        let t = tracer::for_pid(self.pid)?;
+        // The pidfd pins the process we attached to; if it exited before the seize, the pid
+        // may already name another process, and dropping `t` detaches from it at once.
+        if self.exited() {
+            return Err(gone());
+        }
+        Ok(t)
+    }
 }
 
 impl Handles {
     pub fn new(conn: Conn, owner: Arc<Owner>) -> Self {
-        Handles { conn, owner, map: Arc::new(Mutex::new(HashMap::new())), freezes: Freezes::default(), next: AtomicU32::new(1) }
+        Handles {
+            conn,
+            owner,
+            map: Arc::new(Mutex::new(HashMap::new())),
+            freezes: Freezes::default(),
+            allocs: Arc::new(Mutex::new(HashMap::new())),
+            next: AtomicU32::new(1),
+        }
     }
 
     pub fn attach(&self, pid: i32) -> Result<u32, RpcError> {
@@ -98,6 +128,7 @@ impl Handles {
         self.map.lock().unwrap().insert(handle, target.clone());
 
         let map = self.map.clone();
+        let allocs = self.allocs.clone();
         let conn = self.conn.clone();
         let owner = self.owner.clone();
         std::thread::spawn(move || loop {
@@ -105,6 +136,7 @@ impl Handles {
                 owner.run_handle_kinds(handle, ON_TARGET_EXIT);
                 // Whoever removes the entry owns the notification, so it is sent at most once.
                 let removed = map.lock().unwrap().remove(&handle);
+                allocs.lock().unwrap().remove(&handle);
                 // Anything registered while the handle was still in the map.
                 owner.run_handle_kinds(handle, ON_TARGET_EXIT);
                 if removed.is_some() {
@@ -158,9 +190,41 @@ impl Handles {
         Ok(())
     }
 
+    /// Allocate in the target and record it for `handle`; returns (address, size in bytes).
+    pub fn alloc(&self, handle: u32, size: u64, near: Option<u64>, prot: i32) -> Result<(u64, u64), RpcError> {
+        let target = self.get(handle)?;
+        let addr = remote::alloc(&target, size, near, prot)?;
+        let len = remote::page_round(size);
+        self.allocs.lock().unwrap().entry(handle).or_default().insert(addr, len);
+        // Detach drops the handle's records after removing it from the map: recheck, as for
+        // freezes, so no record outlives its handle. The pages stay mapped either way (D9).
+        if !self.map.lock().unwrap().contains_key(&handle) {
+            self.allocs.lock().unwrap().remove(&handle);
+            return Err(RpcError::unknown_handle(format!("unknown handle: {handle}")));
+        }
+        Ok((addr, len))
+    }
+
+    /// Unmap an allocation `handle` made. Any other address is `-32009`.
+    pub fn free(&self, handle: u32, addr: u64) -> Result<(), RpcError> {
+        let target = self.get(handle)?;
+        // Taken out first, so two concurrent frees can't both unmap it.
+        let size = self
+            .allocs
+            .lock()
+            .unwrap()
+            .get_mut(&handle)
+            .and_then(|m| m.remove(&addr))
+            .ok_or_else(|| RpcError::unknown_id(format!("no allocation at {addr:#x} on handle {handle}")))?;
+        remote::free(&target, addr, size).inspect_err(|_| {
+            self.allocs.lock().unwrap().entry(handle).or_default().insert(addr, size);
+        })
+    }
+
     pub fn detach(&self, handle: u32) -> Result<(), RpcError> {
         self.owner.run_handle(handle);
         let removed = self.map.lock().unwrap().remove(&handle);
+        self.allocs.lock().unwrap().remove(&handle);
         // Anything registered while the handle was still in the map.
         self.owner.run_handle(handle);
         removed.map(|_| ()).ok_or_else(|| RpcError::unknown_handle(format!("unknown handle: {handle}")))
@@ -170,6 +234,7 @@ impl Handles {
     pub fn detach_all(&self) {
         self.owner.run_all();
         self.map.lock().unwrap().clear();
+        self.allocs.lock().unwrap().clear();
     }
 }
 

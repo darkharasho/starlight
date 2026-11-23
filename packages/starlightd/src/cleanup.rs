@@ -67,11 +67,15 @@ impl Owner {
     }
 
     /// Drop an action without running it (the change was undone some other way).
+    /// The action is dropped after the lock is released, so whatever it owns (e.g. an
+    /// `Arc<Tracer>`, whose drop detaches) is never torn down under the owner's lock.
     pub fn remove(&self, token: u64) -> bool {
-        let mut s = self.state.lock().unwrap();
-        let before = s.entries.len();
-        s.entries.retain(|e| e.token != token);
-        s.entries.len() != before
+        let removed = {
+            let mut s = self.state.lock().unwrap();
+            let i = s.entries.iter().position(|e| e.token == token);
+            i.map(|i| s.entries.remove(i))
+        };
+        removed.is_some()
     }
 
     /// Run every action of `handle`.

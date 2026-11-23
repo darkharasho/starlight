@@ -10,10 +10,12 @@ mod peer;
 mod pointer;
 mod process;
 mod regions;
+mod remote;
 mod rpc;
 mod signature;
 mod scan;
 mod symbols;
+mod tracer;
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;

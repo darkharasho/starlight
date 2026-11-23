@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -409,6 +409,34 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             let addr = pointer::resolve(&t, module_base.wrapping_add(base), &offsets)?;
             Ok(json!({ "address": format!("{addr:#x}") }))
         }
+        "alloc" => {
+            let handle = param_handle(params)?;
+            let size = param_u64(params, "size")?;
+            if size == 0 || size > MAX_ALLOC {
+                return Err(RpcError::invalid_params(format!("size must be 1..={MAX_ALLOC}")));
+            }
+            let near = match params.get("near") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(param_addr(params, "near")?),
+            };
+            let prot = match params.get("prot") {
+                None | Some(Value::Null) => "rwx",
+                Some(v) => v.as_str().ok_or_else(|| RpcError::invalid_params("prot must be \"rwx\", \"rw\" or \"rx\""))?,
+            };
+            let prot = match prot {
+                "rwx" => libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                "rw" => libc::PROT_READ | libc::PROT_WRITE,
+                "rx" => libc::PROT_READ | libc::PROT_EXEC,
+                _ => return Err(RpcError::invalid_params("prot must be \"rwx\", \"rw\" or \"rx\"")),
+            };
+            let (address, size) = handles.alloc(handle, size, near, prot)?;
+            Ok(json!({ "address": format!("{address:#x}"), "size": size }))
+        }
+        "free" => {
+            let handle = param_handle(params)?;
+            handles.free(handle, param_addr(params, "address")?)?;
+            Ok(json!({}))
+        }
         "freeze" => {
             let handle = param_handle(params)?;
             let addr = param_addr(params, "address")?;
@@ -463,6 +491,7 @@ const MAX_MANY_ITEMS: usize = 4096;
 const MAX_MANY_LENGTH: u64 = 4096;
 const MAX_RESULTS_PAGE: u64 = 1000;
 const MAX_DISASM_COUNT: u64 = 500;
+const MAX_ALLOC: u64 = 64 * 1024 * 1024;
 
 fn param_str<'a>(params: &'a Value, key: &str) -> Result<&'a str, RpcError> {
     params.get(key).and_then(Value::as_str).ok_or_else(|| RpcError::invalid_params(format!("{key} must be a string")))

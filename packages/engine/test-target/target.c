@@ -44,6 +44,27 @@ __attribute__((noinline)) void bump_counter(void) {
     g_counter += 1;
 }
 
+/* --spin: a thread calls spin_target in a tight loop and counts the calls (patches, hooks, ptrace). */
+volatile uint64_t  g_spin_calls = 0;
+volatile int       g_spin_sink  = 0;
+
+__attribute__((noinline)) int spin_target(int x) {
+    return x * 3 + 1;
+}
+
+static void* spin_loop(void* arg) {
+    (void)arg;
+    for (;;) {
+        g_spin_sink = spin_target(g_spin_sink);
+        g_spin_calls += 1;
+    }
+    return NULL;
+}
+
+/* Advances after every sleep(1) of the main loop, so tests can see the main thread's blocked
+ * sleep restart correctly after it was interrupted by ptrace. */
+volatile uint64_t  g_main_ticks = 0;
+
 static void* writer_loop(void* arg) {
     (void)arg;
     for (;;) {
@@ -60,6 +81,10 @@ int main(int argc, char** argv) {
         if (strcmp(argv[i], "--writer") == 0) {
             pthread_t th;
             if (pthread_create(&th, NULL, writer_loop, NULL) != 0) { perror("--writer"); return 1; }
+        }
+        if (strcmp(argv[i], "--spin") == 0) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, spin_loop, NULL) != 0) { perror("--spin"); return 1; }
         }
     }
     for (int i = 1; i + 1 < argc; i++) {
@@ -87,6 +112,9 @@ int main(int argc, char** argv) {
     printf("addr g_player_ptr=%p\n",  (void*)&g_player);
     printf("addr g_counter=%p\n",     (void*)&g_counter);
     printf("addr bump_counter=%p\n",  (void*)&bump_counter);
+    printf("addr spin_target=%p\n",   (void*)&spin_target);
+    printf("addr g_spin_calls=%p\n",  (void*)&g_spin_calls);
+    printf("addr g_main_ticks=%p\n",  (void*)&g_main_ticks);
     printf("addr libc_clock_gettime=%p\n", dlsym(RTLD_DEFAULT, "clock_gettime"));
     if (mapped) printf("addr mapped=%p\n", mapped);
     printf("offset stats_in_player=%zu\n", offsetof(Player, stats));
@@ -96,6 +124,7 @@ int main(int argc, char** argv) {
     /* Idle loop. Tests will read/write our memory, then SIGTERM us. */
     while (1) {
         sleep(1);
+        g_main_ticks += 1;
         /* Re-touch volatile values so the compiler keeps them live. */
         (void)g_health; (void)g_speed; (void)g_souls; (void)g_byte;
         (void)g_aob_marker[0]; (void)g_after_aob;
