@@ -2,9 +2,10 @@ import { create } from 'zustand';
 import { api } from '../ipc-client.js';
 import type { DetectedProcess } from '../../shared/ipc.js';
 import { useDetectionStore } from './detection-store.js';
-import { useCatalogStore } from './catalog-store.js';
 import { useConfigStore } from './config-store.js';
 import { useCeSessionStore } from './ce-session-store.js';
+import { useLibraryStore } from './library-store.js';
+import { sessionRequestFor, findCatalogEntry } from '../lib/open-game.js';
 
 interface ProcessState {
   processes: DetectedProcess[];
@@ -30,6 +31,11 @@ export function attachProcessEvents(): void {
   unsub = api().onEvent((e) => {
     if (e.type === 'process:list') useProcessStore.setState({ processes: e.processes });
     else if (e.type === 'process:matched') useProcessStore.setState({ matchedPid: e.pid });
+    else if (e.type === 'session:progress') useCeSessionStore.setState({ progress: e.message });
+    else if (e.type === 'session:tables') useCeSessionStore.setState({ pickSteps: e.tables });
+    else if (e.type === 'ce:hotkey') useCeSessionStore.getState().applyHotkey(e);
+    else if (e.type === 'session:game-exited') void useCeSessionStore.getState().gameExited(e.sessionId);
+    else if (e.type === 'library:scanned') useLibraryStore.setState({ games: e.games });
     else if (e.type === 'game:detected') {
       useDetectionStore.getState().setDetected({
         game: e.game,
@@ -40,18 +46,17 @@ export function attachProcessEvents(): void {
       // Setting A: auto-fire latch on exact match when preference enabled
       if (
         useConfigStore.getState().config?.preferences.autoAttachOnDetect &&
-        e.confidence === 'exact'
+        e.confidence === 'exact' &&
+        // Play is already bringing this game up and will attach itself.
+        !useCeSessionStore.getState().launch && !useCeSessionStore.getState().starting &&
+        // One game at a time: never take over from a connected game.
+        !useCeSessionStore.getState().attached
       ) {
-        const entry = useCatalogStore.getState().index?.games.find((g) => g.id === e.game.id);
-        const source = entry?.trainerPath ?? entry?.trainerSource;
-        if (source) {
-          void useCeSessionStore.getState().start({
-            source,
-            cacheKey: e.game.id,
-            pid: e.pid,
-            processName: e.name,
-            game: e.game,
-          }).then((ok) => { if (ok) useDetectionStore.getState().clear(); }).catch(() => {});
+        const entry = findCatalogEntry(e.game);
+        if (entry?.trainerSource) {
+          void useCeSessionStore.getState()
+            .start(sessionRequestFor(entry, { pid: e.pid, processName: e.name }))
+            .then((ok) => { if (ok) useDetectionStore.getState().clear(); }).catch(() => {});
         }
       }
     }

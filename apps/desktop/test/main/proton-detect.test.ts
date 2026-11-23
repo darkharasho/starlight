@@ -9,6 +9,9 @@ const PROTON_ENVIRON = [
   'STEAM_COMPAT_DATA_PATH=/var/mnt/data/SteamLibrary/steamapps/compatdata/2784470',
   'STEAM_COMPAT_TOOL_PATHS=/var/mnt/data/SteamLibrary/steamapps/common/Proton - Experimental:/var/mnt/data/SteamLibrary/steamapps/common/SteamLinuxRuntime_4',
   'STEAM_COMPAT_PROTON=1',
+  'STEAM_COMPAT_INSTALL_PATH=/var/mnt/data/SteamLibrary/steamapps/common/9 Kings',
+  'STEAM_COMPAT_LIBRARY_PATHS=/var/mnt/data/SteamLibrary/steamapps',
+  'HOME=/home/user',
 ].join(NUL) + NUL;
 
 const PROTON_DIR = '/var/mnt/data/SteamLibrary/steamapps/common/Proton - Experimental';
@@ -25,6 +28,19 @@ describe('detectProton', () => {
     expect(info!.clientInstallPath).toBe('/home/user/.local/share/Steam');
     expect(info!.protonDir).toBe(PROTON_DIR);
     expect(info!.protonBin).toBe(`${PROTON_DIR}/proton`);
+  });
+
+  // Proton builds the game's S: drive from these; launching CE without them
+  // makes Proton delete S: under the running game (its assets stop loading).
+  it("keeps the game's Steam compat settings for launching CE alongside it", async () => {
+    const info = await detectProton({
+      pid: 1234,
+      readEnviron: async () => PROTON_ENVIRON,
+      fileExists: async (p) => p === `${PROTON_DIR}/proton`,
+    });
+    expect(info!.compatEnv.STEAM_COMPAT_INSTALL_PATH).toBe('/var/mnt/data/SteamLibrary/steamapps/common/9 Kings');
+    expect(info!.compatEnv.STEAM_COMPAT_LIBRARY_PATHS).toBe('/var/mnt/data/SteamLibrary/steamapps');
+    expect(info!.compatEnv.HOME).toBeUndefined();
   });
 
   it('resolves the proton dir from PATH when tool-paths are absent', async () => {

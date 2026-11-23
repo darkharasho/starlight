@@ -96,4 +96,29 @@ describe('spawnCeProcess', () => {
     expect(lines).toContain('first error');
     expect(lines).toContain('second error');
   });
+  it("launches Proton CE with the game's Steam compat settings", async () => {
+    // Fake `proton`: prints the env Proton would use to build the S: drive.
+    const protonBin = join(dir, 'proton');
+    await writeFile(protonBin, '#!/bin/sh\necho "install=$STEAM_COMPAT_INSTALL_PATH libs=$STEAM_COMPAT_LIBRARY_PATHS data=$STEAM_COMPAT_DATA_PATH"\nexit 0\n');
+    await chmod(protonBin, 0o755);
+    const winCeDir = join(dir, 'windowsbin');
+    await mkdir(winCeDir, { recursive: true });
+    const lines: string[] = [];
+    const exited = new Promise<void>((resolve) => {
+      void (async () => {
+        handle = await spawnCeProcess({
+          binaryPath: binary, installDir, ctPath, controlScript: 'x',
+          proton: {
+            protonBin, winCeExe: join(winCeDir, 'ce.exe'), winCeDir, ctWinPath: '',
+            compatDataPath: '/c/data', clientInstallPath: '/steam',
+            compatEnv: { STEAM_COMPAT_INSTALL_PATH: '/lib/steamapps/common/G', STEAM_COMPAT_LIBRARY_PATHS: '/lib/steamapps' },
+          },
+          onStdoutLine: (l) => { lines.push(l); },
+          onExit: () => resolve(),
+        });
+      })();
+    });
+    await exited;
+    expect(lines).toContain('install=/lib/steamapps/common/G libs=/lib/steamapps data=/c/data');
+  });
 });

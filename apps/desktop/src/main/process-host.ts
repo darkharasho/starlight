@@ -25,9 +25,16 @@ const NOISE_PROCESSES = new Set([
   'steam', 'steamwebhelper', 'gameoverlayui', 'steamerrorreporter', 'xalia', 'crashpad_handler',
 ]);
 
+/**
+ * Helper executables that ship alongside games. Matched by prefix because
+ * Linux clips process names to 15 chars ("UnityCrashHandl").
+ */
+const NOISE_PREFIXES = ['unitycrashhandl', 'crashreportclie', 'crashpad', 'easyanticheat', 'cheatengine'];
+
 /** True for processes that are clearly not a game the user would latch. */
 export function isNoiseProcess(name: string): boolean {
-  return NOISE_PROCESSES.has(strip(name));
+  const n = strip(name);
+  return NOISE_PROCESSES.has(n) || NOISE_PREFIXES.some((p) => n.startsWith(p));
 }
 
 /** Filters out infrastructure noise so the picker shows real game candidates. */

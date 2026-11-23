@@ -4,9 +4,15 @@ import { useLatchState } from '../stores/latch-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useConfigStore } from '../stores/config-store.js';
-import { useCeSessionStore } from '../stores/ce-session-store.js';
+import { useCeSessionStore, playTiming } from '../stores/ce-session-store.js';
+import { ConnectStage } from '../components/ce/ConnectStage.js';
+import { useCover } from '../lib/use-cover.js';
 import { findConflict, resolveCheatHotkeys } from '../lib/accelerator.js';
-import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer, CeSessionRecord, DetectedProcess } from '../../shared/ipc.js';
+import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer } from '../../shared/ipc.js';
+import { CeSessionView, gameCandidates } from '../components/ce/CeSessionView.js';
+import { openToolsOnly, findCatalogEntry, sessionRequestFor, showGameScreen } from '../lib/open-game.js';
+
+export { gameCandidates };
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
 import { ValueCheatCard } from '../components/cheat-cards/ValueCheatCard.js';
 import { UnsupportedCheatCard } from '../components/cheat-cards/UnsupportedCheatCard.js';
@@ -57,17 +63,13 @@ export function ActiveTrainerRoute(): JSX.Element {
   const navigate = useNavigate();
 
   const ceSessionId = useCeSessionStore((s) => s.sessionId);
-  const ceRecords = useCeSessionStore((s) => s.records);
-  const cePending = useCeSessionStore((s) => s.pending);
-  const ceSetActive = useCeSessionStore((s) => s.setActive);
-  const ceEnd = useCeSessionStore((s) => s.end);
-  const ceAttached = useCeSessionStore((s) => s.attached);
-  const ceProton = useCeSessionStore((s) => s.proton);
-  const ceAttachedTo = useCeSessionStore((s) => s.attachedTo);
-  const ceAttach = useCeSessionStore((s) => s.attach);
   const ceStarting = useCeSessionStore((s) => s.starting);
   const ceStartError = useCeSessionStore((s) => s.startError);
   const ceNotRunning = useCeSessionStore((s) => s.notRunning);
+  const ceLastReq = useCeSessionStore((s) => s.lastReq);
+  const ceStart = useCeSessionStore((s) => s.start);
+  const ceTitle = useCeSessionStore((s) => s.title);
+  const ceProgress = useCeSessionStore((s) => s.progress);
 
   const trainer = useTrainerStore((s) => s.trainer);
   const activeCheats = useTrainerStore((s) => s.activeCheats);
@@ -126,20 +128,69 @@ export function ActiveTrainerRoute(): JSX.Element {
     }
   }
 
+  const running = gameCandidates(processes);
+
+  /** Attach to a running process: with its tables if the catalog knows the game, else tools only. */
+  async function attachRunning(p: { pid: number; name: string }): Promise<void> {
+    const name = p.name.replace(/\.exe$/i, '');
+    const target = { pid: p.pid, processName: p.name };
+    const entry = findCatalogEntry({ id: '', name });
+    if (entry?.trainerSource) {
+      await ceStart(sessionRequestFor(entry, target));
+      showGameScreen(navigate);
+      return;
+    }
+    await openToolsOnly({ name }, navigate, target);
+  }
   const content: JSX.Element = ceSessionId ? (
-    <CeSessionView records={ceRecords} pending={cePending} setActive={ceSetActive} end={ceEnd}
-                   attached={ceAttached} proton={ceProton} attachedTo={ceAttachedTo}
-                   attach={ceAttach} starting={ceStarting} startError={ceStartError}
-                   processes={processes} />
+    <CeSessionView processes={processes} />
+  ) : ceStarting ? (
+    <StartingStage title={ceTitle ?? 'the game'} game={ceLastReq?.game} progress={ceProgress} hasTable={!!(ceLastReq?.source || ceLastReq?.sources?.length)} />
   ) : !trainer ? (
-    <div className="flex flex-col items-center justify-center h-full text-muted">
-      {ceNotRunning && (
-        <div className="text-xs text-neon-pink border border-neon-pink/40 bg-neon-pink/[0.06] rounded-sm px-3 py-2 mb-4 self-stretch">
-          Game isn&apos;t running. Start it, then click the tile again — Starlight will attach automatically.
+    <div className="mx-auto flex h-full w-full max-w-[560px] flex-col items-center gap-5 pt-14 text-center">
+      {ceNotRunning ? (
+        <div className="w-full rounded-xl border border-neon-pink/40 bg-neon-pink/[0.06] px-4 py-2.5 text-[13px] text-neon-pink animate-rise">
+          {ceTitle ?? 'That game'} isn&apos;t running. Start it, then{' '}
+          {ceLastReq
+            ? <button type="button" className="underline hover:text-ink" onClick={() => void ceStart(ceLastReq)}>try again</button>
+            : 'open it again'}
+          {' '}— Starlight attaches automatically.
         </div>
-      )}
-      <p className="text-sm">No trainer loaded.</p>
-      <p className="text-xs mt-2">Go to Home and click "Load Trainer (.CT)".</p>
+      ) : ceStartError ? (
+        <div role="alert" className="w-full rounded-xl border border-neon-pink/40 bg-neon-pink/[0.06] px-4 py-2.5 text-[13px] text-neon-pink animate-rise">
+          <div className="font-semibold mb-1">Couldn&apos;t start{ceTitle ? ` ${ceTitle}` : ' the session'}</div>
+          <div className="whitespace-pre-line">{ceStartError}</div>
+          {ceLastReq && (
+            <button type="button" className="mt-2 underline hover:text-ink" onClick={() => void ceStart(ceLastReq)}>Try again</button>
+          )}
+        </div>
+      ) : null}
+      <div>
+        <h1 className="text-[24px] font-semibold tracking-tight">No game attached</h1>
+        <p className="mt-2 text-[13px] leading-relaxed text-muted">
+          Pick a game from Home or Library to load its cheats, or attach to anything that&apos;s running
+          to change its speed and search its memory.
+        </p>
+      </div>
+      <section className="w-full text-left">
+        <h2 className="px-1 pb-2 text-[13px] font-medium text-soft">Running now</h2>
+        {running.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
+            No running games found. Start a game and it shows up here.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-line bg-panel">
+            {running.map((p) => (
+              <button key={p.pid} type="button"
+                      onClick={() => void attachRunning(p)}
+                      className="group flex w-full items-center justify-between border-t border-line/60 px-4 py-3 text-left text-sm transition-colors first:border-t-0 hover:bg-neon-cyan/[0.06] focus-visible:bg-neon-cyan/[0.06] focus-visible:outline-none">
+                <span>{p.name}</span>
+                <span className="text-xs text-muted transition-colors group-hover:text-neon-cyan">pid {p.pid} · attach</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   ) : (
     <TrainerView
@@ -165,16 +216,39 @@ export function ActiveTrainerRoute(): JSX.Element {
     />
   );
 
+  // The game screens are centred and draw their own top edge, so Back floats
+  // over them; the older trainer view keeps it in the flow above its header.
+  const floating = !!ceSessionId || ceStarting || !trainer;
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="relative flex flex-col h-full min-h-0">
       <button
         type="button"
-        onClick={() => navigate(-1)}
-        className="shrink-0 self-start mb-3 flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan"
+        onClick={() => {
+          // Nothing to go back to (e.g. the app opened straight onto a game) → Home.
+          const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+          if (idx > 0) navigate(-1); else navigate('/');
+        }}
+        className={`flex items-center gap-1.5 rounded-full border border-line bg-bg/60 px-3.5 py-1.5 text-xs text-muted backdrop-blur transition-colors hover:border-neon-cyan hover:text-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan ${
+          floating ? 'absolute left-0 top-0 z-20' : 'shrink-0 self-start mb-3'
+        }`}
       >
         <span aria-hidden="true">←</span> Back
       </button>
       <div className="flex-1 min-h-0">{content}</div>
+    </div>
+  );
+}
+
+/** Shown while a session is being set up and there is no cheat list to show yet. */
+function StartingStage({ title, game, progress, hasTable }: {
+  title: string; game: { name: string; steamAppId?: number | null } | undefined; progress: string | null; hasTable: boolean;
+}): JSX.Element {
+  const cover = useCover(game ?? { name: title });
+  const steps = useCeSessionStore((s) => s.pickSteps);
+  return (
+    <div className="mx-auto flex min-h-full w-full max-w-[700px] flex-col justify-center pb-[6vh]">
+      <ConnectStage title={title} cover={cover} phase={steps.length > 0 ? 'matching' : 'connecting'} launched={false} hasTable={hasTable}
+                    progress={progress} steps={steps} loadMs={playTiming.settleMs} />
     </div>
   );
 }
@@ -436,109 +510,6 @@ function TrainerInfoDisclosure({
           />
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * Narrows the process list to likely game targets for the attach picker.
- * On Linux the user's games run under Proton, so they appear as `*.exe`; when
- * any exist we show just those (sorted). Otherwise we fall back to everything.
- */
-export function gameCandidates(processes: DetectedProcess[]): DetectedProcess[] {
-  const exes = processes.filter((p) => /\.exe$/i.test(p.name));
-  const pool = exes.length > 0 ? exes : processes;
-  return [...pool].sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function CeSessionView({ records, pending, setActive, end, attached, proton, attachedTo, attach, starting, startError, processes }: {
-  records: CeSessionRecord[];
-  pending: Set<number>;
-  setActive: (id: number, active: boolean) => Promise<void>;
-  end: () => Promise<void>;
-  attached: boolean;
-  proton: boolean;
-  attachedTo: { pid: number; name?: string | undefined } | null;
-  attach: (pid: number, name?: string) => Promise<boolean>;
-  starting: boolean;
-  startError: string | null;
-  processes: DetectedProcess[];
-}): JSX.Element {
-  const visible = records.filter((r) => !r.isGroupHeader);
-  const headers = records.filter((r) => r.isGroupHeader);
-  const [selPid, setSelPid] = useState<number | ''>('');
-  return (
-    <div className="flex flex-col h-full gap-3">
-      <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[13px] font-semibold">Cheat Engine session</div>
-          <div className="text-[10px] text-muted">{records.length} records · {visible.length} cheats · {headers.length} sections</div>
-        </div>
-        <button type="button" onClick={() => void end()}
-                className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-pink hover:text-neon-pink">
-          End session
-        </button>
-      </div>
-
-      {/* Attach bar — cheats can't act until CE is attached to the running game. */}
-      {attached ? (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-sm border border-neon-green/50 bg-neon-green/[0.06] text-[11px]">
-          <span className="text-neon-green font-semibold">● Attached</span>
-          <span className="text-muted">
-            {attachedTo?.name ?? 'process'}{attachedTo ? ` (pid ${attachedTo.pid})` : ''}
-            {proton ? ' · Proton (Windows CE in prefix)' : ' · native'}
-          </span>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-1.5 px-3 py-2 rounded-sm border border-neon-pink/40 bg-neon-pink/[0.05]">
-          <div className="text-[11px] text-muted">
-            Not attached — cheats won't apply until you select the running game process.
-          </div>
-          <div className="flex items-center gap-2">
-            <select value={selPid} onChange={(e) => setSelPid(e.target.value ? Number(e.target.value) : '')}
-                    className="flex-1 min-w-0 bg-panel border border-line rounded-sm px-2 py-1 text-[11px] text-muted">
-              <option value="">Select running game…</option>
-              {gameCandidates(processes).map((p) => (
-                <option key={p.pid} value={p.pid}>{p.name} (pid {p.pid})</option>
-              ))}
-            </select>
-            <button type="button" disabled={selPid === '' || starting}
-                    onClick={() => { const p = processes.find((x) => x.pid === selPid); if (p) void attach(p.pid, p.name); }}
-                    className={`px-3 py-1 text-[11px] rounded-sm border ${selPid === '' || starting ? 'border-line text-muted opacity-50' : 'border-neon-cyan text-neon-cyan glow-cyan hover:bg-neon-cyan/[0.08]'}`}>
-              {starting ? 'Attaching…' : 'Attach'}
-            </button>
-          </div>
-          {startError && <div className="text-[10px] text-neon-pink">{startError}</div>}
-        </div>
-      )}
-
-      {/* A failed toggle (bridge error, AOB/version mismatch, timeout) sets
-          startError. When attached the attach bar is hidden, so surface it here
-          — otherwise a cheat that won't enable looks like a dead button. */}
-      {attached && startError && (
-        <div className="px-3 py-2 rounded-sm border border-neon-pink/40 bg-neon-pink/[0.06] text-[11px] text-neon-pink">
-          {startError}
-        </div>
-      )}
-
-      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
-        {records.map((r) => (
-          <div key={r.id} className={`flex items-center gap-3 px-3 py-2 rounded-sm border ${r.isGroupHeader ? 'border-line bg-panel/40' : 'border-line bg-panel'} ${r.isActive ? 'border-neon-cyan/60' : ''}`}>
-            <div className="flex-1 truncate text-xs">{r.name}</div>
-            {r.isGroupHeader ? (
-              <span className="text-[10px] text-muted uppercase tracking-wider">section</span>
-            ) : (
-              <button type="button" disabled={pending.has(r.id)}
-                      onClick={() => void setActive(r.id, !r.isActive)}
-                      className={`px-3 py-1 text-[11px] rounded-sm border transition-colors ${
-                        r.isActive ? 'border-neon-cyan text-neon-cyan glow-cyan' : 'border-line text-muted hover:border-neon-cyan hover:text-neon-cyan'
-                      } ${pending.has(r.id) ? 'opacity-50' : ''}`}>
-                {r.isActive ? 'On' : 'Off'}
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

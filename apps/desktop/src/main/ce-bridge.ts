@@ -11,6 +11,8 @@ interface PendingCommand {
 export interface BridgeOpts {
   /** Long-poll timeout in milliseconds. Default 5000. */
   pollTimeoutMs?: number;
+  /** Called for unsolicited messages Cheat Engine POSTs to /event (e.g. a hotkey press). */
+  onEvent?: ((event: Record<string, unknown>) => void) | undefined;
 }
 
 export interface Bridge {
@@ -87,6 +89,19 @@ export async function createBridge(opts: BridgeOpts = {}): Promise<Bridge> {
             p.resolve(obj.result ?? null);
           }
         }
+        res.writeHead(204);
+        res.end();
+      });
+      return;
+    }
+    if (req.url === '/event' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const obj = JSON.parse(body) as unknown;
+          if (obj && typeof obj === 'object') opts.onEvent?.(obj as Record<string, unknown>);
+        } catch { /* ignore malformed events */ }
         res.writeHead(204);
         res.end();
       });

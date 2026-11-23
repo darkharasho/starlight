@@ -82,4 +82,17 @@ describe('ce-bridge', () => {
     expect(await p1).toBe(1);
     expect(await p2).toBe(2);
   });
+
+  it('hands unsolicited /event posts (hotkey presses) to the listener and ignores junk', async () => {
+    const events: Record<string, unknown>[] = [];
+    const b = await createBridge({ onEvent: (e) => events.push(e) });
+    try {
+      const ok = await fetch(`${b.url}/event`, { method: 'POST', body: JSON.stringify({ type: 'hotkey', id: 4, ok: true, active: true }) });
+      expect(ok.status).toBe(204);
+      expect((await fetch(`${b.url}/event`, { method: 'POST', body: 'not json' })).status).toBe(204);
+      expect(events).toEqual([{ type: 'hotkey', id: 4, ok: true, active: true }]);
+    } finally {
+      await b.close();
+    }
+  });
 });

@@ -43,7 +43,7 @@ export function GameTile({ game, onClick }: Props): JSX.Element {
       type="button"
       aria-label={game.name}
       onClick={() => onClick?.(game)}
-      className="relative w-full aspect-[2/3] rounded-sm overflow-hidden border border-neon-cyan/60 glow-cyan transition-transform duration-150 hover:-translate-y-0.5 hover:border-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan bg-[#1a1a22]"
+      className="relative w-full aspect-[2/3] rounded-xl overflow-hidden ring-1 ring-white/10 shadow-card transition-[transform,box-shadow] duration-200 ease-out hover:-translate-y-1 hover:shadow-pop hover:ring-white/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan bg-panel"
     >
       {/* No-art placeholder: the name centered, shown only until art loads. */}
       {shownSrc === null && (
@@ -73,16 +73,16 @@ export function GameTile({ game, onClick }: Props): JSX.Element {
         </>
       )}
       {game.installed && (
-        <span className="absolute top-1.5 left-1.5 text-[8px] tracking-wider text-neon-pink bg-bg/70 px-1.5 py-[2px] rounded-sm z-10">
-          ● INSTALLED
+        <span className="absolute top-2 left-2 z-10 flex items-center gap-1 rounded-full bg-shell/80 px-2 py-[3px] text-[10px] font-medium text-ink backdrop-blur">
+          <span className="size-1.5 rounded-full bg-neon-green" />Installed
         </span>
       )}
-      <span className="absolute top-1.5 right-1.5 text-[8px] tracking-wider text-neon-cyan bg-bg/70 px-1.5 py-[2px] rounded-sm uppercase z-10">
+      <span className="absolute top-2 right-2 z-10 rounded-full bg-shell/80 px-2 py-[3px] text-[10px] font-medium text-neon-cyan backdrop-blur">
         Trainer
       </span>
       {/* Always-visible title so tiles are identifiable regardless of the art. */}
-      <div className="absolute inset-x-0 bottom-0 z-10 px-2 pt-6 pb-1.5 bg-gradient-to-t from-bg via-bg/85 to-transparent pointer-events-none">
-        <span className="block text-[10px] leading-tight text-white/90 line-clamp-2">{game.name}</span>
+      <div className="absolute inset-x-0 bottom-0 z-10 px-2.5 pt-8 pb-2 bg-gradient-to-t from-shell via-shell/80 to-transparent pointer-events-none">
+        <span className="block text-xs font-medium leading-tight text-white line-clamp-2 text-left">{game.name}</span>
       </div>
       <span className="sr-only">{game.name}</span>
     </button>

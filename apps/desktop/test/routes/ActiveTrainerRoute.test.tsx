@@ -80,7 +80,15 @@ describe('ActiveTrainerRoute', () => {
   it('shows a placeholder when no trainer is loaded', () => {
     useTrainerStore.setState({ trainer: null });
     render(<MemoryRouter><ActiveTrainerRoute /></MemoryRouter>);
-    expect(screen.getByText(/no trainer loaded/i)).toBeInTheDocument();
+    expect(screen.getByText(/no game attached/i)).toBeInTheDocument();
+  });
+
+  it('offers running games to attach to when nothing is loaded', () => {
+    useTrainerStore.setState({ trainer: null });
+    useProcessStore.setState({ processes: [{ pid: 77, name: 'BeekeeperSimulator.exe' }, { pid: 5, name: 'bash' }] });
+    render(<MemoryRouter><ActiveTrainerRoute /></MemoryRouter>);
+    expect(screen.getByRole('button', { name: /BeekeeperSimulator\.exe/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /bash/ })).not.toBeInTheDocument();
   });
 });
 

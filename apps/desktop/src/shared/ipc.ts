@@ -33,6 +33,11 @@ export const CHANNELS = {
   ceSessionStart:     'starlight:ceSession:start',
   ceSessionEnd:       'starlight:ceSession:end',
   ceSessionSetActive: 'starlight:ceSession:setActive',
+  ceSessionCall:      'starlight:ceSession:call',
+  ceSessionRetry:     'starlight:ceSession:retry',
+  // Launching games
+  launchGame:      'starlight:launchGame',
+  findGameProcess: 'starlight:findGameProcess',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -141,6 +146,11 @@ export type StarlightEvent =
   | { type: 'config:changed';       config: UserConfig }
   | { type: 'config:corrupted';     backupPath: string }
   | { type: 'hotkeys:unavailable';  message: string }
+  | { type: 'session:progress';     message: string }
+  | { type: 'session:tables';       tables: CePickStep[] }
+  /** The attached game exited; main already closed Cheat Engine. */
+  | { type: 'session:game-exited';  sessionId: string }
+  | { type: 'ce:hotkey';            recordId: number; ok: boolean; active: boolean; error?: string | undefined }
   | { type: 'game:detected'; game: { id: string; name: string; steamAppId?: number | null }; pid: number; name: string; confidence: 'exact' | 'name' };
 
 export interface WindowState { maximized: boolean }
@@ -161,10 +171,68 @@ export interface CeSessionRecord {
   name: string;
   isActive: boolean;
   isGroupHeader: boolean;
+  /** `script` = on/off cheat, `value` = editable address, `header` = section. */
+  kind?: 'script' | 'value' | 'header';
+  /** Nesting level in the table (0 = top). */
+  depth?: number;
+  /** Current value of a value record ("??" when unreadable). Attached sessions only. */
+  value?: string;
+  /** Named choices for a value record, when the table defines a dropdown. */
+  options?: { value: string; label: string }[];
+  /** CE option flags, e.g. "[moHideChildren]". */
+  opts?: string;
+  /** Hotkey the table itself binds to toggling this record, e.g. "F2". */
+  hotkey?: string;
 }
 
+/** How a table fared against the running game. */
+export type CeTableVerdict = 'works' | 'broken' | 'unknown';
+
+export interface CeTableAttempt { id: number; filename: string; verdict: CeTableVerdict }
+
+/** One table queued for checking against the game, for the connecting screen. */
+export interface CePickStep { id: number; filename: string; state: 'waiting' | 'checking' | CeTableVerdict }
+
+/** The table-dependent part of a session: what's loaded and how it was prepared. */
+export interface CeSessionTableState {
+  records: CeSessionRecord[];
+  tableId: number | null;
+  tableError?: string | undefined;
+  /** Prerequisite scripts switched on automatically; hidden from the cheat list. */
+  hiddenIds: number[];
+  /** Prerequisite scripts that refused to switch on, with the table's reason. */
+  prereqErrors: Record<number, string>;
+  verdict: CeTableVerdict;
+  /** Every table tried, in order. */
+  attempts: CeTableAttempt[];
+}
+
+/** An installed game, as the library scan identifies it. */
+export interface LaunchTarget { source: DetectedGame['source']; appId: string }
+
+/** One cheat table on offer for a game (a forum attachment or a direct .CT link). */
+export interface CeTable {
+  /** Forum attachment id; higher = newer upload. 0 for a direct link. */
+  id: number;
+  filename: string;
+  url: string;
+  topicUrl: string;
+}
+
+/** Value types the memory scanner understands. */
+export type ScanValueType = 'i8' | 'i16' | 'i32' | 'i64' | 'f32' | 'f64';
+
 export interface CeSessionStartRequest {
-  source: string;     // URL of .CT or viewtopic page
+  /** URL of a .CT or viewtopic page. Omit both this and `sources` for a tools-only session. */
+  source?: string | undefined;
+  /** Every thread/.CT URL known for this game; their tables are offered as alternatives. */
+  sources?: string[] | undefined;
+  /**
+   * Table (attachment id) the user explicitly picked: loaded as is. Without it
+   * the remembered table is tried first and, if it no longer matches the game,
+   * the others are tried automatically.
+   */
+  tableId?: number | undefined;
   cacheKey: string;   // unique key per catalog entry id
   /** Target game process (Linux pid). Enables attach + Proton detection. */
   pid?: number | undefined;
@@ -175,8 +243,14 @@ export interface CeSessionStartRequest {
 }
 
 export type CeSessionStartResult =
-  | { ok: true; sessionId: string; records: CeSessionRecord[]; proton: boolean; attached: boolean; needsPicker?: boolean }
-  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'unknown' };
+  | ({
+      ok: true; sessionId: string; proton: boolean; attached: boolean; needsPicker?: boolean;
+      /** False when the game was looked for and isn't running (the session is a preview). */
+      running: boolean;
+      tables: CeTable[];
+      process?: { pid: number; name?: string | undefined } | undefined;
+    } & CeSessionTableState)
+  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'unknown' };
 
 export interface StarlightApi {
   loadTrainer():     Promise<LoadTrainerResult>;
@@ -210,6 +284,13 @@ export interface StarlightApi {
   ceSessionStart(req: CeSessionStartRequest): Promise<CeSessionStartResult>;
   ceSessionEnd(req: { sessionId: string }): Promise<{ ok: boolean }>;
   ceSessionSetActive(req: { sessionId: string; recordId: number; active: boolean }): Promise<{ ok: boolean; error?: string }>;
+  /** Value edits, game speed and the memory scanner. Always resolves; failures are `{ ok: false, error }`. */
+  ceSessionCall(req: { sessionId: string; method: string; params?: unknown }): Promise<Record<string, unknown>>;
+  /** Look again for a table that matches the game (e.g. once it has finished loading). */
+  ceSessionRetry(req: { sessionId: string }): Promise<({ ok: true } & CeSessionTableState) | { ok: false; error: string }>;
+  // Launching games
+  launchGame(req: LaunchTarget): Promise<{ ok: true } | { ok: false; error: string }>;
+  findGameProcess(req: { game: { id: string; name: string; steamAppId?: number | null } }): Promise<{ pid: number; name: string } | null>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;
@@ -230,6 +311,8 @@ export interface AppPreferences {
   pollIntervalMs: number;              // 500–30000; ProcessHost interval
   catalogRefreshOnLaunch: boolean;
   autoAttachOnDetect: boolean;
+  /** In-game hotkeys for cheats (table-defined, user-set and auto-assigned). */
+  cheatHotkeys: boolean;
 }
 
 export interface ManualGame {
@@ -252,6 +335,10 @@ export interface UserConfig {
   preferences: AppPreferences;
   manualGames: ManualGame[];
   hotkeyOverrides: Record<string, Record<string, CheatHotkeyOverride>>;
+  /** Game key → attachment id of the table that last worked (or the user chose) for it. */
+  tableChoices: Record<string, number>;
+  /** Game key → cheat name → hotkey accelerator (null = explicitly no hotkey). */
+  cheatHotkeys: Record<string, Record<string, string | null>>;
 }
 
 // DeepPartial type used by updateConfig patches.

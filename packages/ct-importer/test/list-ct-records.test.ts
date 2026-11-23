@@ -46,8 +46,22 @@ describe('listCtRecords', () => {
     expect(recs[3]).toMatchObject({ id: 3, name: 'No ID entry' });
   });
 
+  it('reports kind and nesting depth', () => {
+    const recs = listCtRecords(`<CheatTable><CheatEntries><CheatEntry><ID>1</ID><Description>"Group"</Description><GroupHeader>1</GroupHeader>
+      <CheatEntries><CheatEntry><ID>2</ID><Description>"God Mode"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]</AssemblerScript>
+        <CheatEntries><CheatEntry><ID>3</ID><Description>"HP"</Description><VariableType>4 Bytes</VariableType></CheatEntry></CheatEntries>
+      </CheatEntry></CheatEntries></CheatEntry></CheatEntries></CheatTable>`);
+    expect(recs.map((r) => [r.kind, r.depth])).toEqual([['header', 0], ['script', 1], ['value', 2]]);
+  });
+
   it('handles a single top-level entry (not an array)', () => {
     const recs = listCtRecords('<CheatTable><CheatEntries><CheatEntry><ID>5</ID><Description>"Solo"</Description></CheatEntry></CheatEntries></CheatTable>');
-    expect(recs).toEqual([{ id: 5, name: 'Solo', isGroupHeader: false }]);
+    expect(recs).toEqual([{ id: 5, name: 'Solo', isGroupHeader: false, kind: 'value', depth: 0 }]);
+  });
+
+  it('reports the option flags a record carries', () => {
+    const recs = listCtRecords(`<CheatTable><CheatEntries><CheatEntry><ID>1</ID><Description>"Enable"</Description><Options moHideChildren="1" moDeactivateChildrenAsWell="1"/><VariableType>Auto Assembler Script</VariableType></CheatEntry><CheatEntry><ID>2</ID><Description>"Plain"</Description></CheatEntry></CheatEntries></CheatTable>`);
+    expect(recs[0]!.opts).toBe('moHideChildren,moDeactivateChildrenAsWell');
+    expect(recs[1]!.opts).toBeUndefined();
   });
 });

@@ -8,21 +8,22 @@ describe('LatchPill', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for game');
   });
 
-  it('renders LATCHED when state is latched', () => {
+  it('renders Connected when state is latched', () => {
     render(<LatchPill state="latched" />);
-    expect(screen.getByRole('status')).toHaveTextContent('LATCHED');
+    expect(screen.getByRole('status')).toHaveTextContent('Connected');
   });
 
   it('uses the green palette when latched', () => {
     render(<LatchPill state="latched" />);
     const pill = screen.getByRole('status');
-    expect(pill.className).toMatch(/border-neon-green/);
+    expect(pill.className).toMatch(/bg-neon-green/);
     expect(pill.className).toMatch(/text-neon-green/);
   });
 
-  it('uses the pink palette when waiting', () => {
+  it('stays neutral while waiting — waiting is not an error', () => {
     render(<LatchPill state="waiting" />);
     const pill = screen.getByRole('status');
-    expect(pill.className).toMatch(/border-neon-pink/);
+    expect(pill.className).toMatch(/text-muted/);
+    expect(pill.className).not.toMatch(/neon-pink/);
   });
 });

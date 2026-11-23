@@ -11,6 +11,10 @@ describe('isNoiseProcess', () => {
     expect(isNoiseProcess('9Kings.exe')).toBe(false);
     expect(isNoiseProcess('eldenring.exe')).toBe(false);
   });
+  it('flags crash handlers even when Linux clips the name to 15 chars', () => {
+    expect(isNoiseProcess('UnityCrashHandler64.exe')).toBe(true);
+    expect(isNoiseProcess('UnityCrashHandl')).toBe(true);
+  });
   it('is case-insensitive', () => {
     expect(isNoiseProcess('SERVICES.EXE')).toBe(true);
   });

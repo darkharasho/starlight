@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
-import { useTrainerStore } from '../stores/trainer-store.js';
-import { useCeSessionStore } from '../stores/ce-session-store.js';
+import { openCatalogGame, openToolsOnly } from '../lib/open-game.js';
+import { gameKey } from '../lib/dedupe-games.js';
 import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 import { starlight } from '../ipc-client.js';
@@ -53,12 +53,12 @@ function GameTile({
   }
 
   const cover = shownSrc;
-  const clickable = !!onClick && hasTrainer;
-  const tileTitle = clickable
-    ? `Open ${game.name} trainer`
+  const clickable = !!onClick;
+  const tileTitle = !clickable
+    ? game.name
     : hasTrainer
-      ? game.name
-      : `${game.name} — no trainer in catalog yet`;
+      ? `Open ${game.name} trainer`
+      : `${game.name} — no table yet; open game speed and the memory scanner`;
 
   const tileClass = `aspect-[2/3] rounded-sm border bg-panel overflow-hidden relative transition-colors ${
     clickable ? 'border-line hover:border-neon-cyan cursor-pointer' : 'border-line cursor-default'
@@ -147,15 +147,13 @@ export function LibraryRoute(): JSX.Element {
 
   const catalogIndex = useCatalogStore((s) => s.index);
   const loadCatalog = useCatalogStore((s) => s.load);
-  const fetchTrainer = useCatalogStore((s) => s.trainer);
-  const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
-  const startCeSession = useCeSessionStore((s) => s.start);
   useEffect(() => { if (!catalogIndex) void loadCatalog(); }, [catalogIndex, loadCatalog]);
 
   const catalogNameIndex = useMemo(() => {
     const m = new Map<string, NonNullable<typeof catalogIndex>['games'][number]>();
     for (const g of catalogIndex?.games ?? []) {
-      m.set(g.name.toLowerCase(), g);
+      const k = gameKey(g.name);
+      if (k && !m.has(k)) m.set(k, g);
     }
     return m;
   }, [catalogIndex]);
@@ -167,22 +165,16 @@ export function LibraryRoute(): JSX.Element {
       const byId = catalogIndex.games.find(e => e.steamAppId === steamId);
       if (byId) return byId;
     }
-    return catalogNameIndex.get(g.name.toLowerCase());
+    return catalogNameIndex.get(gameKey(g.name));
   }
 
   async function openTrainerForGame(g: DetectedGame): Promise<void> {
     const entry = findCatalogEntry(g);
-    if (!entry) return;
-    if (entry.trainerSource) {
-      const ok = await startCeSession({ source: entry.trainerSource, cacheKey: entry.id, game: { id: entry.id, name: entry.name, steamAppId: entry.steamAppId ?? null } });
-      if (ok) { navigate('/active'); return; }
-      if (useCeSessionStore.getState().notRunning) navigate('/active');
-      return;
-    }
-    const trainer = await fetchTrainer(entry);
-    if (!trainer) return;
-    await setActiveTrainerFromCatalog(trainer);
-    navigate('/active');
+    const launch = { source: g.source, appId: g.appId };
+    if (entry) { await openCatalogGame(entry, navigate, launch); return; }
+    // No table in the catalog: the table-free tools still work on it.
+    const steamAppId = g.source === 'steam' ? Number(g.appId) : (g.boxartSteamAppId ?? null);
+    await openToolsOnly({ name: g.name, steamAppId: Number.isNaN(steamAppId as number) ? null : steamAppId }, navigate, undefined, launch);
   }
 
   const runningSet = useMemo(() => {
