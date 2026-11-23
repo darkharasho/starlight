@@ -43,7 +43,7 @@ const daemons = [];
 async function startDaemon() {
   const dir = mkdtempSync(join(tmpdir(), 'starlight-live-m2-sock-'));
   const engine = await E.startEngine({ binary: DAEMON, socketPath: join(dir, 'sock') });
-  const d = { engine, dir, pid: engine.pid };
+  const d = { engine, dir, pid: engine.pid, start: statOf(engine.pid)?.start };
   daemons.push(d);
   return d;
 }
@@ -51,9 +51,38 @@ const alive = (pid) => existsSync(`/proc/${pid}`) && !readFileSync(`/proc/${pid}
 async function stopDaemons() {
   for (const d of daemons.splice(0)) {
     await Promise.race([d.engine.stop().catch(() => {}), sleep(4000)]);
-    if (alive(d.pid)) try { process.kill(d.pid, 'SIGKILL'); } catch { /* gone */ }
+    killOwn(d.pid, d.start);
     rmSync(d.dir, { recursive: true, force: true });
   }
+}
+
+// Signals only a process we recorded, and only while it is still that process (pid + start time).
+function killOwn(pid, start, sig = 'SIGKILL') {
+  if (!pid || start === undefined || statOf(pid)?.start !== start) return;
+  try { process.kill(pid, sig); } catch { /* gone */ }
+}
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// Synchronous, idempotent cleanup, also run on SIGINT/SIGTERM and on an async crash. Each mode
+// registers what it started; daemons get SIGTERM (they restore their patches on it).
+const cleanups = [];
+let cleanedUp = false;
+function cleanupSync() {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  for (const d of daemons.splice(0)) {
+    killOwn(d.pid, d.start, 'SIGTERM');
+    rmSync(d.dir, { recursive: true, force: true });
+  }
+  for (const f of cleanups.splice(0).reverse()) {
+    try { f(); } catch (e) { console.log(`     cleanup error: ${e.message}`); }
+  }
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => { console.log(`FAIL interrupted by ${sig}`); cleanupSync(); process.exit(130); });
+}
+for (const ev of ['uncaughtException', 'unhandledRejection']) {
+  process.on(ev, (e) => { console.log(`FAIL ${ev}: ${e?.stack ?? e}`); cleanupSync(); process.exit(1); });
 }
 
 // ------------------------------------------------------------- own descendants via /proc ppid
@@ -62,25 +91,38 @@ function statOf(pid) {
   try {
     const s = readFileSync(`/proc/${pid}/stat`, 'utf8');
     const rest = s.slice(s.lastIndexOf(')') + 2).split(' ');
-    return { ppid: Number(rest[1]), start: rest[19], comm: s.slice(s.indexOf('(') + 1, s.lastIndexOf(')')) };
+    return { state: rest[0], ppid: Number(rest[1]), start: rest[19], comm: s.slice(s.indexOf('(') + 1, s.lastIndexOf(')')) };
   } catch { return null; }
 }
-function descendants(roots) {
-  const children = new Map();
+// One pass over /proc: pid -> { ppid, start, comm }.
+function procTable() {
+  const table = new Map();
   for (const e of readdirSync('/proc')) {
     if (!/^\d+$/.test(e)) continue;
     const st = statOf(Number(e));
-    if (!st) continue;
+    if (st) table.set(Number(e), st);
+  }
+  return table;
+}
+
+// Grows `owned` (pid -> start time) with the descendants of its live entries. An entry whose pid
+// now has another start time (or is gone) is dropped first, so a recycled pid is never a root.
+function trackOwned(owned) {
+  const table = procTable();
+  for (const [p, start] of owned) if (table.get(p)?.start !== start) owned.delete(p);
+  const children = new Map();
+  for (const [p, st] of table) {
     if (!children.has(st.ppid)) children.set(st.ppid, []);
-    children.get(st.ppid).push(Number(e));
+    children.get(st.ppid).push(p);
   }
-  const out = [];
-  const queue = [...roots];
+  const queue = [...owned.keys()];
   while (queue.length) {
-    const p = queue.shift();
-    for (const c of children.get(p) ?? []) { out.push(c); queue.push(c); }
+    for (const c of children.get(queue.shift()) ?? []) {
+      if (owned.has(c)) continue;
+      owned.set(c, table.get(c).start);
+      queue.push(c);
+    }
   }
-  return out;
 }
 
 // ------------------------------------------------------------------------------- shared checks
@@ -117,21 +159,24 @@ async function scanFindsCounter(s, address, value) {
 // ----------------------------------------------------------------------------------- native
 
 async function native() {
-  const child = spawn(TARGET, ['--writer', '--heap-chain', '--clocks'], { stdio: ['ignore', 'pipe', 'inherit'] });
-  const a = {};
-  await new Promise((res, rej) => {
-    let buf = '';
-    const timer = setTimeout(() => rej(new Error('target did not print its listing')), 5000);
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (c) => {
-      buf += c;
-      for (const m of buf.matchAll(/^addr (\w+)=(0x[0-9a-f]+)$/gim)) a[m[1]] = m[2].toLowerCase();
-      if (/^offset hp_in_stats=/m.test(buf)) { clearTimeout(timer); res(); }
-    });
-    child.once('exit', () => rej(new Error('target exited early')));
-  });
-  info(`target pid ${child.pid}`);
+  let child;
+  cleanups.push(() => { if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
   try {
+    child = spawn(TARGET, ['--writer', '--heap-chain', '--clocks'], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const a = {};
+    await new Promise((res, rej) => {
+      let buf = '';
+      const timer = setTimeout(() => rej(new Error('target did not print its listing')), 5000);
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (c) => {
+        buf += c;
+        for (const m of buf.matchAll(/^addr (\w+)=(0x[0-9a-f]+)$/gim)) a[m[1]] = m[2].toLowerCase();
+        if (/^offset hp_in_stats=/m.test(buf)) { clearTimeout(timer); res(); }
+      });
+      child.once('exit', () => rej(new Error('target exited early')));
+      child.once('error', rej);
+    });
+    info(`target pid ${child.pid}`);
     const d = await startDaemon();
     let s = await E.attach(d.engine.client, child.pid);
 
@@ -156,9 +201,10 @@ async function native() {
 
     // Write watch on g_counter.
     const hit = await watchCounter(s, a.g_counter, 'target+0x', 500);
+    if (!hit?.address) throw new Error('no decodable watch hit; the signature and patch checks need one');
     const bump = BigInt(a.bump_counter);
     check('watch hit is inside bump_counter',
-      !!hit?.address && BigInt(hit.address) >= bump && BigInt(hit.address) < bump + 64n, hit?.address ?? 'none');
+      BigInt(hit.address) >= bump && BigInt(hit.address) < bump + 64n, hit?.address ?? 'none');
 
     // Signature + AOB round trip.
     const sig = await E.makeSignature(s, hit.address);
@@ -217,7 +263,7 @@ async function native() {
     await s.detach();
   } finally {
     await stopDaemons();
-    child.kill('SIGKILL');
+    cleanupSync();
   }
 }
 
@@ -300,13 +346,33 @@ async function proton() {
   const child = spawn('python3', ['-I', '-c', SUBREAPER, protonBin, 'runinprefix', CLOCKS], {
     env, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const owned = new Map(); // pid -> starttime, every descendant we have seen
-  const track = () => {
-    for (const p of [child.pid, ...descendants([child.pid, ...owned.keys()])]) {
-      const st = statOf(p);
-      if (st && !owned.has(p)) owned.set(p, st.start);
-    }
-  };
+  let spawnError = null;
+  child.on('error', (e) => { spawnError = e; });
+  const wrapperStart = child.pid ? statOf(child.pid)?.start : undefined;
+  const owned = new Map(); // pid -> start time: the wrapper and every descendant we have seen
+  if (wrapperStart !== undefined) owned.set(child.pid, wrapperStart);
+  const track = () => trackOwned(owned);
+
+  // Stop the wrapper first so nothing is reparented away from it while we kill its tree, kill
+  // the tree, stop our own prefix's wineserver, then the wrapper itself, then remove the prefix.
+  cleanups.push(() => {
+    killOwn(child.pid, wrapperStart, 'SIGSTOP');
+    track();
+    for (const [p, start] of owned) if (p !== child.pid) killOwn(p, start);
+    const ws = spawnSync(join(PROTON_DIR, 'files/bin/wineserver'), ['-k'], {
+      env: { ...env, WINEPREFIX: join(pfx, 'pfx') }, timeout: 15000, stdio: 'ignore',
+    });
+    info(`wineserver -k (own prefix) exit ${ws.status}`);
+    sleepSync(500);
+    track();
+    for (const [p, start] of owned) if (p !== child.pid) killOwn(p, start);
+    killOwn(child.pid, wrapperStart);
+    sleepSync(300);
+    track();
+    const left = [...owned.keys()].filter((p) => statOf(p)?.state !== 'Z');
+    info(`own processes left: ${left.length ? left.map((p) => `${p}:${statOf(p)?.comm}`).join(', ') : 'none'}`);
+    rmSync(tmp, { recursive: true, force: true });
+  });
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (c) => { stderr = (stderr + c).slice(-20000); });
@@ -340,6 +406,7 @@ async function proton() {
     while ((!counterAddr || lines.length < 2 || !pid) && now() < deadline) {
       track();
       pid = [...owned.keys()].find((p) => statOf(p)?.comm === 'clocks.exe' || mapsImage(p)) ?? 0;
+      if (spawnError) throw new Error(`could not start the Proton wrapper: ${spawnError.message}`);
       if (child.exitCode !== null) throw new Error(`proton exited (${child.exitCode}) before clocks.exe ran`);
       await sleep(250);
     }
@@ -407,7 +474,7 @@ async function proton() {
       stdinCloseBytes.map(([n, b]) => `${n}=${b}`).join(' '));
     await E.setSpeed(s, 2.0);
     await sleep(300);
-    process.kill(d2.pid, 'SIGKILL');
+    killOwn(d2.pid, d2.start);
     await Promise.race([d2.engine.stop().catch(() => {}), sleep(3000)]);
     daemons.splice(daemons.indexOf(d2), 1);
     rmSync(d2.dir, { recursive: true, force: true });
@@ -434,18 +501,7 @@ async function proton() {
     throw e;
   } finally {
     await stopDaemons();
-    track();
-    // Kill only pids we saw as our descendants (pid + start time guard against reuse).
-    for (const [p, start] of owned) if (statOf(p)?.start === start) try { process.kill(p, 'SIGKILL'); } catch { /* gone */ }
-    // Then stop our own prefix's wineserver (it daemonizes, so it isn't a descendant).
-    const ws = spawnSync(join(PROTON_DIR, 'files/bin/wineserver'), ['-k'], {
-      env: { ...env, WINEPREFIX: join(pfx, 'pfx') }, timeout: 15000, stdio: 'ignore',
-    });
-    info(`wineserver -k (own prefix) exit ${ws.status}`);
-    await sleep(500);
-    const left = [...owned].filter(([p, start]) => statOf(p)?.start === start && statOf(p)?.comm !== undefined);
-    info(`own processes left: ${left.length ? left.map(([p]) => `${p}:${statOf(p)?.comm}`).join(', ') : 'none'}`);
-    rmSync(tmp, { recursive: true, force: true });
+    cleanupSync();
   }
 }
 
