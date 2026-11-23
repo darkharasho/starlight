@@ -7,11 +7,12 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs run",
+    "test:watch": "ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "dist": "./scripts/dist.sh",
-    "rebuild:native": "electron-rebuild --only better-sqlite3"
+    "dist": "node scripts/native-electron.mjs && electron-vite build && electron-builder --linux AppImage --publish never",
+    "rebuild:native": "node scripts/native-electron.mjs",
+    "postinstall": "node scripts/native-electron.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
@@ -22,7 +23,6 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.2.1",
     "@fontsource-variable/figtree": "^5.3.0",
     "@starlight/catalog": "workspace:*",
     "@starlight/ct-importer": "workspace:*",

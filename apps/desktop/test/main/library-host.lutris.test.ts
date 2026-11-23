@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
-import { LutrisScanner } from '../../src/main/library-host.js';
+import { LutrisScanner, findLutrisDb } from '../../src/main/library-host.js';
 
 let dbDir: string;
 let dbPath: string;
@@ -67,5 +67,29 @@ describe('LutrisScanner', () => {
   it('returns [] when DB cannot be resolved', async () => {
     const s = new LutrisScanner({ dbPathResolver: async () => null });
     expect(await s.scan()).toEqual([]);
+  });
+});
+
+describe('findLutrisDb', () => {
+  const home = () => join(dbDir, 'home');
+  const touch = async (rel: string) => {
+    const p = join(home(), rel);
+    await mkdir(join(p, '..'), { recursive: true });
+    await writeFile(p, '');
+    return p;
+  };
+
+  it('returns null when Lutris is not installed', async () => {
+    expect(await findLutrisDb(join(dbDir, 'nobody'))).toBeNull();
+  });
+
+  it('finds the Flatpak pga.db', async () => {
+    const p = await touch('.var/app/net.lutris.Lutris/data/lutris/pga.db');
+    expect(await findLutrisDb(home())).toBe(p);
+  });
+
+  it('prefers the native pga.db', async () => {
+    const p = await touch('.local/share/lutris/pga.db');
+    expect(await findLutrisDb(home())).toBe(p);
   });
 });

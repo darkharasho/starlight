@@ -308,10 +308,18 @@ export interface LutrisScannerOpts {
   dbPathResolver?: () => Promise<string | null>;
 }
 
+/** Lutris's game database, pga.db, from a native or Flatpak install. */
+export async function findLutrisDb(home = homedir()): Promise<string | null> {
+  const candidates = [
+    join(home, '.local', 'share', 'lutris', 'pga.db'),
+    join(home, '.var', 'app', 'net.lutris.Lutris', 'data', 'lutris', 'pga.db'),
+  ];
+  for (const c of candidates) if (await exists(c)) return c;
+  return null;
+}
+
 async function defaultLutrisDbPath(): Promise<string | null> {
-  if (platform() !== 'linux') return null;
-  const candidate = join(homedir(), '.local', 'share', 'lutris', 'games', 'lutris.db');
-  return (await exists(candidate)) ? candidate : null;
+  return platform() === 'linux' ? findLutrisDb() : null;
 }
 
 interface LutrisRow {

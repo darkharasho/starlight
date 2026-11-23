@@ -38,8 +38,7 @@ git push --delete origin v<version> && git tag -d v<version>
 pnpm dist   # → apps/desktop/dist/Starlight-<version>.AppImage
 ```
 
-`apps/desktop/scripts/dist.sh` rebuilds better-sqlite3 for Electron to package
-it, then rebuilds it for Node again so the tests keep working.
+It needs no extra setup: better-sqlite3 is already built for Electron (see below).
 
 ## How the package is put together
 
@@ -48,7 +47,11 @@ it, then rebuilds it for Node again so the tests keep working.
   (`electron.vite.config.ts`). The app's `dependencies` are only the modules it
   loads at runtime. Anything the renderer uses is bundled by Vite and lives in
   `devDependencies`.
-- Native modules: better-sqlite3 is rebuilt for Electron (`pnpm rebuild:native`).
+- Native modules: `pnpm install` builds better-sqlite3 for Electron
+  (`apps/desktop/scripts/native-electron.mjs`, using the published Electron
+  prebuild). That one build serves `pnpm dev`, packaging and the tests, because
+  the desktop tests run under Electron's Node (`ELECTRON_RUN_AS_NODE`). If
+  something rebuilds it for Node, run `pnpm --filter @starlight/desktop rebuild:native`.
   frida and uiohook-napi are N-API, so they work as installed.
   electron-builder's own rebuild is off (`npmRebuild: false`), because it would
   compile uiohook-napi from source.

@@ -66,8 +66,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          # @electron/rebuild 4 needs Node >= 22.12.
-          node-version: 22
+          node-version-file: '.nvmrc'
           cache: pnpm
 
       - name: Cache Electron binaries
@@ -82,15 +81,12 @@ jobs:
       # The desktop main process bundles the workspace packages' dist output.
       - run: pnpm -r --filter '!@starlight/desktop' build
 
+      # better-sqlite3 was built for Electron on install (apps/desktop
+      # postinstall). frida and uiohook-napi are N-API, so they're packaged as
+      # installed.
       - name: Build the app
         working-directory: apps/desktop
         run: pnpm build
-
-      # better-sqlite3 has to match Electron's ABI. frida and uiohook-napi are
-      # N-API, so they're packaged as installed.
-      - name: Rebuild native modules for Electron
-        working-directory: apps/desktop
-        run: pnpm rebuild:native
 
       - name: Package and upload the AppImage
         working-directory: apps/desktop
