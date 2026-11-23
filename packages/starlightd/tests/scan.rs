@@ -32,7 +32,7 @@ fn max_limits_results() {
     let d = Daemon::start();
     let mut c = d.client();
     let h = attach(&mut c, &t);
-    let r = c.call("aob_scan", json!({"handle": h, "module": "target", "pattern": "??  00", "max": 3})).unwrap();
+    let r = c.call("aob_scan", json!({"handle": h, "module": "target", "pattern": "?? 00", "max": 3})).unwrap();
     assert_eq!(r["matches"].as_array().unwrap().len(), 3);
 }
 

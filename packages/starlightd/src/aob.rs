@@ -38,15 +38,47 @@ impl Pattern {
         self.0.len()
     }
 
-    fn matches_at(&self, buf: &[u8], i: usize) -> bool {
-        self.0.iter().zip(&buf[i..i + self.0.len()]).all(|(p, b)| p.map_or(true, |p| p == *b))
+    /// Index and value of the non-wildcard byte least likely to be common (0x00 and 0xFF are
+    /// the most frequent in process memory), used to skip quickly through the buffer.
+    fn anchor(&self) -> (usize, u8) {
+        let rank = |b: u8| match b {
+            0x00 => 0,
+            0xff => 1,
+            _ => 2,
+        };
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| b.map(|b| (i, b)))
+            .max_by_key(|&(i, b)| (rank(b), std::cmp::Reverse(i)))
+            .expect("pattern has a non-wildcard byte")
+    }
+
+    /// Whether the pattern matches `window`, which must be exactly `self.len()` bytes.
+    fn matches_window(&self, window: &[u8]) -> bool {
+        self.0.iter().zip(window).all(|(p, b)| p.map_or(true, |p| p == *b))
     }
 }
 
-/// Offsets (ascending) where `p` matches in `buf`.
+/// Offsets (ascending) where `p` matches in `buf`: locate the anchor byte quickly, then verify.
 fn find_in<'a>(buf: &'a [u8], p: &'a Pattern) -> impl Iterator<Item = usize> + 'a {
-    let last = buf.len().checked_sub(p.len()).map_or(0, |n| n + 1);
-    (0..last).filter(move |&i| p.matches_at(buf, i))
+    let (ai, ab) = p.anchor();
+    let len = p.len();
+    // Candidate starts are in 0..=last; the anchor byte for start i sits at i + ai.
+    let last = buf.len().checked_sub(len);
+    let mut from = ai; // next index to search for the anchor byte
+    std::iter::from_fn(move || {
+        let last = last?;
+        loop {
+            let hay = buf.get(from..last + ai + 1)?;
+            let pos = hay.iter().position(|&b| b == ab)? + from;
+            from = pos + 1;
+            let start = pos - ai;
+            if p.matches_window(&buf[start..start + len]) {
+                return Some(start);
+            }
+        }
+    })
 }
 
 /// Scan `[start, end)` through `read` in `CHUNK`-sized reads that overlap by `p.len() - 1`,
@@ -139,5 +171,39 @@ mod tests {
         let mut out = vec![];
         scan_range(|a, n| Some(data[a as usize..a as usize + n].to_vec()), (0, data.len() as u64), &p, 100, &mut out);
         assert_eq!(out, vec![CHUNK as u64 - 2, CHUNK as u64 + 5]);
+    }
+
+    #[test]
+    fn prefilter_handles_leading_wildcards_and_edges() {
+        let p = Pattern::parse("?? 00 01").unwrap();
+        // match at very start, middle, and flush with the end
+        assert_eq!(find_in(&[9, 0, 1, 5, 7, 0, 1, 0, 0, 1], &p).collect::<Vec<_>>(), vec![0, 4, 7]);
+        // anchor byte present too close to either edge must not match or panic
+        assert_eq!(find_in(&[0, 1], &p).count(), 0);
+        assert_eq!(find_in(&[1, 0, 1, 0], &p).collect::<Vec<_>>(), vec![0]);
+        let p = Pattern::parse("01 ?? ??").unwrap();
+        assert_eq!(find_in(&[1, 2, 3, 1], &p).collect::<Vec<_>>(), vec![0]);
+    }
+
+    #[test]
+    fn prefilter_agrees_with_naive_matcher() {
+        let data: Vec<u8> = (0..4000u32).map(|i| ((i * 7) ^ (i >> 3)) as u8 % 5).collect();
+        for pat in ["01 ?? 03", "?? 00 01", "00 00 ??", "04 ? ? 02", "FF 00", "02"] {
+            let p = Pattern::parse(pat).unwrap();
+            let naive: Vec<usize> = (0..=data.len() - p.len()).filter(|&i| p.matches_window(&data[i..i + p.len()])).collect();
+            assert_eq!(find_in(&data, &p).collect::<Vec<_>>(), naive, "{pat}");
+        }
+    }
+
+    #[test]
+    #[ignore = "100 MB timing check; run with --release -- --ignored"]
+    fn large_zero_buffer_without_match_is_fast() {
+        let data = vec![0u8; 100 << 20];
+        let p = Pattern::parse("00 00 00 00 00 00 00 01").unwrap();
+        let t = std::time::Instant::now();
+        let mut out = vec![];
+        scan_range(|a, n| Some(data[a as usize..a as usize + n].to_vec()), (0, data.len() as u64), &p, 10, &mut out);
+        assert!(out.is_empty());
+        assert!(t.elapsed().as_secs() < 1, "took {:?}", t.elapsed());
     }
 }
