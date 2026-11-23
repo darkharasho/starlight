@@ -41,6 +41,7 @@ import { modifyTools } from './agent/tools-modify.js';
 import { libraryTools } from './agent/tools-library.js';
 import { createAgentSession } from './agent/session.js';
 import { checkAttachTarget, procTargetDeps } from './agent/target-guard.js';
+import { createBeforeQuit } from './quit.js';
 import { listModules as engineListModules } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
 import { detectAntiCheat } from './anti-cheat.js';
@@ -650,15 +651,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', async () => {
-  processHost.pause();
-  shutdownHotkeys();
-  unregisterHotkeys();
-  try { await agentSession.stop('app-quit'); } catch { /* quitting */ }
-  try { await userCheatsHost.end(); } catch { /* quitting */ }
-  try { await mcpHostChain; await mcpHost?.close(); } catch { /* quitting */ }
-  await engineHost.detach();
-  await stopEngine();
-  const s = ceGetActiveSession();
-  if (s) await ceEndSession({ sessionId: s.sessionId }).catch(() => {});
-});
+// R21 quit order, awaited: Electron doesn't wait for an async before-quit, so the
+// first one holds the quit, runs these under a 3 s cap, then exits (I6).
+app.on('before-quit', createBeforeQuit({
+  exit: () => app.exit(0),
+  log: (m) => console.error(m),
+  steps: () => [
+    { name: 'pause process watch', run: () => processHost.pause() },
+    { name: 'hotkeys', run: () => { shutdownHotkeys(); unregisterHotkeys(); } },
+    { name: 'agent stop', run: () => agentSession.stop('app-quit') },
+    { name: 'my cheats', run: () => userCheatsHost.end() },
+    { name: 'MCP server', run: async () => { await mcpHostChain; await mcpHost?.close(); } },
+    { name: 'engine detach', run: () => engineHost.detach() },
+    { name: 'engine stop', run: () => stopEngine() },
+    {
+      name: 'Cheat Engine',
+      run: async () => {
+        const s = ceGetActiveSession();
+        if (s) await ceEndSession({ sessionId: s.sessionId });
+      },
+    },
+  ],
+}));
