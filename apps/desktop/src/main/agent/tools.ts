@@ -7,6 +7,8 @@ import type { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { EngineError, NeedsUpdateError, RpcCode } from '@starlight/engine';
+import type { FreezeHandle, RunningCheat, Session, Watch } from '@starlight/engine';
+import type { GameIdentity } from '../game-identity.js';
 
 /** `open`: no game needed. `attached`: the player approved an attach. `modify`: also "Agent can modify the game". */
 export type Tier = 'open' | 'attached' | 'modify';
@@ -44,11 +46,43 @@ export interface AgentClient {
   label: string;
 }
 
+/**
+ * Everything the agent starts that keeps running is tracked, so Stop and the
+ * "Agent can modify the game" switch can revert it. A `track.*` call with a
+ * stale `gen` (after Stop or the switch going off) reverts the item at once and
+ * throws `ToolError(STOPPED_MIDWAY)`.
+ */
+export interface Tracker {
+  freeze(gen: number, h: FreezeHandle, info: { address: string; type: string; value: string }): number;
+  test(gen: number, c: RunningCheat, info: { name: string }): number;
+  watch(gen: number, w: Watch, info: { address: string; kind: 'write' | 'access'; endsAt: number }): number;
+  pointerScan(gen: number, id: number): void;
+  speed(gen: number, v: number): void;
+  untrackFreeze(id: number): FreezeHandle | null;
+  untrackTest(id: number): RunningCheat | null;
+  untrackWatch(id: number): void;
+  /** How many test cheats are running (D13: at most 8). */
+  liveTests(): number;
+}
+
+/** What attached- and modify-tier tools get: the approved game and its engine session. */
+export interface AttachedContext {
+  gen: number;
+  session: Session;
+  game: GameIdentity;
+  client: AgentClient;
+  /** `"<module>+0x<off>"` from a cached module list, or null. */
+  describe(address: string): Promise<string | null>;
+  track: Tracker;
+  /** Aborted when this context's `gen` goes stale (Stop, the switch going off, detach). */
+  signal: AbortSignal;
+}
+
 export interface ToolContext {
   mcpSessionId: string;
   client: AgentClient;
-  /** What `access.require` returned. Task 9 narrows it to `AttachedContext | null`. */
-  attached: unknown;
+  /** What `access.require` returned: null for open-tier tools, set for attached and modify. */
+  attached: AttachedContext | null;
 }
 
 export interface ToolChange { address: string; old: string; new: string }
@@ -70,7 +104,7 @@ export interface ToolDef<S extends z.ZodRawShape> {
 
 export interface AgentAccess {
   /** Resolves when this MCP session may run a tool of this tier; throws `ToolError` otherwise. */
-  require(mcpSessionId: string, tier: Tier): Promise<unknown>;
+  require(mcpSessionId: string, tier: Tier): Promise<AttachedContext | null>;
 }
 
 export interface ActivitySink {
@@ -130,7 +164,7 @@ export function registerTools(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (async (args: any): Promise<CallToolResult> => {
         const id = o.activity.start(def.name, `${def.name} …`);
-        let attached: unknown;
+        let attached: AttachedContext | null;
         try {
           const tier = typeof def.tier === 'function' ? def.tier(args) : def.tier;
           attached = await o.access.require(o.mcpSessionId, tier);

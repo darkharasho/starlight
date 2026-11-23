@@ -5,6 +5,7 @@ import { createServer as createNetServer, type Server as NetServer } from 'node:
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { startMcpHost, type McpHost } from '../../../src/main/agent/mcp-host.js';
 import { createAgentServer } from '../../../src/main/agent/server.js';
 import { ToolError, NOT_ATTACHED, type ActivitySink, type AgentAccess, type AgentClient, type ToolDef } from '../../../src/main/agent/tools.js';
@@ -43,15 +44,22 @@ const hosts: McpHost[] = [];
 const clients: Client[] = [];
 const blockers: NetServer[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   for (const c of clients.splice(0)) await c.close().catch(() => {});
   for (const h of hosts.splice(0)) await h.close();
   for (const b of blockers.splice(0)) await new Promise<void>((r) => b.close(() => r()));
 });
 
-async function start(o: { port?: number; onSessionClosed?: (id: string) => void; activity?: ActivitySink; clients?: AgentClient[] } = {}): Promise<McpHost> {
+async function start(o: {
+  port?: number; onSessionClosed?: (id: string) => void; activity?: ActivitySink; clients?: AgentClient[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tools?: ToolDef<any>[]; idleTimeoutMs?: number; reapIntervalMs?: number;
+} = {}): Promise<McpHost> {
   const activity = o.activity ?? fakeActivity();
   const host = await startMcpHost({
     port: o.port ?? 0,
+    ...(o.idleTimeoutMs !== undefined ? { idleTimeoutMs: o.idleTimeoutMs } : {}),
+    ...(o.reapIntervalMs !== undefined ? { reapIntervalMs: o.reapIntervalMs } : {}),
     token: () => TOKEN,
     createServer: (id) => createAgentServer(id, {
       version: '9.9.9',
@@ -62,6 +70,7 @@ async function start(o: { port?: number; onSessionClosed?: (id: string) => void;
           detectAntiCheatFn: async () => null, attachedPid: () => null,
         }),
         readTool,
+        ...(o.tools ?? []),
       ],
       access, activity,
       onClientInfo: (c) => o.clients?.push(c),
@@ -223,5 +232,72 @@ describe('MCP host', () => {
     expect((r.content as Array<{ text: string }>)[0]!.text).toBe(NOT_ATTACHED);
     expect(activity.started).toEqual([{ id: 1, tool: 'read', summary: 'read …' }]);
     expect(activity.finished).toEqual([{ id: 1, r: { status: 'refused', error: NOT_ATTACHED } }]);
+  });
+
+  it('closes a session that has been idle for 20 minutes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const closed = vi.fn();
+    const host = await start({ onSessionClosed: closed, idleTimeoutMs: 20 * 60_000, reapIntervalMs: 60_000 });
+    const { client, transport } = await connect(host);
+    const id = transport.sessionId!;
+    await client.listTools();
+    vi.advanceTimersByTime(19 * 60_000);
+    expect(closed).not.toHaveBeenCalled();
+    await client.listTools();  // a request resets the clock
+    vi.advanceTimersByTime(19 * 60_000);
+    expect(closed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2 * 60_000);
+    await vi.waitFor(() => expect(closed).toHaveBeenCalledWith(id));
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(await raw(host.port, { host: `127.0.0.1:${host.port}`, authorization: `Bearer ${TOKEN}`, 'mcp-session-id': id },
+      JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list' }))).toBe(404);
+  });
+
+  it('never closes a session while a request is in flight', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    let entered!: () => void;
+    const started = new Promise<void>((r) => { entered = r; });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const slow: ToolDef<Record<string, never>> = {
+      name: 'slow', title: 'Slow', description: 'Waits.', tier: 'open', readOnly: true, input: {},
+      run: async () => { entered(); await gate; return { done: true }; },
+      summarize: () => 'slow',
+    };
+    const closed = vi.fn();
+    const host = await start({ onSessionClosed: closed, tools: [slow], idleTimeoutMs: 20 * 60_000, reapIntervalMs: 60_000 });
+    const { client } = await connect(host);
+    const call = client.callTool({ name: 'slow', arguments: {} }, undefined, { timeout: 3_700_000 });
+    await started;
+    vi.advanceTimersByTime(60 * 60_000);
+    expect(closed).not.toHaveBeenCalled();
+    release();
+    await expect(call).resolves.toMatchObject({ content: [{ type: 'text', text: '{"done":true}' }] });
+    await vi.waitFor(() => {
+      vi.advanceTimersByTime(19 * 60_000);
+      expect(closed).not.toHaveBeenCalled();
+    });
+    vi.advanceTimersByTime(2 * 60_000);
+    await vi.waitFor(() => expect(closed).toHaveBeenCalledTimes(1));
+  });
+
+  it('closes the server of a session whose initialize fails', async () => {
+    const close = vi.fn(async () => {});
+    const failConnect = { connect: async () => { throw new Error('connect failed'); }, close } as unknown as McpServer;
+    const h1 = await startMcpHost({ port: 0, token: () => TOKEN, createServer: () => failConnect, onSessionClosed: () => {} });
+    hosts.push(h1);
+    expect(await raw(h1.port, { host: `127.0.0.1:${h1.port}`, authorization: `Bearer ${TOKEN}` }, INIT)).toBe(500);
+    expect(close).toHaveBeenCalledTimes(1);
+
+    const close2 = vi.fn(async () => {});
+    const failHandle = {
+      connect: async (t: { handleRequest: unknown }) => { t.handleRequest = async () => { throw new Error('handle failed'); }; },
+      close: close2,
+    } as unknown as McpServer;
+    const closed = vi.fn();
+    const h2 = await startMcpHost({ port: 0, token: () => TOKEN, createServer: () => failHandle, onSessionClosed: closed });
+    hosts.push(h2);
+    expect(await raw(h2.port, { host: `127.0.0.1:${h2.port}`, authorization: `Bearer ${TOKEN}` }, INIT)).toBe(500);
+    expect(close2).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
-import type { StarlightApi, CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget } from '../../shared/ipc.js';
+import type { CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget } from '../../shared/ipc.js';
 import { buildCheatList } from '../../shared/cheat-list.js';
 import { hotkeyPayload } from '../lib/hotkeys.js';
 import { playToggleTone } from '../lib/tone.js';
@@ -462,8 +462,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
     const { lastReq, holders, attachedTo } = get();
     const pid = attachedTo?.pid ?? lastReq?.pid;
     if (pid !== undefined) await starlight().userCheatsDisableAll({ pid }).catch(() => {});
-    const stop = (starlight() as StarlightApi & { agentStop?: () => Promise<void> }).agentStop;
-    if (holders.includes('agent') && stop) await stop().catch(() => {});
+    if (holders.includes('agent')) await starlight().agentStop().catch(() => {});
     await get().loadTable();
   },
 

@@ -9,6 +9,10 @@
 //   4. a body over 1 MiB                                            → 413
 // Then POST/GET/DELETE /mcp go to the MCP session's transport (a new session
 // on `initialize`), and anything else is 404. It binds 127.0.0.1 only.
+//
+// A session with no POST in flight and none for `idleTimeoutMs` (20 minutes)
+// is closed, which reports it through `onSessionClosed`: a client that crashed
+// never sends DELETE, and the agent session it owns must not linger.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -16,6 +20,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 
 export const MAX_BODY_BYTES = 1024 * 1024;
+export const IDLE_TIMEOUT_MS = 20 * 60_000;
+export const REAP_INTERVAL_MS = 60_000;
 const BIND_HOST = '127.0.0.1';
 
 export interface McpHost {
@@ -35,11 +41,18 @@ export interface McpHostOptions {
   token(): string;
   createServer(mcpSessionId: string): McpServer;
   onSessionClosed(mcpSessionId: string): void;
+  /** A session with no request in flight and none for this long is closed (default 20 minutes). */
+  idleTimeoutMs?: number;
+  /** How often idle sessions are looked for (default 1 minute). */
+  reapIntervalMs?: number;
 }
 
 interface SessionEntry {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
+  /** POST requests (tool calls) not answered yet. The long-lived GET stream doesn't count. */
+  inFlight: number;
+  lastActive: number;
 }
 
 /** Constant-time compare of the presented token with the expected one. */
@@ -120,6 +133,8 @@ function listen(server: Server, port: number): Promise<number> {
 export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
   const sessions = new Map<string, SessionEntry>();
   let boundPort = 0;
+  const idleTimeoutMs = o.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
+  const reapIntervalMs = o.reapIntervalMs ?? REAP_INTERVAL_MS;
 
   /** Forgets a session and reports it, once. */
   const endSession = (id: string): void => {
@@ -142,11 +157,30 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
     });
     transport.onclose = () => endSession(id);
     const server = o.createServer(id);
-    entry = { transport, server };
-    await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    entry = { transport, server, inFlight: 0, lastActive: Date.now() };
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, body);
+    } catch (err) {
+      endSession(id);
+      void Promise.resolve().then(() => server.close()).catch(() => {});
+      throw err;
+    }
     // An initialize that failed never made a session; don't keep its server.
     if (!sessions.has(id)) void server.close().catch(() => {});
+  };
+
+  /** Counts a POST as in flight until its response closes. */
+  const trackRequest = (entry: SessionEntry, res: ServerResponse): void => {
+    entry.inFlight++;
+    entry.lastActive = Date.now();
+    let done = false;
+    res.on('close', () => {
+      if (done) return;
+      done = true;
+      entry.inFlight--;
+      entry.lastActive = Date.now();
+    });
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -191,6 +225,8 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
     if (typeof sid === 'string' && sid) {
       const entry = sessions.get(sid);
       if (!entry) return replyRpc(res, 404, -32001, 'Session not found');
+      if (method === 'POST') trackRequest(entry, res);
+      else entry.lastActive = Date.now();
       return entry.transport.handleRequest(req, res, body);
     }
     if (method === 'POST' && isInitializeRequest(body)) return newSession(req, res, body);
@@ -213,19 +249,30 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
     portIsFallback = true;
   }
 
+  const closeOne = async (id: string, e: SessionEntry): Promise<void> => {
+    await e.server.close().catch(() => {});
+    endSession(id);  // in case close didn't reach onclose
+  };
+
   const closeSessions = async (): Promise<void> => {
     const all = [...sessions.entries()];
-    await Promise.all(all.map(async ([id, e]) => {
-      await e.server.close().catch(() => {});
-      endSession(id);  // in case close didn't reach onclose
-    }));
+    await Promise.all(all.map(([id, e]) => closeOne(id, e)));
   };
+
+  const reaper = setInterval(() => {
+    const now = Date.now();
+    for (const [id, e] of sessions) {
+      if (e.inFlight === 0 && now - e.lastActive >= idleTimeoutMs) void closeOne(id, e);
+    }
+  }, reapIntervalMs);
+  reaper.unref?.();
 
   return {
     port: boundPort,
     portIsFallback,
     closeSessions,
     close: async () => {
+      clearInterval(reaper);
       await closeSessions();
       await new Promise<void>((resolve) => {
         http.close(() => resolve());

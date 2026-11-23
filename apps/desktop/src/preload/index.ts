@@ -35,6 +35,10 @@ const api: StarlightApi = {
   userCheatsDisableAll: (req) => ipcRenderer.invoke(CHANNELS.userCheatsDisableAll, req),
   agentConnectInfo:     () => ipcRenderer.invoke(CHANNELS.agentConnectInfo),
   agentRotateToken:     () => ipcRenderer.invoke(CHANNELS.agentRotateToken),
+  agentGetState:        () => ipcRenderer.invoke(CHANNELS.agentGetState),
+  agentRespondApproval: (req) => ipcRenderer.invoke(CHANNELS.agentRespondApproval, req),
+  agentSetCanModify:    (req) => ipcRenderer.invoke(CHANNELS.agentSetCanModify, req),
+  agentStop:            () => ipcRenderer.invoke(CHANNELS.agentStop),
   onEvent: (listener) => {
     const handler = (_evt: unknown, e: StarlightEvent): void => listener(e);
     ipcRenderer.on(CHANNELS.event, handler);

@@ -47,6 +47,11 @@ export const CHANNELS = {
   // The agent (MCP) connection
   agentConnectInfo:  'starlight:agent:connectInfo',
   agentRotateToken:  'starlight:agent:rotateToken',
+  // The agent session (attach approval, Stop, activity)
+  agentGetState:        'starlight:agent:getState',
+  agentRespondApproval: 'starlight:agent:respondApproval',
+  agentSetCanModify:    'starlight:agent:setCanModify',
+  agentStop:            'starlight:agent:stop',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -179,6 +184,10 @@ export type StarlightEvent =
   /** Who runs the game's cheats changed (Cheat Engine or starlightd). */
   | { type: 'userCheats:changed'; key: string }
   | { type: 'session:engine'; sessionId: string; engine: 'ce' | 'starlightd'; holders: ('agent' | 'user-cheats')[] }
+  /** The agent session changed (status, approval, live changes, activity). */
+  | { type: 'agent:state'; state: AgentSnapshot }
+  /** Open the agent view (an attach was approved, or a notification was clicked). */
+  | { type: 'agent:focus' }
   | { type: 'ce:hotkey';            recordId: number; ok: boolean; active: boolean; error?: string | undefined }
   /** The trainer engine's install state changed (downloads run in the background). */
   | { type: 'ceRuntime:status'; status: CeRuntimeStatus; error?: string | undefined }
@@ -332,6 +341,14 @@ export interface StarlightApi {
   agentConnectInfo(): Promise<AgentConnectInfo>;
   /** Makes a new token; every connected agent is disconnected. */
   agentRotateToken(): Promise<AgentConnectInfo>;
+  // The agent session
+  agentGetState(): Promise<AgentSnapshot>;
+  /** Allow or deny a pending attach request. */
+  agentRespondApproval(req: { id: string; allow: boolean }): Promise<void>;
+  /** The "Agent can modify the game" switch. Off reverts the agent's freezes, watches, test cheats and speed. */
+  agentSetCanModify(req: { on: boolean }): Promise<void>;
+  /** Stops the agent: reverts everything it changed and detaches. */
+  agentStop(): Promise<void>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;
@@ -435,6 +452,58 @@ export interface AgentConnectInfo {
   token: string;
   claudeCommand: string;
   codexConfig: string;
+}
+
+// --- The agent session (main → renderer) ---
+
+export interface ActivityEntry {
+  id: number;
+  at: number;
+  /** null for notes (attach, Stop, the switch). */
+  tool: string | null;
+  summary: string;
+  status: 'running' | 'ok' | 'error' | 'refused' | 'note';
+  error?: string;
+  change?: { address: string; old: string; new: string };
+}
+
+export interface PendingApproval {
+  id: string;
+  /** "Claude", "Codex", … */
+  label: string;
+  game: string;
+  pid: number;
+  /** Allowing closes the Cheat Engine table that runs on the game. */
+  closesCeTable: boolean;
+  expiresAt: number;
+}
+
+export interface PendingQuestion {
+  id: string;
+  question: string;
+  answer: 'number' | 'confirm' | 'choice';
+  choices?: string[];
+  askedAt: number;
+  expiresAt: number;
+  label: string;
+}
+
+export interface AgentSnapshot {
+  status: 'idle' | 'awaiting-approval' | 'attached';
+  client: { label: string; name: string } | null;
+  approval: PendingApproval | null;
+  game: { pid: number; name: string; key: string; proton: boolean; steamAppId: number | null; buildId: string | null } | null;
+  canModify: boolean;
+  /** Empty until ask_player exists. */
+  questions: PendingQuestion[];
+  live: {
+    freezes: Array<{ id: number; address: string; where: string | null; type: string; value: string }>;
+    tests: Array<{ id: number; name: string }>;
+    watches: Array<{ id: number; address: string; kind: 'write' | 'access'; endsAt: number }>;
+    speed: number;
+  };
+  /** Newest first. */
+  activity: ActivityEntry[];
 }
 
 // DeepPartial type used by updateConfig patches.

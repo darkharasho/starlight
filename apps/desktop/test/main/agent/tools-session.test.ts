@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
-import { listGamesTool, type ListGamesDeps } from '../../../src/main/agent/tools-session.js';
-import type { ToolContext } from '../../../src/main/agent/tools.js';
+import { attachTool, detachTool, gameInfoTool, listGamesTool, type ListGamesDeps } from '../../../src/main/agent/tools-session.js';
+import type { AttachedContext, ToolContext } from '../../../src/main/agent/tools.js';
+import type { Session } from '@starlight/engine';
 import type { GameIdentity } from '../../../src/main/game-identity.js';
 
 const ctx: ToolContext = {
@@ -88,5 +89,63 @@ describe('list_games', () => {
     const def = listGamesTool(deps({ identify: async () => { throw new Error('gone'); } }));
     const r = await def.run({}, ctx) as { games: unknown[] };
     expect(r.games[0]).toEqual({ pid: 11, name: 'Game', proton: null, steamAppId: null, buildId: null, antiCheat: null, attached: true });
+  });
+});
+
+describe('attach, detach and game_info', () => {
+  it('attach returns the game identity', async () => {
+    const attach = vi.fn(async () => ({ pid: 11, name: 'Game', proton: true, steamAppId: 123, buildId: '42', canModify: true }));
+    const def = attachTool({ attach });
+    expect(def.name).toBe('attach');
+    expect(def.tier).toBe('open');
+    expect(def.readOnly).toBe(false);
+    const r = await def.run({ pid: 11 }, ctx);
+    expect(attach).toHaveBeenCalledWith(11, ctx.client);
+    expect(r).toEqual({ attached: true, game: { pid: 11, name: 'Game', proton: true, steamAppId: 123, buildId: '42' }, canModify: true });
+    expect(def.summarize({ pid: 11 }, r)).toBe('Attached to Game');
+  });
+
+  it('detach stops the session as the agent', async () => {
+    const stop = vi.fn(async () => {});
+    const def = detachTool({ stop });
+    expect(def.tier).toBe('attached');
+    await expect(def.run({}, ctx)).resolves.toEqual({ detached: true });
+    expect(stop).toHaveBeenCalledWith('agent');
+  });
+
+  it('game_info pages modules and summarizes regions', async () => {
+    const session = { pid: 11 } as unknown as Session;
+    const attached = {
+      gen: 1, session, client: ctx.client, signal: new AbortController().signal,
+      game: identity(11, 'Game', { exeHash: 'ff00' }),
+      describe: async () => null, track: {} as AttachedContext['track'],
+    } satisfies AttachedContext;
+    const mods = Array.from({ length: 45 }, (_, i) => ({ name: `m${i}.dll`, base: `0x${(0x10000 * (i + 1)).toString(16)}`, size: '0x1000', path: `/x/m${i}.dll`, kind: 'pe' as const }));
+    const listModules = vi.fn(async () => mods);
+    const maps = [
+      '00400000-00500000 r-xp 00000000 08:01 1 /g/game.exe',            // 1 MiB x
+      '00600000-00800000 rw-p 00000000 00:00 0 [heap]',                 // 2 MiB rw private
+      '00800000-00880000 rw-s 00000000 00:01 2 /dev/shm/x',             // shared: not counted
+      '00900000-00940000 rwxp 00000000 00:00 0',                        // 0.25 MiB rw private + x
+      '',
+    ].join('\n');
+    const readMaps = vi.fn(async () => maps);
+    const def = gameInfoTool({ listModules, readMaps });
+    expect(def.tier).toBe('attached');
+    expect(def.readOnly).toBe(true);
+    const c: ToolContext = { ...ctx, attached };
+
+    const first = await def.run({}, c) as { modules: { count: number; items: Array<{ name: string }> } };
+    expect(first).toEqual({
+      pid: 11, name: 'Game', proton: true, steamAppId: 123, buildId: '42', exeHash: 'ff00',
+      modules: { count: 45, items: mods.slice(0, 40).map(({ name, base, size, kind }) => ({ name, base, size, kind })) },
+      regions: { count: 4, writableMiB: 2.3, executableMiB: 1.3 },
+    });
+    expect(readMaps).toHaveBeenCalledWith(11);
+    expect(listModules).toHaveBeenCalledWith(session);
+
+    const page = await def.run({ modules_offset: 40, modules_limit: 10 }, c) as { modules: { count: number; items: Array<{ name: string }> } };
+    expect(page.modules.count).toBe(45);
+    expect(page.modules.items.map((m) => m.name)).toEqual(['m40.dll', 'm41.dll', 'm42.dll', 'm43.dll', 'm44.dll']);
   });
 });
