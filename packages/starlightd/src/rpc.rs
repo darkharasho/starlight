@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
 use crate::cleanup::{self, Owner};
 use crate::scan::{FirstReq, NextReq, Scans};
-use crate::{aob, mem, modules, pointer, process::Handles, symbols};
+use crate::{aob, disasm, mem, modules, pointer, process::Handles, symbols};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -291,6 +291,37 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             let address = symbols::resolve(&t, &mods, module, name)?;
             Ok(json!({ "address": format!("{address:#x}") }))
         }
+        "disassemble" => {
+            let t = handles.get(param_handle(params)?)?;
+            let addr = param_addr(params, "address")?;
+            let count = match params.get("count") {
+                None | Some(Value::Null) => 20,
+                Some(_) => param_u64(params, "count")?,
+            };
+            if count == 0 || count > MAX_DISASM_COUNT {
+                return Err(RpcError::invalid_params(format!("count must be 1..={MAX_DISASM_COUNT}")));
+            }
+            let count = count as usize;
+            let bytes = disasm::read_code(&t, addr, count * disasm::MAX_INSN_LEN)?;
+            let sym = disasm::Symbolizer::new(&modules::list(&t)?);
+            let instructions: Vec<Value> = disasm::decode(&bytes, addr, count)
+                .into_iter()
+                .map(|i| {
+                    let mut v = json!({
+                        "address": format!("{:#x}", i.address),
+                        "length": i.length,
+                        "bytes": to_hex(&i.bytes),
+                        "text": i.text,
+                        "symbol": sym.name(i.address),
+                    });
+                    if let Some(tg) = i.target {
+                        v["target"] = json!({ "address": format!("{tg:#x}"), "symbol": sym.name(tg) });
+                    }
+                    v
+                })
+                .collect();
+            Ok(json!({ "instructions": instructions }))
+        }
         "write" => {
             let t = handles.get(param_handle(params)?)?;
             let addr = param_addr(params, "address")?;
@@ -390,6 +421,7 @@ const MAX_READ: u64 = 64 * 1024 * 1024;
 const MAX_MANY_ITEMS: usize = 4096;
 const MAX_MANY_LENGTH: u64 = 4096;
 const MAX_RESULTS_PAGE: u64 = 1000;
+const MAX_DISASM_COUNT: u64 = 500;
 
 fn param_str<'a>(params: &'a Value, key: &str) -> Result<&'a str, RpcError> {
     params.get(key).and_then(Value::as_str).ok_or_else(|| RpcError::invalid_params(format!("{key} must be a string")))

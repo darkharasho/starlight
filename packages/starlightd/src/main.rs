@@ -1,5 +1,6 @@
 mod aob;
 mod cleanup;
+mod disasm;
 mod freeze;
 mod maps;
 mod mem;
