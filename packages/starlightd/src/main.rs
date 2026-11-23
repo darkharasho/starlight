@@ -10,6 +10,7 @@ mod modules;
 mod patch;
 mod peer;
 mod pointer;
+mod pointer_scan;
 mod process;
 mod regions;
 mod remote;

@@ -2,6 +2,7 @@
 use crate::cleanup::{self, Owner};
 use crate::scan::{FirstReq, NextReq, Scans};
 use crate::patch::Patches;
+use crate::pointer_scan::{self, PointerScans};
 use crate::tracer::DrRw;
 use crate::watch::{self, Watches};
 use crate::{aob, asm, disasm, mem, modules, pointer, process::Handles, signature, symbols};
@@ -12,7 +13,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -85,6 +86,7 @@ pub struct ConnState {
     pub handles: Handles,
     pub owner: Arc<Owner>,
     pub scans: Scans,
+    pub pointer_scans: PointerScans,
     pub patches: Patches,
     pub watches: Watches,
 }
@@ -123,6 +125,7 @@ impl Session {
         let state = Arc::new(ConnState {
             handles: Handles::new(conn.clone(), owner.clone()),
             scans: Scans::new(owner.clone()),
+            pointer_scans: PointerScans::new(owner.clone()),
             patches: Patches::new(owner.clone()),
             watches: Watches::new(owner.clone(), conn.clone()),
             owner,
@@ -416,6 +419,42 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             let addr = pointer::resolve(&t, module_base.wrapping_add(base), &offsets)?;
             Ok(json!({ "address": format!("{addr:#x}") }))
         }
+        "pointer_scan" => {
+            let t = handles.get(param_handle(params)?)?;
+            let address = param_addr(params, "address")?;
+            let opts = pointer_opts(params)?;
+            let (id, count) = state.pointer_scans.start(&t, address, &opts)?;
+            Ok(json!({ "id": id, "count": count }))
+        }
+        "pointer_results" => {
+            let id = param_id(params)?;
+            let offset = match params.get("offset") {
+                None | Some(Value::Null) => 0,
+                Some(_) => param_u64(params, "offset")?,
+            };
+            let limit = match params.get("limit") {
+                None | Some(Value::Null) => 100,
+                Some(_) => param_u64(params, "limit")?,
+            };
+            if limit > MAX_RESULTS_PAGE {
+                return Err(RpcError::invalid_params(format!("limit exceeds {MAX_RESULTS_PAGE}")));
+            }
+            let (count, results) = state.pointer_scans.results(id, offset, limit as usize)?;
+            Ok(json!({ "count": count, "results": results }))
+        }
+        "pointer_rescan" => {
+            let id = param_id(params)?;
+            let t = handles.get(param_handle(params)?)?;
+            let address = match params.get("address") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(param_addr(params, "address")?),
+            };
+            Ok(json!({ "count": state.pointer_scans.rescan(id, &t, address)? }))
+        }
+        "pointer_end" => {
+            state.pointer_scans.end(param_id(params)?)?;
+            Ok(json!({}))
+        }
         "alloc" => {
             let handle = param_handle(params)?;
             let size = param_u64(params, "size")?;
@@ -555,6 +594,48 @@ const MAX_RESULTS_PAGE: u64 = 1000;
 const MAX_DISASM_COUNT: u64 = 500;
 const MAX_ALLOC: u64 = 64 * 1024 * 1024;
 const MAX_PATCH: usize = 4096;
+
+/// An integer, or a "0x..." hex string.
+fn param_num(params: &Value, key: &str) -> Result<Option<u64>, RpcError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => parse_hex(Some(s)).map(Some).ok_or_else(|| RpcError::invalid_params(format!("{key} must be an integer or a \"0x...\" hex string"))),
+        Some(_) => param_u64(params, key).map(Some),
+    }
+}
+
+fn pointer_opts(params: &Value) -> Result<pointer_scan::Opts, RpcError> {
+    let mut o = pointer_scan::Opts::default();
+    if let Some(d) = param_num(params, "max_depth")? {
+        if d == 0 || d > pointer_scan::MAX_DEPTH as u64 {
+            return Err(RpcError::invalid_params(format!("max_depth must be 1..={}", pointer_scan::MAX_DEPTH)));
+        }
+        o.max_depth = d as u8;
+    }
+    if let Some(v) = param_num(params, "max_offset")? {
+        if v > pointer_scan::MAX_OFFSET {
+            return Err(RpcError::invalid_params(format!("max_offset must be at most {:#x}", pointer_scan::MAX_OFFSET)));
+        }
+        o.max_offset = v;
+    }
+    if let Some(v) = param_num(params, "max_results")? {
+        if v == 0 || v > pointer_scan::MAX_RESULTS as u64 {
+            return Err(RpcError::invalid_params(format!("max_results must be 1..={}", pointer_scan::MAX_RESULTS)));
+        }
+        o.max_results = v as usize;
+    }
+    o.modules = match params.get("modules") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_array()
+                .ok_or_else(|| RpcError::invalid_params("modules must be an array of names"))?
+                .iter()
+                .map(|n| n.as_str().map(str::to_owned).ok_or_else(|| RpcError::invalid_params("modules must be an array of names")))
+                .collect::<Result<_, _>>()?,
+        ),
+    };
+    Ok(o)
+}
 
 fn param_str<'a>(params: &'a Value, key: &str) -> Result<&'a str, RpcError> {
     params.get(key).and_then(Value::as_str).ok_or_else(|| RpcError::invalid_params(format!("{key} must be a string")))

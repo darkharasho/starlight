@@ -38,6 +38,12 @@ static Stats  s_stats  = { .hp = 250, .mp = 75 };
 static Player s_player = { .stats = &s_stats, .level = 12 };
 Player*       g_player = &s_player;
 
+/* --heap-chain: g_root -> A, *(A+0x18) -> B, *(int32_t*)(B+0x10) == 777, so a pointer scan from
+ * heap_value finds g_root -> [+0x18] -> [+0x10]. --decoy also points g_decoy at B (g_decoy -> [+0x10]). */
+void* g_root  = NULL;
+void* g_decoy = NULL;
+static volatile int32_t* s_heap_value = NULL;
+
 /* --writer: a thread bumps g_counter every 50 ms (value scans, watchpoints, patches). */
 volatile int32_t   g_counter  = 0;
 
@@ -122,6 +128,24 @@ int main(int argc, char** argv) {
         }
     }
 
+    int heap_chain = 0, decoy = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--heap-chain") == 0) heap_chain = 1;
+        if (strcmp(argv[i], "--decoy") == 0) decoy = 1;
+    }
+    if (heap_chain) {
+        char* a = malloc(0x40);
+        char* b = malloc(0x40);
+        if (!a || !b) { perror("--heap-chain"); return 1; }
+        memset(a, 0, 0x40);
+        memset(b, 0, 0x40);
+        *(void**)(a + 0x18) = b;
+        *(int32_t*)(b + 0x10) = 777;
+        s_heap_value = (volatile int32_t*)(b + 0x10);
+        g_root = a;
+        if (decoy) g_decoy = b;
+    }
+
     /* Print addresses on startup so tests can locate them.
      * Format is parsed by the spawn-target test helper. */
     printf("READY\n");
@@ -142,6 +166,11 @@ int main(int argc, char** argv) {
     printf("addr g_sig=%p\n",         (void*)g_sig);
     printf("addr libc_clock_gettime=%p\n", dlsym(RTLD_DEFAULT, "clock_gettime"));
     if (mapped) printf("addr mapped=%p\n", mapped);
+    if (heap_chain) {
+        printf("addr g_root=%p\n",       (void*)&g_root);
+        printf("addr g_decoy=%p\n",      (void*)&g_decoy);
+        printf("addr heap_value=%p\n",   (void*)s_heap_value);
+    }
     printf("offset stats_in_player=%zu\n", offsetof(Player, stats));
     printf("offset hp_in_stats=%zu\n",     offsetof(Stats, hp));
     fflush(stdout);
