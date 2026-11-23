@@ -8,6 +8,7 @@
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 #[cfg(not(test))]
@@ -163,8 +164,29 @@ impl Store {
         }
     }
 
-    /// Value first scan: every aligned slot in `regions` whose bytes pass `pred`.
-    pub fn first_sparse(regions: &[(u64, u64)], g: Geometry, read: Reader, pred: &(dyn Fn(&[u8]) -> bool + Sync)) -> Store {
+    /// First scan. `pred: None` is `unknown` (every readable slot is a candidate). A value scan
+    /// is kept in RAM while it has at most `SPARSE_MAX` matches; past that it is redone in the
+    /// dense form so memory stays bounded. `file` opens the snapshot file when one is needed.
+    pub fn first(
+        regions: &[(u64, u64)],
+        g: Geometry,
+        read: Reader,
+        pred: Option<&(dyn Fn(&[u8]) -> bool + Sync)>,
+        file: impl FnOnce() -> io::Result<File>,
+    ) -> io::Result<Store> {
+        if let Some(p) = pred {
+            if let Some(s) = Store::first_sparse(regions, g, read, p) {
+                return Ok(s);
+            }
+        }
+        let mut s = Store::first_dense(regions, g, read, file()?, pred)?;
+        s.shrink(g)?;
+        Ok(s)
+    }
+
+    /// Value first scan in RAM: every aligned slot whose bytes pass `pred`, or `None` once there
+    /// are more than `SPARSE_MAX` (workers stop taking chunks then, so RAM stays bounded).
+    pub fn first_sparse(regions: &[(u64, u64)], g: Geometry, read: Reader, pred: &(dyn Fn(&[u8]) -> bool + Sync)) -> Option<Store> {
         let mut jobs = vec![];
         for &(start, end) in regions {
             let mut off = 0;
@@ -173,8 +195,12 @@ impl Store {
                 off += CHUNK as u64;
             }
         }
+        let found = AtomicU64::new(0);
         let parts = par_map(jobs, |(start, end, off)| {
             let (mut addrs, mut prev) = (vec![], vec![]);
+            if found.load(Ordering::Relaxed) > SPARSE_MAX {
+                return (addrs, prev);
+            }
             let len = end - start;
             let read_len = (len - off).min((CHUNK + g.width - 1) as u64) as usize;
             let Some(buf) = read(start + off, read_len) else { return (addrs, prev) };
@@ -187,26 +213,56 @@ impl Store {
                 }
                 i += g.align;
             }
+            found.fetch_add(addrs.len() as u64, Ordering::Relaxed);
             (addrs, prev)
         });
+        if found.into_inner() > SPARSE_MAX {
+            return None;
+        }
         let (mut addrs, mut prev) = (vec![], vec![]);
         for (a, p) in parts {
             addrs.extend(a);
             prev.extend(p);
         }
-        Store::Sparse { addrs, prev }
+        Some(Store::Sparse { addrs, prev })
     }
 
-    /// Unknown first scan: snapshot `regions` into `file`; every slot that could be read is a candidate.
-    pub fn first_dense(regions: &[(u64, u64)], g: Geometry, read: Reader, file: File) -> io::Result<Store> {
+    /// Dense first scan: snapshot `regions` into `file`. Candidates are the readable slots that
+    /// pass `pred` (every readable slot when `pred` is `None`).
+    pub fn first_dense(
+        regions: &[(u64, u64)],
+        g: Geometry,
+        read: Reader,
+        file: File,
+        pred: Option<&(dyn Fn(&[u8]) -> bool + Sync)>,
+    ) -> io::Result<Store> {
         let (lays, nwords) = layout(regions, g);
+        // Full length up front: bytes of chunks that can't be read are holes that read back as
+        // zeros, so later passes never hit EOF reading a straddling slot's tail.
+        file.set_len(lays.last().map_or(0, |l| l.file_off + l.len))?;
         let mut bitmap = vec![0u64; nwords];
         let counts = par_map(chunks(&lays, &mut bitmap, g), |c| -> io::Result<u64> {
-            let Some(buf) = read(c.lay.start + c.off, c.own_len()) else { return Ok(0) };
-            file.write_all_at(&buf, c.lay.file_off + c.off)?;
-            let n = c.slots(g);
-            fill(c.words, n);
-            Ok(n)
+            let own = c.own_len();
+            match pred {
+                None => {
+                    let Some(buf) = read(c.lay.start + c.off, own) else { return Ok(0) };
+                    file.write_all_at(&buf, c.lay.file_off + c.off)?;
+                    let n = c.slots(g);
+                    fill(c.words, n);
+                    Ok(n)
+                }
+                Some(pred) => {
+                    let Some(buf) = read(c.lay.start + c.off, c.read_len(g)) else { return Ok(0) };
+                    file.write_all_at(&buf[..own], c.lay.file_off + c.off)?;
+                    for k in 0..c.slots(g) as usize {
+                        let o = k * g.align;
+                        if pred(&buf[o..o + g.width]) {
+                            c.words[k / 64] |= 1 << (k % 64);
+                        }
+                    }
+                    Ok(popcount(c.words))
+                }
+            }
         });
         let count = counts.into_iter().sum::<io::Result<u64>>()?;
         Ok(Store::Dense { file, regions: regions.to_vec(), bitmap, count })
@@ -414,12 +470,15 @@ mod tests {
     struct Fake {
         regions: Vec<(u64, Vec<u8>)>,
         dead: Option<u64>,
+        /// Unreadable addresses `[from, to)` inside a region.
+        hole: Option<(u64, u64)>,
     }
 
     impl Fake {
         fn read(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
             self.regions.iter().find_map(|(start, data)| {
-                if Some(*start) == self.dead || addr < *start || addr + len as u64 > start + data.len() as u64 {
+                let in_hole = self.hole.is_some_and(|(from, to)| addr < to && addr + len as u64 > from);
+                if in_hole || Some(*start) == self.dead || addr < *start || addr + len as u64 > start + data.len() as u64 {
                     return None;
                 }
                 let o = (addr - start) as usize;
@@ -450,7 +509,7 @@ mod tests {
 
     fn fake() -> Fake {
         // Two regions, the first spanning several chunks, not a multiple of 64 slots.
-        Fake { regions: vec![(0x10000, vec![0u8; CHUNK * 2 + 4096 + 12]), (0x1000_0000, vec![0u8; 8192])], dead: None }
+        Fake { regions: vec![(0x10000, vec![0u8; CHUNK * 2 + 4096 + 12]), (0x1000_0000, vec![0u8; 8192])], dead: None, hole: None }
     }
 
     fn changed(c: &[u8], p: &[u8]) -> bool {
@@ -462,7 +521,7 @@ mod tests {
         let mut f = fake();
         let regions = f.ranges();
         let total = slots(regions[0].1 - regions[0].0, G4) + slots(8192, G4);
-        let mut s = Store::first_dense(&regions, G4, &|a, n| f.read(a, n), tmp()).unwrap();
+        let mut s = Store::first_dense(&regions, G4, &|a, n| f.read(a, n), tmp(), None).unwrap();
         assert!(matches!(s, Store::Dense { .. }));
         assert_eq!(s.count(), total);
         let hits = [0x10000, 0x10000 + CHUNK as u64 - 4, 0x10000 + CHUNK as u64, 0x10000 + 2 * CHUNK as u64 + 4096 + 8, 0x1000_0000 + 8188];
@@ -481,9 +540,9 @@ mod tests {
 
     #[test]
     fn dense_stays_dense_above_threshold_and_pages() {
-        let f = Fake { regions: vec![(0x10000, vec![0u8; (SPARSE_MAX as usize + 100) * 4])], dead: None };
+        let f = Fake { regions: vec![(0x10000, vec![0u8; (SPARSE_MAX as usize + 100) * 4])], dead: None, hole: None };
         let regions = f.ranges();
-        let mut s = Store::first_dense(&regions, G4, &|a, n| f.read(a, n), tmp()).unwrap();
+        let mut s = Store::first_dense(&regions, G4, &|a, n| f.read(a, n), tmp(), None).unwrap();
         s.shrink(G4).unwrap();
         assert!(matches!(s, Store::Dense { .. }));
         assert_eq!(s.count(), SPARSE_MAX + 100);
@@ -498,9 +557,9 @@ mod tests {
     fn straddling_slots_compare_against_the_previous_scan() {
         // Alignment 1, width 4: slots straddle chunk ends. Large enough to stay dense.
         let g = Geometry { width: 4, align: 1 };
-        let mut f = Fake { regions: vec![(0x10000, vec![0u8; CHUNK * 5 + 2])], dead: None };
+        let mut f = Fake { regions: vec![(0x10000, vec![0u8; CHUNK * 5 + 2])], dead: None, hole: None };
         let regions = f.ranges();
-        let mut s = Store::first_dense(&regions, g, &|a, n| f.read(a, n), tmp()).unwrap();
+        let mut s = Store::first_dense(&regions, g, &|a, n| f.read(a, n), tmp(), None).unwrap();
         let all = s.count();
         assert!(all > SPARSE_MAX);
         s.next(g, &|a, n| f.read(a, n), &|c, p| c == p).unwrap();
@@ -521,7 +580,7 @@ mod tests {
     fn unreadable_regions_drop_their_candidates() {
         let mut f = fake();
         let regions = f.ranges();
-        let s = Store::first_sparse(&regions, G4, &|a, n| f.read(a, n), &|v| v == [0, 0, 0, 0]);
+        let s = Store::first_sparse(&regions, G4, &|a, n| f.read(a, n), &|v| v == [0, 0, 0, 0]).unwrap();
         let mut s = s;
         let before = s.count();
         f.dead = Some(0x1000_0000);
@@ -529,7 +588,7 @@ mod tests {
         assert_eq!(s.count(), before - 8192 / 4);
         // Dense too.
         let mut f = fake();
-        let mut s = Store::first_dense(&regions, G4, &|a, n| f.read(a, n), tmp()).unwrap();
+        let mut s = Store::first_dense(&regions, G4, &|a, n| f.read(a, n), tmp(), None).unwrap();
         f.dead = Some(0x10000);
         s.next(G4, &|a, n| f.read(a, n), &|c, p| c == p).unwrap();
         assert_eq!(s.count(), 8192 / 4);
@@ -542,9 +601,58 @@ mod tests {
         for &a in &at {
             f.put(a, 100);
         }
-        let s = Store::first_sparse(&f.ranges(), G4, &|a, n| f.read(a, n), &|v| v == 100u32.to_le_bytes());
+        let s = Store::first_sparse(&f.ranges(), G4, &|a, n| f.read(a, n), &|v| v == 100u32.to_le_bytes()).unwrap();
         assert_eq!(s.page(G4, 0, 10), at);
         assert_eq!(s.page(G4, 1, 1), [at[1]]);
         assert!(s.page(G4, 9, 1).is_empty());
+    }
+
+    #[test]
+    fn unreadable_trailing_chunk_does_not_break_later_passes() {
+        // The last region spans 3 chunks; its last chunk can't be read during the first scan.
+        let b = 0x1000_0000u64;
+        let mut f = Fake { regions: vec![(0x10000, vec![0u8; 8192]), (b, vec![0u8; CHUNK * 3])], dead: None, hole: None };
+        f.hole = Some((b + 2 * CHUNK as u64, b + 3 * CHUNK as u64));
+        let regions = f.ranges();
+        let readable = 8192 / 4 + 2 * CHUNK as u64 / 4;
+        let mut s = Store::first_dense(&regions, G4, &|a, n| f.read(a, n), tmp(), None).unwrap();
+        assert_eq!(s.count(), readable);
+        // Next reads a 3-byte tail past chunk 1, from the file region chunk 2 never wrote.
+        f.hole = None;
+        s.next(G4, &|a, n| f.read(a, n), &|c, p| c == p).unwrap();
+        assert_eq!(s.count(), readable);
+        // `first` shrinks small unknown scans at once, which reads the same tails.
+        f.hole = Some((b + 2 * CHUNK as u64, b + 3 * CHUNK as u64));
+        let s = Store::first(&regions, G4, &|a, n| f.read(a, n), None, || Ok(tmp())).unwrap();
+        assert!(matches!(s, Store::Sparse { .. }));
+        assert_eq!(s.count(), readable);
+    }
+
+    #[test]
+    fn value_first_scan_with_too_many_matches_goes_dense() {
+        let total = SPARSE_MAX + 100;
+        let mut f = Fake { regions: vec![(0x10000, vec![0u8; total as usize * 4])], dead: None, hole: None };
+        let regions = f.ranges();
+        let skip = [0x10000 + 4, 0x10000 + 40, 0x10000 + 4000];
+        for &a in &skip {
+            f.put(a, 9);
+        }
+        let zero = |v: &[u8]| v == [0, 0, 0, 0];
+        let mut s = Store::first(&regions, G4, &|a, n| f.read(a, n), Some(&zero), || Ok(tmp())).unwrap();
+        assert!(matches!(s, Store::Dense { .. }), "more than SPARSE_MAX matches must not stay in RAM");
+        assert_eq!(s.count(), total - 3, "candidates are the matches, not every slot");
+        assert_eq!(s.page(G4, 0, 3), [0x10000, 0x10000 + 8, 0x10000 + 12]);
+        // A next scan narrows it below the threshold, and it turns sparse.
+        for i in 0..200u64 {
+            f.put(0x10000 + 8000 + i * 4, 1);
+        }
+        s.next(G4, &|a, n| f.read(a, n), &|c, _| c == [0, 0, 0, 0]).unwrap();
+        assert!(matches!(s, Store::Sparse { .. }));
+        assert_eq!(s.count(), total - 203);
+        assert_eq!(s.page(G4, 0, 2), [0x10000, 0x10000 + 8]);
+        // Under the threshold a value scan stays sparse without a file.
+        let few = |v: &[u8]| v == 9u32.to_le_bytes();
+        let s = Store::first(&regions, G4, &|a, n| f.read(a, n), Some(&few), || panic!("no file needed")).unwrap();
+        assert_eq!(s.page(G4, 0, 10), skip);
     }
 }

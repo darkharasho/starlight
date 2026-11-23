@@ -92,14 +92,9 @@ impl Scans {
             _ => RpcError::read_failed(format!("cannot read maps of pid {}: {e}", t.pid)),
         })?);
         let read = reader(&t);
-        let store = if m.is_unknown() {
-            let file = snapshot_file().map_err(|e| RpcError::internal_error(format!("scan snapshot file: {e}")))?;
-            let mut s = Store::first_dense(&ranges, geo, &read, file).map_err(io_error)?;
-            s.shrink(geo).map_err(io_error)?;
-            s
-        } else {
-            Store::first_sparse(&ranges, geo, &read, &|cur| m.matches(cur, None))
-        };
+        let pred = |cur: &[u8]| m.matches(cur, None);
+        let pred: Option<&(dyn Fn(&[u8]) -> bool + Sync)> = if m.is_unknown() { None } else { Some(&pred) };
+        let store = Store::first(&ranges, geo, &read, pred, snapshot_file).map_err(io_error)?;
         if t.exited() {
             return Err(exited(&t));
         }
