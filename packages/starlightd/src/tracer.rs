@@ -272,12 +272,56 @@ impl State {
     }
 }
 
+/// A signal to deliver later, with the siginfo it arrived with, so the game sees it unchanged
+/// (`si_addr` of a SIGSEGV, which Wine's write-watch and guard pages rely on; `si_value`).
+#[derive(Clone, Copy)]
+struct Sig {
+    sig: i32,
+    info: Option<libc::siginfo_t>,
+}
+
+/// A remote syscall we stopped waiting for: the thread still runs with our registers. Its next
+/// stop puts `regs` back (D6) before anything else happens to it.
+#[derive(Clone, Copy)]
+struct Restore {
+    regs: libc::user_regs_struct,
+    site: u64,
+    /// The state it was stopped in before we ran code on it.
+    prior: State,
+}
+
 struct Thread {
     state: State,
+    /// Siginfo of a `Signal(s)` stop with `s != 0`.
+    info: Option<libc::siginfo_t>,
     /// Signals that stopped this thread while we ran code on it; delivered again on resume.
-    queued: Vec<i32>,
+    queued: Vec<Sig>,
+    /// The current stop is a signal-delivery-stop, the only stop `PTRACE_CONT` can deliver a
+    /// signal from.
+    in_signal_stop: bool,
+    /// A group-stop arrived while we ran code on it: put it back into the group-stop on resume.
+    regroup: bool,
+    restore: Option<Restore>,
+    /// Our syscall finished but its single-step SIGTRAP is still queued (another stop was
+    /// reported first): swallow it when it comes, never deliver or detach with it pending.
+    step_trap_pending: bool,
     /// Watch slots have not been applied yet (a new thread before its first stop).
     fresh: bool,
+}
+
+impl Thread {
+    fn new(state: State, fresh: bool) -> Thread {
+        Thread {
+            state,
+            info: None,
+            queued: vec![],
+            in_signal_stop: false,
+            regroup: false,
+            restore: None,
+            step_trap_pending: false,
+            fresh,
+        }
+    }
 }
 
 struct Core {
@@ -286,6 +330,8 @@ struct Core {
     slots: [Option<DrConfig>; 4],
     /// Some debug register was written, so detach must clear them.
     dr_used: bool,
+    /// How long a remote syscall's single-step may take (tests shorten it).
+    step_timeout: Duration,
     shared: Arc<Shared>,
 }
 
@@ -328,6 +374,20 @@ fn get_regs(tid: i32) -> Result<libc::user_regs_struct, i32> {
 
 fn set_regs(tid: i32, r: &libc::user_regs_struct) -> Result<(), i32> {
     pt(libc::PTRACE_SETREGS, tid, 0, r as *const _ as u64).map(|_| ())
+}
+
+fn get_siginfo(tid: i32) -> Option<libc::siginfo_t> {
+    let mut si: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    pt(libc::PTRACE_GETSIGINFO, tid, 0, &mut si as *mut _ as u64).ok()?;
+    Some(si)
+}
+
+fn is_stop_signal(sig: i32) -> bool {
+    matches!(sig, libc::SIGSTOP | libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU)
+}
+
+fn tgkill(pid: i32, tid: i32, sig: i32) {
+    unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, sig) };
 }
 
 fn ptrace_error(what: &str, tid: i32, e: i32) -> RpcError {
@@ -377,7 +437,7 @@ fn seize_all(pid: i32) -> Result<HashMap<i32, Thread>, RpcError> {
         for tid in new {
             match pt(libc::PTRACE_SEIZE, tid, 0, libc::PTRACE_O_TRACECLONE as u64) {
                 Ok(_) => {
-                    threads.insert(tid, Thread { state: State::Running, queued: vec![], fresh: false });
+                    threads.insert(tid, Thread::new(State::Running, false));
                 }
                 Err(libc::ESRCH) if tid != pid => {} // exited meanwhile
                 Err(libc::ESRCH) => return Err(RpcError::process_not_found(format!("no such process: {pid}"))),
@@ -386,7 +446,7 @@ fn seize_all(pid: i32) -> Result<HashMap<i32, Thread>, RpcError> {
                     if tracer == me {
                         // Already ours: a thread created by a seized thread (auto-attached). Its
                         // first stop is on its way.
-                        threads.insert(tid, Thread { state: State::Starting, queued: vec![], fresh: true });
+                        threads.insert(tid, Thread::new(State::Starting, true));
                     } else if tracer != 0 {
                         return Err(RpcError::ptrace_failed(
                             "another debugger is attached to this game (Cheat Engine?)",
@@ -414,7 +474,8 @@ impl Drop for Finish {
 
 fn tracer_main(pid: i32, rx: Receiver<Cmd>, ready: Sender<Result<(), RpcError>>, shared: Arc<Shared>) {
     let _finish = Finish(shared.clone());
-    // On error, returning ends this thread, and the kernel detaches whatever was seized.
+    // On error, returning ends this thread, and the kernel detaches whatever was seized (all
+    // still running, nothing changed yet).
     let threads = match seize_all(pid) {
         Ok(t) => t,
         Err(e) => {
@@ -423,7 +484,7 @@ fn tracer_main(pid: i32, rx: Receiver<Cmd>, ready: Sender<Result<(), RpcError>>,
         }
     };
     let _ = ready.send(Ok(()));
-    let mut core = Core { pid, threads, slots: [None; 4], dr_used: false, shared };
+    let mut core = Core { pid, threads, slots: [None; 4], dr_used: false, step_timeout: STOP_TIMEOUT, shared };
     loop {
         core.pump();
         if core.threads.is_empty() {
@@ -439,6 +500,27 @@ fn tracer_main(pid: i32, rx: Receiver<Cmd>, ready: Sender<Result<(), RpcError>>,
         }
     }
 }
+
+/// What a stop means for a thread we are running a syscall on.
+enum StepStop {
+    /// The single-step finished the `syscall`; `rax` is its result.
+    Done(u64),
+    /// Something else came first (recorded); step again.
+    Again,
+}
+
+/// How a remote syscall's single-step ended.
+enum Step {
+    Done(u64),
+    /// Stopped and still ours: the caller restores the registers.
+    Failed(RpcError),
+    /// Still running our code: the registers are restored at its next stop (`Thread::restore`).
+    Abandoned(RpcError),
+}
+
+/// Stay attached at most this long at detach waiting for threads that must be cleaned up
+/// (debug registers armed, or registers still to restore) before the kernel lets them go.
+const DETACH_PATIENCE: Duration = Duration::from_secs(30);
 
 impl Core {
     /// Wait for one event of any of our tracees without blocking.
@@ -458,7 +540,7 @@ impl Core {
     fn pump(&mut self) {
         while let Some((tid, status)) = self.wait_any() {
             self.on_event(tid, status);
-            self.resume(tid);
+            self.release(tid, false);
         }
     }
 
@@ -471,34 +553,90 @@ impl Core {
         if !libc::WIFSTOPPED(status) {
             return;
         }
+        if self.threads.get(&tid).is_some_and(|t| t.restore.is_some()) {
+            self.finish_restore(tid, status);
+            return;
+        }
         let sig = libc::WSTOPSIG(status);
         let event = status >> 16;
         // A new thread's first stop can arrive before its parent's clone event.
-        self.threads.entry(tid).or_insert(Thread { state: State::Starting, queued: vec![], fresh: true });
+        self.threads.entry(tid).or_insert(Thread::new(State::Starting, true));
         let state = if event == libc::PTRACE_EVENT_CLONE {
             let mut msg: libc::c_ulong = 0;
             if pt(libc::PTRACE_GETEVENTMSG, tid, 0, &mut msg as *mut _ as u64).is_ok() {
-                self.threads.entry(msg as i32).or_insert(Thread { state: State::Starting, queued: vec![], fresh: true });
+                self.threads.entry(msg as i32).or_insert(Thread::new(State::Starting, true));
             }
             State::Event
         } else if event == libc::PTRACE_EVENT_STOP {
             // With PTRACE_SEIZE a group-stop reports the stop signal; anything else reports SIGTRAP.
-            match sig {
-                libc::SIGSTOP | libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU => State::Group,
-                _ => State::Interrupted,
+            if is_stop_signal(sig) {
+                State::Group
+            } else {
+                State::Interrupted
             }
         } else if event != 0 {
             State::Event
+        } else if sig == libc::SIGTRAP && std::mem::take(&mut self.threads.get_mut(&tid).unwrap().step_trap_pending) {
+            State::Signal(0) // the late trap of our single-step: swallow it
         } else if sig == libc::SIGTRAP && self.take_watch_trap(tid) {
             State::Signal(0) // ours: swallow it
         } else {
             State::Signal(sig)
         };
+        let info = match state {
+            State::Signal(s) if s != 0 => get_siginfo(tid),
+            _ => None,
+        };
         let th = self.threads.get_mut(&tid).unwrap();
         th.state = state;
+        th.info = info;
+        th.in_signal_stop = event == 0;
         if th.fresh {
             th.fresh = false;
             self.apply_slots_to(tid);
+        }
+    }
+
+    /// Record a stop of a thread running our syscall. It is done once `rip` is past the
+    /// `syscall`, whatever stop reports it: a leftover interrupt can be reported before the
+    /// step's SIGTRAP, which then stays queued and is swallowed when it comes. Signals and
+    /// group-stops that come along are kept for resume (signals with their siginfo).
+    fn note_step_stop(&mut self, tid: i32, status: i32, site: u64) -> StepStop {
+        let (sig, event) = (libc::WSTOPSIG(status), status >> 16);
+        let done = get_regs(tid).ok().filter(|r| r.rip == site + 2).map(|r| r.rax);
+        let info = if event == 0 { get_siginfo(tid) } else { None };
+        let Some(th) = self.threads.get_mut(&tid) else { return StepStop::Again };
+        th.in_signal_stop = event == 0;
+        let step_trap = event == 0 && sig == libc::SIGTRAP && done.is_some();
+        if event == 0 && sig == libc::SIGTRAP && !step_trap && std::mem::take(&mut th.step_trap_pending) {
+            // The late trap of an earlier remote syscall on this thread: swallow it.
+            return StepStop::Again;
+        }
+        if !step_trap {
+            if event == 0 {
+                // A signal of the game (a real SIGTRAP included).
+                th.queued.push(Sig { sig, info });
+            } else if event == libc::PTRACE_EVENT_STOP && is_stop_signal(sig) {
+                th.regroup = true;
+            }
+        }
+        match done {
+            Some(rax) => {
+                th.step_trap_pending |= !step_trap;
+                StepStop::Done(rax)
+            }
+            None => StepStop::Again,
+        }
+    }
+
+    /// The thread whose remote syscall we abandoned has stopped: put its registers back, and
+    /// swallow the step's own SIGTRAP.
+    fn finish_restore(&mut self, tid: i32, status: i32) {
+        let Some(rs) = self.threads.get_mut(&tid).and_then(|t| t.restore.take()) else { return };
+        let _ = self.note_step_stop(tid, status, rs.site);
+        let _ = set_regs(tid, &rs.regs);
+        if let Some(th) = self.threads.get_mut(&tid) {
+            th.state = rs.prior;
         }
     }
 
@@ -520,33 +658,63 @@ impl Core {
         true
     }
 
-    /// Resume `tid` according to how it stopped, delivering queued signals.
-    fn resume(&mut self, tid: i32) {
+    /// Let a stopped thread go: resume it (`PTRACE_CONT`, or `PTRACE_LISTEN` for a group-stop),
+    /// or detach from it. Its pending signal goes out with its original siginfo when the stop
+    /// can carry one; any further ones are re-sent with tgkill.
+    fn release(&mut self, tid: i32, detach: bool) {
+        let pid = self.pid;
         let Some(th) = self.threads.get_mut(&tid) else { return };
-        let mut queued = std::mem::take(&mut th.queued).into_iter();
-        let (req, sig) = match th.state {
-            State::Running | State::Starting => return,
-            State::Group => (libc::PTRACE_LISTEN, 0),
-            State::Signal(s) if s != 0 => (libc::PTRACE_CONT, s),
-            State::Interrupted | State::Event | State::Signal(_) => (libc::PTRACE_CONT, queued.next().unwrap_or(0)),
-        };
+        if !th.state.stopped() {
+            return;
+        }
+        let mut sigs = Vec::new();
+        if let State::Signal(s) = th.state {
+            if s != 0 {
+                sigs.push(Sig { sig: s, info: th.info.take() });
+            }
+        }
+        sigs.extend(th.queued.drain(..));
+        let group = th.state == State::Group;
+        let regroup = std::mem::take(&mut th.regroup) && !detach;
+        let in_signal_stop = th.in_signal_stop;
         th.state = State::Running;
+        th.info = None;
+        let mut rest = sigs.into_iter();
+        // Only a signal-delivery-stop delivers the signal passed to CONT/DETACH, and it keeps
+        // the siginfo set here as long as the signal numbers match.
+        let first = if in_signal_stop && !group { rest.next() } else { None };
+        if let Some(Sig { info: Some(info), .. }) = &first {
+            let _ = pt(libc::PTRACE_SETSIGINFO, tid, 0, info as *const _ as u64);
+        }
+        let data = first.map_or(0, |s| s.sig) as u64;
+        let req = if detach {
+            libc::PTRACE_DETACH // a group-stopped thread stays stopped, as it would untraced
+        } else if group {
+            libc::PTRACE_LISTEN
+        } else {
+            libc::PTRACE_CONT
+        };
         // ESRCH: the thread is being killed; its exit event follows.
-        let _ = pt(req, tid, 0, sig as u64);
-        for extra in queued {
-            unsafe { libc::syscall(libc::SYS_tgkill, self.pid, tid, extra) };
+        let _ = pt(req, tid, 0, if group { 0 } else { data });
+        if regroup {
+            // Its next stop reports the group-stop again, which `on_event` turns into LISTEN.
+            let _ = pt(libc::PTRACE_INTERRUPT, tid, 0, 0);
+        }
+        for s in rest {
+            tgkill(pid, tid, s.sig);
         }
     }
 
     fn resume_all(&mut self) {
         let tids: Vec<i32> = self.threads.keys().copied().collect();
         for tid in tids {
-            self.resume(tid);
+            self.release(tid, false);
         }
     }
 
-    /// Interrupt every running thread and wait until all are stopped.
-    fn stop_all(&mut self) -> Result<(), RpcError> {
+    /// Interrupt every running thread and wait until all are stopped. On timeout, the stopped
+    /// threads are resumed if `resume_on_timeout`, else left stopped for the caller.
+    fn stop_all(&mut self, resume_on_timeout: bool) -> Result<(), RpcError> {
         for (&tid, th) in &self.threads {
             if th.state == State::Running {
                 let _ = pt(libc::PTRACE_INTERRUPT, tid, 0, 0);
@@ -576,7 +744,9 @@ impl Core {
                 continue;
             }
             if start.elapsed() >= STOP_TIMEOUT {
-                self.resume_all();
+                if resume_on_timeout {
+                    self.resume_all();
+                }
                 return Err(RpcError::ptrace_failed(format!(
                     "thread {} of pid {} did not stop within {} s",
                     waiting[0],
@@ -589,7 +759,7 @@ impl Core {
     }
 
     fn run_job(&mut self, job: Job) {
-        match self.stop_all() {
+        match self.stop_all(true) {
             Ok(()) => {
                 let mut tids: Vec<i32> = self.threads.iter().filter(|(_, t)| t.state.stopped()).map(|(&t, _)| t).collect();
                 tids.sort_unstable();
@@ -617,34 +787,55 @@ impl Core {
         let _ = poke_debugreg(tid, 7, dr7);
     }
 
-    /// Clear debug registers (if we ever set any) and detach every stopped thread. Threads that
-    /// would not stop are detached by the kernel when this thread exits.
+    /// Clear debug registers (if we ever set any) and detach every thread. A thread the kernel
+    /// would release in an unsafe state (debug registers armed, or still running our syscall's
+    /// registers) is waited for and re-interrupted, up to `DETACH_PATIENCE`. Any other thread
+    /// that won't stop is released by the kernel when this thread exits.
     fn detach_all(&mut self) {
-        let _ = self.stop_all();
-        let tids: Vec<i32> = self.threads.keys().copied().collect();
-        for tid in tids {
-            let th = self.threads.get_mut(&tid).unwrap();
-            if !th.state.stopped() {
-                continue;
+        let deadline = Instant::now() + DETACH_PATIENCE;
+        loop {
+            let _ = self.stop_all(false);
+            let stopped: Vec<i32> = self.threads.iter().filter(|(_, t)| t.state.stopped()).map(|(&t, _)| t).collect();
+            for tid in stopped {
+                if self.threads[&tid].step_trap_pending {
+                    // Detaching now would deliver that SIGTRAP to the game: let it arrive first.
+                    self.release(tid, false);
+                    continue;
+                }
+                if self.dr_used {
+                    let _ = poke_debugreg(tid, 7, 0);
+                    for i in 0..4 {
+                        let _ = poke_debugreg(tid, i, 0);
+                    }
+                }
+                self.release(tid, true);
+                self.threads.remove(&tid);
             }
-            if self.dr_used {
-                let _ = poke_debugreg(tid, 7, 0);
-                for i in 0..4 {
-                    let _ = poke_debugreg(tid, i, 0);
+            // Give threads waiting for their late step trap a moment without interrupts (an
+            // interrupt would again be reported before the trap).
+            let grace = Instant::now() + Duration::from_millis(200);
+            while Instant::now() < grace
+                && self.threads.values().any(|t| t.step_trap_pending && t.state == State::Running)
+            {
+                match self.wait_any() {
+                    Some((tid, status)) => self.on_event(tid, status),
+                    None => std::thread::sleep(Duration::from_micros(100)),
                 }
             }
-            let mut queued = std::mem::take(&mut th.queued).into_iter();
-            let sig = match th.state {
-                State::Signal(s) if s != 0 => s,
-                State::Group => 0, // stays in its group-stop, as it would untraced
-                _ => queued.next().unwrap_or(0),
-            };
-            let _ = pt(libc::PTRACE_DETACH, tid, 0, sig as u64);
-            for extra in queued {
-                unsafe { libc::syscall(libc::SYS_tgkill, self.pid, tid, extra) };
+            let unsafe_left =
+                self.dr_used || self.threads.values().any(|t| t.restore.is_some() || t.step_trap_pending);
+            if self.threads.is_empty() || !unsafe_left || Instant::now() >= deadline {
+                return;
             }
         }
-        self.threads.clear();
+    }
+
+    /// Mark `tid` as still running our syscall; its next stop restores `regs`.
+    fn abandon(&mut self, tid: i32, regs: libc::user_regs_struct, site: u64, prior: State) {
+        if let Some(th) = self.threads.get_mut(&tid) {
+            th.restore = Some(Restore { regs, site, prior });
+            th.state = State::Running;
+        }
     }
 }
 
@@ -662,7 +853,7 @@ impl Stopped<'_> {
     }
 
     fn check(&self, tid: i32) -> Result<(), RpcError> {
-        if self.tids.contains(&tid) && self.core.threads.contains_key(&tid) {
+        if self.tids.contains(&tid) && self.core.threads.get(&tid).is_some_and(|t| t.state.stopped()) {
             Ok(())
         } else {
             Err(RpcError::invalid_params(format!("thread {tid} is not stopped")))
@@ -711,12 +902,32 @@ impl Stopped<'_> {
         Ok(())
     }
 
-    /// Run syscall `nr` in the target (D6): on the main thread (or any thread stopped where code
-    /// can run), point `rip` at the cached `syscall` instruction with `orig_rax = -1` so no
-    /// syscall restart interferes, single-step it, read `rax`, then restore every register
-    /// exactly, so an interrupted syscall of the game restarts as if nothing happened. Returns the
-    /// raw result (`-errno` on failure).
+    /// The thread to run a syscall on: one stopped by our interrupt (main thread first), so no
+    /// signal has to be carried across it; a signal-stopped thread only if there is no other.
+    fn syscall_thread(&self) -> Result<i32, RpcError> {
+        let state = |tid: &i32| self.core.threads.get(tid).map(|t| t.state);
+        let pid = self.core.pid;
+        let mut order = vec![pid];
+        order.extend(self.tids.iter().copied().filter(|&t| t != pid));
+        order
+            .iter()
+            .find(|t| state(t) == Some(State::Interrupted))
+            .or_else(|| order.iter().find(|t| state(t).is_some_and(State::can_run_code)))
+            .copied()
+            .ok_or_else(|| RpcError::ptrace_failed("no thread of the game can run a syscall right now"))
+    }
+
+    /// Run syscall `nr` in the target (D6): on a thread stopped where code can run, point `rip`
+    /// at the cached `syscall` instruction with `orig_rax = -1` so no syscall restart
+    /// interferes, single-step it, read `rax`, then restore every register exactly, so an
+    /// interrupted syscall of the game restarts as if nothing happened. Returns the raw result
+    /// (`-errno` on failure).
     pub fn syscall(&mut self, nr: i64, args: [u64; 6]) -> Result<i64, RpcError> {
+        let tid = self.syscall_thread()?;
+        self.syscall_on(tid, nr, args)
+    }
+
+    fn syscall_on(&mut self, tid: i32, nr: i64, args: [u64; 6]) -> Result<i64, RpcError> {
         let site = self
             .core
             .shared
@@ -724,17 +935,8 @@ impl Stopped<'_> {
             .lock()
             .unwrap()
             .ok_or_else(|| RpcError::internal_error("no syscall site found yet"))?;
-        let pid = self.core.pid;
-        let eligible = |tid: &i32| self.core.threads.get(tid).is_some_and(|t| t.state.can_run_code());
-        let tid = if eligible(&pid) {
-            pid
-        } else {
-            *self
-                .tids
-                .iter()
-                .find(|t| eligible(t))
-                .ok_or_else(|| RpcError::ptrace_failed("no thread of the game can run a syscall right now"))?
-        };
+        let prior = self.core.threads.get(&tid).map(|t| t.state).filter(|s| s.can_run_code());
+        let prior = prior.ok_or_else(|| RpcError::invalid_params(format!("thread {tid} cannot run a syscall")))?;
         let saved = get_regs(tid).map_err(|e| ptrace_error("PTRACE_GETREGS", tid, e))?;
         let mut r = saved;
         r.rip = site;
@@ -747,19 +949,31 @@ impl Stopped<'_> {
         r.r8 = args[4];
         r.r9 = args[5];
         set_regs(tid, &r).map_err(|e| ptrace_error("PTRACE_SETREGS", tid, e))?;
-        let result = self.step_syscall(tid, site);
-        if self.core.threads.contains_key(&tid) {
-            set_regs(tid, &saved).map_err(|e| ptrace_error("PTRACE_SETREGS", tid, e))?;
+        match self.step_syscall(tid, site, saved, prior) {
+            Step::Done(rax) => {
+                set_regs(tid, &saved).map_err(|e| ptrace_error("PTRACE_SETREGS", tid, e))?;
+                Ok(rax as i64)
+            }
+            Step::Failed(e) => {
+                if self.core.threads.contains_key(&tid) {
+                    let _ = set_regs(tid, &saved);
+                }
+                Err(e)
+            }
+            Step::Abandoned(e) => Err(e),
         }
-        result
     }
 
-    /// Single-step `tid` over the `syscall` at `site`. Signals that arrive first are queued for
-    /// re-delivery on resume, and the step is retried.
-    fn step_syscall(&mut self, tid: i32, site: u64) -> Result<i64, RpcError> {
-        let deadline = Instant::now() + STOP_TIMEOUT;
+    /// Single-step `tid` over the `syscall` at `site`. Signals and group-stops that come first
+    /// are recorded for resume, and the step is retried. If the thread doesn't stop in time it
+    /// is left running and its registers are restored at its next stop.
+    fn step_syscall(&mut self, tid: i32, site: u64, saved: libc::user_regs_struct, prior: State) -> Step {
+        let timeout_error = || RpcError::ptrace_failed(format!("thread {tid} did not finish the remote syscall"));
+        let deadline = Instant::now() + self.core.step_timeout;
         loop {
-            pt(libc::PTRACE_SINGLESTEP, tid, 0, 0).map_err(|e| ptrace_error("PTRACE_SINGLESTEP", tid, e))?;
+            if let Err(e) = pt(libc::PTRACE_SINGLESTEP, tid, 0, 0) {
+                return Step::Failed(ptrace_error("PTRACE_SINGLESTEP", tid, e)); // still in its stop
+            }
             let status = loop {
                 let mut status = 0;
                 let r = unsafe { libc::waitpid(tid, &mut status, libc::__WALL | libc::WNOHANG) };
@@ -767,31 +981,23 @@ impl Stopped<'_> {
                     break status;
                 }
                 if r < 0 || Instant::now() >= deadline {
-                    // Leave it to the kernel: it is detached when this thread exits.
-                    return Err(RpcError::ptrace_failed(format!("thread {tid} did not finish the remote syscall")));
+                    self.core.abandon(tid, saved, site, prior);
+                    return Step::Abandoned(timeout_error());
                 }
                 std::thread::sleep(Duration::from_micros(50));
             };
             if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
                 self.core.threads.remove(&tid);
-                return Err(RpcError::process_not_found(format!("process {} has exited", self.core.pid)));
+                return Step::Failed(RpcError::process_not_found(format!("process {} has exited", self.core.pid)));
             }
             if !libc::WIFSTOPPED(status) {
                 continue;
             }
-            let (sig, event) = (libc::WSTOPSIG(status), status >> 16);
-            if event == 0 && sig == libc::SIGTRAP {
-                let regs = get_regs(tid).map_err(|e| ptrace_error("PTRACE_GETREGS", tid, e))?;
-                if regs.rip == site + 2 {
-                    return Ok(regs.rax as i64);
-                }
-            } else if event == 0 {
-                // A signal arrived before the syscall ran: deliver it later, step again.
-                self.core.threads.get_mut(&tid).unwrap().queued.push(sig);
+            if let StepStop::Done(rax) = self.core.note_step_stop(tid, status, site) {
+                return Step::Done(rax);
             }
-            // Otherwise (a pending interrupt stop, a trap before the step): step again.
             if Instant::now() >= deadline {
-                return Err(RpcError::ptrace_failed(format!("thread {tid} did not finish the remote syscall")));
+                return Step::Failed(timeout_error()); // stopped right now: the caller restores
             }
         }
     }
@@ -917,6 +1123,144 @@ mod tests {
         drop(tr);
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "target died after detach (stray SIGTRAP?)");
+    }
+
+    fn find_site(pid: i32) -> u64 {
+        use std::os::unix::fs::FileExt;
+        let mem = std::fs::File::open(format!("/proc/{pid}/mem")).unwrap();
+        let maps = crate::maps::read(pid).unwrap();
+        for r in maps.iter().filter(|r| r.perms.exec && r.path.as_deref().is_some_and(|p| p.contains("/libc.so"))) {
+            let mut buf = vec![0u8; (r.end - r.start) as usize];
+            if mem.read_at(&mut buf, r.start).is_ok() {
+                if let Some(i) = buf.windows(2).position(|w| w == [0x0f, 0x05]) {
+                    return r.start + i as u64;
+                }
+            }
+        }
+        panic!("no syscall in libc");
+    }
+
+    fn read_mem<const N: usize>(pid: i32, addr: u64) -> [u8; N] {
+        use std::os::unix::fs::FileExt;
+        let mut b = [0u8; N];
+        std::fs::File::open(format!("/proc/{pid}/mem")).unwrap().read_at(&mut b, addr).unwrap();
+        b
+    }
+
+    /// The target's SIGUSR2 record: [count, si_code, sival_int].
+    fn sig_record(pid: i32, addr: u64) -> [i32; 3] {
+        let b: [u8; 12] = read_mem(pid, addr);
+        [0, 1, 2].map(|i| i32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap()))
+    }
+
+    fn wait_sig_count(pid: i32, addr: u64, count: i32) -> [i32; 3] {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let r = sig_record(pid, addr);
+            if r[0] >= count || Instant::now() >= deadline {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    const SI_QUEUE: i32 = -1;
+
+    /// Queue SIGUSR2 with `value` to one thread of the test target, as sigqueue would.
+    fn queue_usr2(pid: i32, tid: i32, value: i32) {
+        let mut si: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let p = &mut si as *mut libc::siginfo_t as *mut u8;
+        unsafe {
+            *(p as *mut i32) = libc::SIGUSR2; // si_signo
+            *(p.add(8) as *mut i32) = SI_QUEUE; // si_code
+            *(p.add(16) as *mut i32) = libc::getpid(); // si_pid
+            *(p.add(20) as *mut u32) = libc::getuid(); // si_uid
+            *(p.add(24) as *mut i32) = value; // si_value.sival_int
+            assert_eq!(libc::syscall(libc::SYS_rt_tgsigqueueinfo, pid, tid, libc::SIGUSR2, &si), 0);
+        }
+    }
+
+    #[test]
+    fn abandoned_step_restores_registers_at_the_threads_next_stop() {
+        let t = TestTarget::spawn(&["--spin"]);
+        let pid = t.pid();
+        let tr = for_pid(pid).unwrap();
+        tr.set_syscall_site(find_site(pid));
+        let mut abandoned = 0;
+        for _ in 0..20 {
+            // A zero step timeout gives up on the step at once, as a 2 s stall would: the main
+            // thread is left running the injected syscall with our registers.
+            let (r, pending) = tr
+                .with_stopped(move |s| {
+                    s.core.step_timeout = Duration::ZERO;
+                    let r = s.syscall_on(pid, libc::SYS_getpid, [0; 6]);
+                    s.core.step_timeout = STOP_TIMEOUT;
+                    (r, s.core.threads.get(&pid).is_some_and(|t| t.restore.is_some()))
+                })
+                .unwrap();
+            match r {
+                Ok(v) => assert_eq!(v, pid as i64),
+                Err(_) if pending => abandoned += 1,
+                Err(_) => {}
+            }
+        }
+        assert!(abandoned > 0, "no step was abandoned");
+        // Without the restore, the step's SIGTRAP would be delivered to the game (killing it), or
+        // the main thread would carry on with our registers. Instead it keeps sleeping and ticking.
+        let ticks = t.addrs["g_main_ticks"];
+        let t0 = u64::from_le_bytes(read_mem(pid, ticks));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while u64::from_le_bytes(read_mem(pid, ticks)) <= t0 {
+            assert!(Instant::now() < deadline, "main thread stopped ticking");
+            assert!(!thread_finished(pid, pid), "target died");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let left = tr.with_stopped(|s| s.core.threads.values().filter(|t| t.restore.is_some()).count()).unwrap();
+        assert_eq!(left, 0, "a restore is still pending");
+        drop(tr);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!thread_finished(pid, pid), "target died after detach");
+    }
+
+    #[test]
+    fn signals_keep_their_siginfo_across_a_remote_syscall() {
+        let t = TestTarget::spawn(&["--spin"]);
+        let pid = t.pid();
+        let rec = t.addrs["g_sig"];
+        let tr = for_pid(pid).unwrap();
+        tr.set_syscall_site(find_site(pid));
+
+        // A signal that arrives while our syscall runs is queued, then delivered as it was sent.
+        let queued = tr
+            .with_stopped(move |s| {
+                assert_eq!(s.syscall_thread().unwrap(), pid, "the interrupted main thread runs syscalls");
+                queue_usr2(pid, pid, 4242);
+                assert_eq!(s.syscall_on(pid, libc::SYS_getpid, [0; 6]).unwrap(), pid as i64);
+                s.core.threads[&pid].queued.len()
+            })
+            .unwrap();
+        assert_eq!(queued, 1, "the signal stopped the step first");
+        assert_eq!(wait_sig_count(pid, rec, 1), [1, SI_QUEUE, 4242]);
+
+        // A thread stopped delivering a signal is used only when nothing else can run a syscall;
+        // when it is, its signal still goes out with its own siginfo.
+        tr.with_stopped(move |s| {
+            queue_usr2(pid, pid, 777);
+            let mut status = 0;
+            for _ in 0..5 {
+                pt(libc::PTRACE_CONT, pid, 0, 0).unwrap();
+                unsafe { libc::waitpid(pid, &mut status, libc::__WALL) };
+                s.core.on_event(pid, status);
+                if s.core.threads[&pid].state == State::Signal(libc::SIGUSR2) {
+                    break;
+                }
+            }
+            assert_eq!(s.core.threads[&pid].state, State::Signal(libc::SIGUSR2));
+            assert_ne!(s.syscall_thread().unwrap(), pid, "an interrupted thread is preferred");
+            assert_eq!(s.syscall_on(pid, libc::SYS_getpid, [0; 6]).unwrap(), pid as i64);
+        })
+        .unwrap();
+        assert_eq!(wait_sig_count(pid, rec, 2), [2, SI_QUEUE, 777]);
     }
 
     #[test]

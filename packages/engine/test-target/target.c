@@ -11,6 +11,7 @@
 #include <dlfcn.h>
 #include <time.h>
 #include <sys/time.h>
+#include <signal.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -65,6 +66,17 @@ static void* spin_loop(void* arg) {
  * sleep restart correctly after it was interrupted by ptrace. */
 volatile uint64_t  g_main_ticks = 0;
 
+/* SIGUSR2 records the siginfo it was delivered with: {count, si_code, si_value.sival_int}, so
+ * tests can check that ptrace passes a signal through unchanged. */
+volatile int32_t   g_sig[3] = { 0, 0, 0 };
+
+static void on_usr2(int sig, siginfo_t* si, void* uc) {
+    (void)sig; (void)uc;
+    g_sig[1] = si->si_code;
+    g_sig[2] = si->si_value.sival_int;
+    g_sig[0] += 1;
+}
+
 static void* writer_loop(void* arg) {
     (void)arg;
     for (;;) {
@@ -75,6 +87,12 @@ static void* writer_loop(void* arg) {
 }
 
 int main(int argc, char** argv) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_usr2;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigaction(SIGUSR2, &sa, NULL);
+
     /* --map <file>: mmap the whole file PROT_READ, MAP_PRIVATE (stands in for a Proton-mapped PE). */
     void* mapped = NULL;
     for (int i = 1; i < argc; i++) {
@@ -115,6 +133,7 @@ int main(int argc, char** argv) {
     printf("addr spin_target=%p\n",   (void*)&spin_target);
     printf("addr g_spin_calls=%p\n",  (void*)&g_spin_calls);
     printf("addr g_main_ticks=%p\n",  (void*)&g_main_ticks);
+    printf("addr g_sig=%p\n",         (void*)g_sig);
     printf("addr libc_clock_gettime=%p\n", dlsym(RTLD_DEFAULT, "clock_gettime"));
     if (mapped) printf("addr mapped=%p\n", mapped);
     printf("offset stats_in_player=%zu\n", offsetof(Player, stats));

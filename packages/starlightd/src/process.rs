@@ -216,8 +216,12 @@ impl Handles {
             .get_mut(&handle)
             .and_then(|m| m.remove(&addr))
             .ok_or_else(|| RpcError::unknown_id(format!("no allocation at {addr:#x} on handle {handle}")))?;
-        remote::free(&target, addr, size).inspect_err(|_| {
-            self.allocs.lock().unwrap().entry(handle).or_default().insert(addr, size);
+        remote::free(&target, addr, size).map_err(|e| {
+            // Keep the record only if the pages are certainly still mapped.
+            if !e.maybe_unmapped {
+                self.allocs.lock().unwrap().entry(handle).or_default().insert(addr, size);
+            }
+            e.error
         })
     }
 

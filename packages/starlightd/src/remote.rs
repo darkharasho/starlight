@@ -17,6 +17,8 @@ const STACK_GUARD: u64 = 1 << 20;
 /// Gaps tried per near allocation.
 const MAX_NEAR_TRIES: usize = 32;
 const MAP_FIXED_NOREPLACE: u64 = 0x100000;
+/// `RpcError::alloc_failed`: the kernel ran our syscall and returned an error.
+const ALLOC_FAILED: i64 = -32011;
 
 /// `size` rounded up to whole pages.
 pub fn page_round(size: u64) -> u64 {
@@ -25,6 +27,16 @@ pub fn page_round(size: u64) -> u64 {
 
 fn is_libc(r: &Region) -> bool {
     r.path.as_deref().and_then(|p| p.rsplit('/').next()).is_some_and(|n| n.starts_with("libc.so") || n.starts_with("libc-"))
+}
+
+/// True if `r` belongs to an ELF file (a Linux library), judged by the magic at the file's
+/// offset-0 mapping. Wine's PE DLLs are file-backed and r-x too, but are not Linux code.
+fn is_elf(t: &Target, regions: &[Region], r: &Region) -> bool {
+    regions
+        .iter()
+        .find(|h| h.offset == 0 && h.path == r.path && h.perms.read)
+        .and_then(|h| mem::read_bytes(t, h.start, 4).ok())
+        .is_some_and(|m| m == b"\x7fELF")
 }
 
 /// Address of a `syscall` (`0f 05`) in an r-x, file-backed Linux mapping, libc first. Cached per
@@ -37,6 +49,7 @@ pub fn syscall_site(t: &Target, tracer: &Tracer) -> Result<u64, RpcError> {
     let mut code: Vec<&Region> = regions
         .iter()
         .filter(|r| r.perms.read && r.perms.exec && !r.perms.write && r.path.as_deref().is_some_and(|p| p.starts_with('/')))
+        .filter(|r| is_elf(t, &regions, r))
         .collect();
     code.sort_by_key(|r| !is_libc(r)); // stable: libc first, then map order
     const CHUNK: u64 = 64 * 1024;
@@ -133,19 +146,35 @@ pub fn alloc(t: &Target, size: u64, near: Option<u64>, prot: i32) -> Result<u64,
                 Ok(a) => {
                     let _ = munmap(s, a, len);
                 }
-                Err(e) if e.code == -32002 => return Err(e), // process gone
-                Err(_) => {} // taken meanwhile (EEXIST): next gap
+                // The kernel refused this gap (EEXIST: taken meanwhile): try the next one.
+                Err(e) if e.code == ALLOC_FAILED => {}
+                // The injection itself failed (process gone, thread stuck): stop injecting.
+                Err(e) => return Err(e),
             }
         }
         Err(RpcError::alloc_failed(format!("no free gap within 2 GiB of {near:#x}")))
     })?
 }
 
+/// A failed `free`, and whether the pages may already be unmapped.
+pub struct FreeError {
+    pub error: RpcError,
+    pub maybe_unmapped: bool,
+}
+
 /// Unmap `size` bytes at `addr` (an earlier `alloc`).
-pub fn free(t: &Target, addr: u64, size: u64) -> Result<(), RpcError> {
-    let tracer = t.tracer()?;
-    syscall_site(t, &tracer)?;
-    tracer.with_stopped(move |s| munmap(s, addr, size))?
+pub fn free(t: &Target, addr: u64, size: u64) -> Result<(), FreeError> {
+    let not_run = |error| FreeError { error, maybe_unmapped: false };
+    let tracer = t.tracer().map_err(not_run)?;
+    syscall_site(t, &tracer).map_err(not_run)?;
+    match tracer.with_stopped(move |s| s.syscall(libc::SYS_munmap, [addr, size, 0, 0, 0, 0])) {
+        // The job never ran (the world could not be stopped), unless it panicked part-way.
+        Err(e) => Err(FreeError { maybe_unmapped: e.code == -32603, error: e }),
+        // The injection failed part-way: the munmap may have run.
+        Ok(Err(e)) => Err(FreeError { error: e, maybe_unmapped: true }),
+        // The kernel refused: nothing was unmapped.
+        Ok(Ok(r)) => syscall_result(r, "munmap").map(|_| ()).map_err(not_run),
+    }
 }
 
 #[cfg(test)]
