@@ -78,7 +78,9 @@ function setup(o: {
   const notifier = { show: vi.fn(() => ({ close: () => {} })) };
   const focusAgentView = vi.fn();
   const onChange = vi.fn();
-  const realPrompts = createPlayerPrompts({ notifier, focusAgentView, onChange });
+  const hkSet = vi.fn((..._a: unknown[]) => ({ ok: true as const }));
+  const hotkeys = { set: hkSet as never };
+  const realPrompts = createPlayerPrompts({ notifier, focusAgentView, onChange, hotkeys, prefs: async () => ({ ...DEFAULT_AGENT_PREFS }) });
   const prompts: PlayerPrompts = { ...realPrompts, ...o.prompts };
   const requestApproval = vi.spyOn(prompts, 'requestApproval');
   const activity = createActivityLog({ onChange });
@@ -99,6 +101,7 @@ function setup(o: {
     identify: async () => identity,
     owner,
     prompts,
+    hotkeys,
     activity,
     prefs: async () => ({ ...DEFAULT_AGENT_PREFS }),
     onChange,
@@ -106,7 +109,7 @@ function setup(o: {
   };
   const agent = createAgentSession(deps);
   const notes = (): string[] => activity.entries().filter((e) => e.status === 'note').map((e) => e.summary).reverse();
-  return { agent, log, client, session, owner, prompts: realPrompts, requestApproval, activity, engine, releaseCe, focusAgentView, notes };
+  return { hkSet, agent, log, client, session, owner, prompts: realPrompts, requestApproval, activity, engine, releaseCe, focusAgentView, notes };
 }
 
 type Setup = ReturnType<typeof setup>;
@@ -237,6 +240,28 @@ describe('agent session', () => {
     await expect(ctx.describe('0x10')).resolves.toBeNull();
     await expect(ctx.describe('junk')).resolves.toBeNull();
     expect(s.engine.listModules).toHaveBeenCalledTimes(1);
+  });
+
+  it('the Stop hotkey is bound while attached, stops the session, and is unbound after', async () => {
+    const s = setup();
+    expect(s.hkSet).not.toHaveBeenCalled();
+    await attached(s);
+    expect(s.hkSet).toHaveBeenCalledWith({ stop: 'Ctrl+Shift+End' }, { stop: expect.any(Function) });
+    const on = s.hkSet.mock.calls.find((c) => (c[0] as { stop?: string }).stop === 'Ctrl+Shift+End')![1] as { stop(): void };
+    on.stop();
+    await vi.waitFor(() => expect(s.agent.snapshot().status).toBe('idle'));
+    expect(s.hkSet).toHaveBeenLastCalledWith({ stop: null });
+    await vi.waitFor(() => expect(s.notes()).toContain('Stopped with the hotkey'));
+  });
+
+  it('Stop resolves a pending question and the snapshot lists it', async () => {
+    const s = setup();
+    await attached(s);
+    const a = s.prompts.ask({ question: 'Gold?', answer: 'number', timeoutMs: 60_000, label: 'Claude' });
+    await vi.waitFor(() => expect(s.agent.snapshot().questions).toHaveLength(1));
+    await s.agent.stop('player');
+    expect(await a).toEqual({ answered: false, reason: 'stopped' });
+    expect(s.agent.snapshot().questions).toEqual([]);
   });
 
   it('Stop cancels freezes, stops watches, reverts tests, ends pointer scans, detaches and releases the game', async () => {

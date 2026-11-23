@@ -51,6 +51,7 @@ export const CHANNELS = {
   agentGetState:        'starlight:agent:getState',
   agentRespondApproval: 'starlight:agent:respondApproval',
   agentSetCanModify:    'starlight:agent:setCanModify',
+  agentAnswer:          'starlight:agent:answer',
   agentStop:            'starlight:agent:stop',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
@@ -345,6 +346,8 @@ export interface StarlightApi {
   agentGetState(): Promise<AgentSnapshot>;
   /** Allow or deny a pending attach request. */
   agentRespondApproval(req: { id: string; allow: boolean }): Promise<void>;
+  /** The player's answer to a pending question. */
+  agentAnswer(req: { id: string; value: unknown }): Promise<{ ok: true } | { ok: false; error: string }>;
   /** The "Agent can modify the game" switch. Off reverts the agent's freezes, watches, test cheats and speed. */
   agentSetCanModify(req: { on: boolean }): Promise<void>;
   /** Stops the agent: reverts everything it changed and detaches. */
@@ -494,7 +497,6 @@ export interface AgentSnapshot {
   approval: PendingApproval | null;
   game: { pid: number; name: string; key: string; proton: boolean; steamAppId: number | null; buildId: string | null } | null;
   canModify: boolean;
-  /** Empty until ask_player exists. */
   questions: PendingQuestion[];
   live: {
     freezes: Array<{ id: number; address: string; where: string | null; type: string; value: string }>;

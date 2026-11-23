@@ -83,6 +83,8 @@ export interface ToolContext {
   client: AgentClient;
   /** What `access.require` returned: null for open-tier tools, set for attached and modify. */
   attached: AttachedContext | null;
+  /** Aborted when the MCP request is cancelled or the client disconnects. */
+  signal?: AbortSignal;
 }
 
 export interface ToolChange { address: string; old: string; new: string }
@@ -162,7 +164,7 @@ export function registerTools(
         annotations: { title: def.title, readOnlyHint: def.readOnly },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (async (args: any): Promise<CallToolResult> => {
+      (async (args: any, extra?: { signal?: AbortSignal }): Promise<CallToolResult> => {
         const id = o.activity.start(def.name, `${def.name} …`);
         let attached: AttachedContext | null;
         try {
@@ -176,7 +178,7 @@ export function registerTools(
         }
         let result: unknown;
         try {
-          result = await def.run(args, { mcpSessionId: o.mcpSessionId, client: o.client(), attached });
+          result = await def.run(args, { mcpSessionId: o.mcpSessionId, client: o.client(), attached, ...(extra?.signal ? { signal: extra.signal } : {}) });
         } catch (err) {
           const msg = describeEngineError(err);
           o.activity.finish(id, { status: 'error', error: msg });

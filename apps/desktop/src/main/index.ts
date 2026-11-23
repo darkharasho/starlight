@@ -3,7 +3,7 @@ import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
 import { configureStarlightdHost, getEngineClient, engineNeedsPtraceGrant, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
-import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
+import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setAgentHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
 import { LatchDetector } from './latch-detector.js';
@@ -35,6 +35,7 @@ import { attachTool, detachTool, gameInfoTool, listGamesTool } from './agent/too
 import { createActivityLog } from './agent/activity.js';
 import { createPlayerPrompts } from './agent/player-prompt.js';
 import { electronNotifier } from './agent/notifier.js';
+import { askPlayerTool } from './agent/tools-ask.js';
 import { createAgentSession } from './agent/session.js';
 import { listModules as engineListModules } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
@@ -106,12 +107,16 @@ function focusAgentView(): void {
 }
 
 const agentActivity = createActivityLog({ onChange: broadcastAgentState });
-const agentPrompts = createPlayerPrompts({ notifier: electronNotifier(), focusAgentView, onChange: broadcastAgentState });
+const agentPrompts = createPlayerPrompts({
+  notifier: electronNotifier(), focusAgentView, onChange: broadcastAgentState,
+  hotkeys: { set: setAgentHotkeys }, prefs: async () => (await getConfig()).agent,
+});
 const agentSession = createAgentSession({
   getClient: getEngineClient,
   identify: (pid) => identifyGame(pid, { catalogIndex: () => catalogIndex, detectedGames: () => lastDetectedGames }),
   owner: gameOwner,
   prompts: agentPrompts,
+  hotkeys: { set: setAgentHotkeys },
   activity: agentActivity,
   prefs: async () => (await getConfig()).agent,
   onChange: broadcastAgentState,
@@ -131,6 +136,7 @@ const agentTools: ToolDef<any>[] = [
   }),
   attachTool(agentSession),
   detachTool(agentSession),
+  askPlayerTool(agentPrompts, async () => (await getConfig()).agent),
   gameInfoTool({ listModules: engineListModules, readMaps: (pid) => readFile(`/proc/${pid}/maps`, 'utf8') }),
 ];
 
@@ -574,6 +580,8 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.agentRespondApproval, (_evt, req: { id: string; allow: boolean }) => {
     agentPrompts.respondApproval(String(req?.id ?? ''), req?.allow === true);
   });
+  ipcMain.handle(CHANNELS.agentAnswer, (_evt, req: { id: string; value: unknown }) =>
+    agentPrompts.answer(String(req?.id ?? ''), req?.value));
   ipcMain.handle(CHANNELS.agentSetCanModify, (_evt, req: { on: boolean }) => agentSession.setCanModify(req?.on === true));
   ipcMain.handle(CHANNELS.agentStop, () => agentSession.stop('player'));
 

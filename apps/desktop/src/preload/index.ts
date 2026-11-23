@@ -37,6 +37,7 @@ const api: StarlightApi = {
   agentRotateToken:     () => ipcRenderer.invoke(CHANNELS.agentRotateToken),
   agentGetState:        () => ipcRenderer.invoke(CHANNELS.agentGetState),
   agentRespondApproval: (req) => ipcRenderer.invoke(CHANNELS.agentRespondApproval, req),
+  agentAnswer:          (req) => ipcRenderer.invoke(CHANNELS.agentAnswer, req),
   agentSetCanModify:    (req) => ipcRenderer.invoke(CHANNELS.agentSetCanModify, req),
   agentStop:            () => ipcRenderer.invoke(CHANNELS.agentStop),
   onEvent: (listener) => {

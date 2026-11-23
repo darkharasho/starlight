@@ -21,6 +21,7 @@ import { antiCheatMessage, detectAntiCheat, type AntiCheatHit } from '../anti-ch
 import type { GameIdentity } from '../game-identity.js';
 import type { GameOwner } from '../game-owner.js';
 import type { ActivityLog } from './activity.js';
+import type { AgentHotkeysPort } from '../hotkey-host.js';
 import type { PlayerPrompts } from './player-prompt.js';
 import {
   DECLINED, MODIFY_OFF, NOT_ATTACHED, NO_ANSWER, OTHER_AGENT, STOPPED_MIDWAY, ToolError, describeEngineError,
@@ -48,6 +49,7 @@ export interface AgentSessionDeps {
   identify(pid: number): Promise<GameIdentity>;
   owner: GameOwner;
   prompts: PlayerPrompts;
+  hotkeys: AgentHotkeysPort;
   activity: ActivityLog;
   prefs(): Promise<AgentPreferences>;
   onChange(): void;
@@ -248,6 +250,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
     cur = null;
     asking = null;
     try { deps.prompts.cancelAll(); } catch { /* best-effort */ }
+    try { deps.hotkeys.set({ stop: null }); } catch { /* best-effort */ }
     if (a) {
       a.unsubscribe();
       await revertChanges(a);
@@ -355,6 +358,15 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
     asking = null;
     cur = a;
 
+    // The Stop hotkey works while the agent is attached.
+    try {
+      const stopKey = (await deps.prefs()).stop;
+      if (cur === a) {
+        const r = deps.hotkeys.set({ stop: stopKey }, { stop: () => { void stop('hotkey'); } });
+        if (!r.ok) note(`Stop hotkey ${stopKey} isn't valid; use the Stop button`);
+      }
+    } catch { /* the Stop button still works */ }
+
     // 7. Tell the player.
     note(`${client.label} attached to ${game.name}`);
     try { deps.focusAgentView(); } catch { /* cosmetic */ }
@@ -418,7 +430,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
         steamAppId: a.game.steamAppId, buildId: a.game.buildId,
       } : null,
       canModify: a?.canModify ?? false,
-      questions: [],
+      questions: deps.prompts.pending(),
       live: {
         freezes: a ? [...a.freezes].map(([id, f]) => ({ id, address: f.info.address, where: f.where, type: f.info.type, value: f.info.value })) : [],
         tests: a ? [...a.tests].map(([id, t]) => ({ id, name: t.info.name })) : [],
