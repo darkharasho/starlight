@@ -761,12 +761,43 @@ const reply = (cmd) => {
       expect(await releaseToStarlightd(r.sessionId)).toBe(false);
     });
 
+    it('a hold that lands while CE is starting hands the game over instead of leaving two engines', async () => {
+      const log = join(dir, 'fake-ce.log');
+      await installFakeCe(log);
+      let held = false;
+      const r = await startSession({
+        source: await startCtServer(), cacheKey: 'race1', runtimeRoot: dir, ctCacheDir, ...native,
+        starlightdHolders: () => (held ? ['agent'] : []),
+        waitForGameFn: async () => { held = true; },
+      });
+      expect(r).toMatchObject({ engine: 'starlightd', holders: ['agent'], attached: true });
+      expect(await readFile(log, 'utf8')).toMatch(/shutdown/);
+      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd', bridge: null, pid: 4242 });
+    });
+
+    it('a release that lands mid-startup does not tear down the starlightd-owned session', async () => {
+      await installFakeCe(join(dir, 'fake-ce.log'));
+      let held = false;
+      const r = await startSession({
+        source: await startCtServer(), cacheKey: 'race2', runtimeRoot: dir, ctCacheDir, ...native,
+        starlightdHolders: () => (held ? ['agent'] : []),
+        waitForGameFn: async () => {
+          held = true;
+          expect(await releaseToStarlightd(getActiveSession()!.sessionId)).toBe(true);
+        },
+      });
+      expect(r).toMatchObject({ engine: 'starlightd', holders: ['agent'] });
+      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd' });
+    });
+
     it('CE exiting after releaseToStarlightd keeps the session', async () => {
       await installFakeCe(join(dir, 'fake-ce.log'));
       let alive = true;
       const r = await startSession({ source: await startCtServer(), cacheKey: 'rel2', runtimeRoot: dir, ctCacheDir, ...native, isGameAlive: () => alive, gameWatchMs: 20 });
+      const exited = getActiveSession()!.ceProcess!.waitForExit();
       await releaseToStarlightd(r.sessionId);
-      await new Promise((res) => setTimeout(res, 300));   // the killed CE launcher's onExit has fired by now
+      await exited;                                       // CE's exit (and its onExit callback) has happened
+      await new Promise((res) => setTimeout(res, 20));
       expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd', pid: 4242 });
       // ...and the game-exit watch still runs.
       scannerHost.end.mockClear();

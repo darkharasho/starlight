@@ -524,6 +524,28 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     opts.onGameExit?.(sessionId);
   });
 
+  // A starlightd hold can land while Cheat Engine is still starting (the claim
+  // saw no CE session yet, or released CE halfway). Whenever that happened,
+  // hand the game over rather than leave two engines on it.
+  const handOver = async (): Promise<StartSessionResult | null> => {
+    if (active !== session) throw new Error('The game closed while it was loading.');
+    if (session.engine === 'ce') {
+      if ((opts.starlightdHolders?.(effectivePid) ?? []).length === 0) return null;
+      await releaseToStarlightd(sessionId);
+    }
+    const records = ctPath ? await recordsFromCt(ctPath) : [];
+    session.records = records;
+    return {
+      sessionId, records, proton: proton !== null, needsPicker, attached: true, running: true,
+      tables, tableId, process: { pid: effectivePid, name: processName },
+      hiddenIds: findPrerequisites(records).map((p) => p.id),
+      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: 'starlightd',
+      holders: opts.starlightdHolders?.(effectivePid) ?? [],
+    };
+  };
+  const early = await handOver();
+  if (early) return early;
+
   // Cheat Engine booted while the game was loading. Before matching a table,
   // let the game finish loading the modules the table points at.
   if (ctPath) {
@@ -533,6 +555,8 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     const slow = setTimeout(() => opts.onProgress?.('Waiting for the game to finish loading…'), 800);
     try { await waitFn(effectivePid, modules); } finally { clearTimeout(slow); }
     if (active !== session) throw new Error('The game closed while it was loading.');
+    const handed = await handOver();
+    if (handed) return handed;
   }
 
   // The first check ran while the game may still have been loading, before it
@@ -542,6 +566,8 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     await endSession({ sessionId }).catch(() => {});
     throw new Error(antiCheatMessage(lateAntiCheat));
   }
+  const beforePick = await handOver();
+  if (beforePick) return beforePick;
 
   const status = await sendWithTimeout(bridge, { method: 'status' }, 5000).catch(() => ({})) as { attached?: boolean };
   const attached = status.attached !== false;
@@ -549,9 +575,14 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   try {
     picked = await pickTable(session, { loaded: tableId, ready, attached });
   } catch (err) {
+    // A release in the middle of the pick closed the bridge under it; the
+    // session now belongs to starlightd and must stay.
+    if (session.engine === 'starlightd' && active === session) return (await handOver())!;
     await endSession({ sessionId }).catch(() => {});
     throw err;
   }
+  const afterPick = await handOver();
+  if (afterPick) return afterPick;
 
   return {
     sessionId, records: picked.records, proton: proton !== null, needsPicker,
