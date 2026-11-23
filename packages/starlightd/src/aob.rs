@@ -56,7 +56,7 @@ impl Pattern {
 
     /// Whether the pattern matches `window`, which must be exactly `self.len()` bytes.
     fn matches_window(&self, window: &[u8]) -> bool {
-        self.0.iter().zip(window).all(|(p, b)| p.map_or(true, |p| p == *b))
+        self.0.iter().zip(window).all(|(p, b)| p.is_none_or(|p| p == *b))
     }
 }
 
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn chunk_boundary_straddle() {
-        let mut data = vec![0u8; CHUNK * 2];
+        let mut data = [0u8; CHUNK * 2];
         data[CHUNK - 2..CHUNK + 2].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         data[3..5].copy_from_slice(&[0xde, 0xad]);
         data[CHUNK + 5..CHUNK + 9].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);

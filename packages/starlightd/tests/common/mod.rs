@@ -222,3 +222,10 @@ pub fn minimal_pe(size_of_image: u32) -> Vec<u8> {
     h[opt + 56..opt + 60].copy_from_slice(&size_of_image.to_le_bytes());
     h
 }
+
+impl Drop for Client {
+    /// The reader thread holds a clone of the socket, so close it explicitly.
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}

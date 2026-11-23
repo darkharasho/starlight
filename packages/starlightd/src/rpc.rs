@@ -1,5 +1,4 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
-#![allow(dead_code)] // consumed by later tasks (attach/modules/etc.)
 use crate::{aob, mem, modules, pointer, process::Handles};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -179,6 +178,21 @@ impl Session {
                 };
                 let addr = pointer::resolve(&t, module_base.wrapping_add(base), &offsets)?;
                 Ok(json!({ "address": format!("{addr:#x}") }))
+            }
+            "freeze" => {
+                let handle = param_handle(params)?;
+                let addr = param_addr(params, "address")?;
+                let data = from_hex(params.get("bytes").and_then(Value::as_str))?;
+                if data.is_empty() {
+                    return Err(RpcError::invalid_params("bytes must not be empty"));
+                }
+                let interval = param_u64(params, "interval_ms")?;
+                Ok(json!({ "id": self.handles.freeze(handle, addr, data, interval)? }))
+            }
+            "unfreeze" => {
+                let id = u32::try_from(param_u64(params, "id")?).map_err(|_| RpcError::invalid_params("id out of range"))?;
+                self.handles.unfreeze(id)?;
+                Ok(json!({}))
             }
             other => Err(RpcError::method_not_found(format!("unknown method: {other}"))),
         }

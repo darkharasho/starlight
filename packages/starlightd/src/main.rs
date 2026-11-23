@@ -1,4 +1,5 @@
 mod aob;
+mod freeze;
 mod maps;
 mod mem;
 mod modules;

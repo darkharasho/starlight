@@ -1,4 +1,5 @@
 //! Attached processes. `Handles` is per connection; dropping a connection detaches everything.
+use crate::freeze::Freezes;
 use crate::maps;
 use crate::rpc::{Conn, RpcError};
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ type Map = Arc<Mutex<HashMap<u32, Arc<Target>>>>;
 pub struct Handles {
     conn: Conn,
     map: Map,
+    freezes: Freezes,
     next: u32,
 }
 
@@ -77,7 +79,7 @@ fn poll_exited(pidfd: &OwnedFd, timeout: Duration) -> bool {
 
 impl Handles {
     pub fn new(conn: Conn) -> Self {
-        Handles { conn, map: Arc::new(Mutex::new(HashMap::new())), next: 1 }
+        Handles { conn, map: Arc::new(Mutex::new(HashMap::new())), freezes: Freezes::default(), next: 1 }
     }
 
     pub fn attach(&mut self, pid: i32) -> Result<u32, RpcError> {
@@ -88,10 +90,12 @@ impl Handles {
 
         let map = self.map.clone();
         let conn = self.conn.clone();
+        let freezes = self.freezes.clone();
         std::thread::spawn(move || loop {
             if poll_exited(&target.pidfd, Duration::from_millis(100)) {
                 // Whoever removes the entry owns the notification, so it is sent at most once.
                 let removed = map.lock().unwrap().remove(&handle);
+                freezes.stop_handle(handle);
                 if removed.is_some() {
                     conn.send_notification("process_exited", serde_json::json!({ "handle": handle }));
                 }
@@ -113,7 +117,17 @@ impl Handles {
             .ok_or_else(|| RpcError::unknown_handle(format!("unknown handle: {handle}")))
     }
 
+    pub fn freeze(&self, handle: u32, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
+        let target = self.get(handle)?;
+        self.freezes.start(handle, target, addr, data, interval_ms)
+    }
+
+    pub fn unfreeze(&self, id: u32) -> Result<(), RpcError> {
+        self.freezes.stop(id)
+    }
+
     pub fn detach(&mut self, handle: u32) -> Result<(), RpcError> {
+        self.freezes.stop_handle(handle);
         self.map
             .lock()
             .unwrap()
@@ -123,6 +137,7 @@ impl Handles {
     }
 
     pub fn detach_all(&mut self) {
+        self.freezes.stop_all();
         self.map.lock().unwrap().clear();
     }
 }
