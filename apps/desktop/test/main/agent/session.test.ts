@@ -154,6 +154,18 @@ describe('agent session', () => {
     expect(s.agent.snapshot().status).toBe('idle');
   });
 
+  it('the agent cancelling attach while the card is up denies it (I1)', async () => {
+    const s = setup();
+    const ac = new AbortController();
+    const p = s.agent.attach(PID, CLAUDE, { signal: ac.signal });
+    await vi.waitFor(() => expect(s.prompts.approval()).not.toBeNull());
+    ac.abort();
+    await expect(p).rejects.toThrow(STOPPED_MIDWAY);
+    expect(s.prompts.approval()).toBeNull();
+    expect(s.engine.attach).not.toHaveBeenCalled();
+    expect(s.agent.snapshot().status).toBe('idle');
+  });
+
   it('the approval request carries the pid', async () => {
     const s = setup();
     const p = s.agent.attach(PID, CLAUDE);

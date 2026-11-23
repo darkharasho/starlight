@@ -51,6 +51,22 @@ describe('player prompts: attach approval', () => {
     p.cancelAll();
   });
 
+  it("an aborted request (the agent cancelled or disconnected) drops the card as 'stopped'", async () => {
+    const { notifier } = fakeNotifier();
+    const p = createPlayerPrompts({ ...base(), notifier, focusAgentView: () => {}, onChange: () => {} });
+    const ac = new AbortController();
+    const r = p.requestApproval({ ...req, signal: ac.signal });
+    expect(p.approval()).not.toBeNull();
+    ac.abort();
+    await expect(r).resolves.toBe('stopped');
+    expect(p.approval()).toBeNull();
+    // Already aborted: never shown.
+    const pre = new AbortController();
+    pre.abort();
+    await expect(p.requestApproval({ ...req, signal: pre.signal })).resolves.toBe('stopped');
+    expect(p.approval()).toBeNull();
+  });
+
   it('clicking the notification focuses the agent view', () => {
     const { notifier, shown } = fakeNotifier();
     const focusAgentView = vi.fn();

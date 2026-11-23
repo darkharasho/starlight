@@ -10,9 +10,15 @@
 // Then POST/GET/DELETE /mcp go to the MCP session's transport (a new session
 // on `initialize`), and anything else is 404. It binds 127.0.0.1 only.
 //
-// A session with no POST in flight and none for `idleTimeoutMs` (20 minutes)
-// is closed, which reports it through `onSessionClosed`: a client that crashed
-// never sends DELETE, and the agent session it owns must not linger.
+// Ending a session reports it through `onSessionClosed`, which stops the agent
+// session it owns (revert and detach). Agents often exit without a DELETE
+// (Claude Code sends none), so the host also watches the connection itself:
+//   - A client that opened the GET SSE stream is alive while that stream is
+//     open. When its last stream closes and no POST is in flight, the session
+//     ends after `streamGraceMs` (15 s) unless a new GET or POST arrives first
+//     (the SDK client reconnects a dropped stream after about a second).
+//   - A client that never opened a GET stream is closed after `idleTimeoutMs`
+//     (20 minutes) with no POST in flight and none arriving.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -22,6 +28,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 export const MAX_BODY_BYTES = 1024 * 1024;
 export const IDLE_TIMEOUT_MS = 20 * 60_000;
 export const REAP_INTERVAL_MS = 60_000;
+export const STREAM_GRACE_MS = 15_000;
 const BIND_HOST = '127.0.0.1';
 
 export interface McpHost {
@@ -45,6 +52,8 @@ export interface McpHostOptions {
   idleTimeoutMs?: number;
   /** How often idle sessions are looked for (default 1 minute). */
   reapIntervalMs?: number;
+  /** How long after its last GET stream closes (nothing in flight) a session ends (default 15 s). */
+  streamGraceMs?: number;
 }
 
 interface SessionEntry {
@@ -53,6 +62,12 @@ interface SessionEntry {
   /** POST requests (tool calls) not answered yet. The long-lived GET stream doesn't count. */
   inFlight: number;
   lastActive: number;
+  /** Open GET SSE streams. While one is open the client is alive, so the idle reaper leaves it alone. */
+  getStreams: number;
+  /** The client has opened a GET stream at least once: its closing means the client went away. */
+  sawGet: boolean;
+  /** Pending end after the last stream closed; a new GET or POST cancels it. */
+  grace: ReturnType<typeof setTimeout> | null;
 }
 
 /** Constant-time compare of the presented token with the expected one. */
@@ -135,9 +150,16 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
   let boundPort = 0;
   const idleTimeoutMs = o.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
   const reapIntervalMs = o.reapIntervalMs ?? REAP_INTERVAL_MS;
+  const streamGraceMs = o.streamGraceMs ?? STREAM_GRACE_MS;
+
+  const cancelGrace = (e: SessionEntry): void => {
+    if (e.grace) { clearTimeout(e.grace); e.grace = null; }
+  };
 
   /** Forgets a session and reports it, once. */
   const endSession = (id: string): void => {
+    const e = sessions.get(id);
+    if (e) cancelGrace(e);
     if (!sessions.delete(id)) return;
     try { o.onSessionClosed(id); } catch { /* the listener's problem */ }
   };
@@ -157,7 +179,7 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
     });
     transport.onclose = () => endSession(id);
     const server = o.createServer(id);
-    entry = { transport, server, inFlight: 0, lastActive: Date.now() };
+    entry = { transport, server, inFlight: 0, lastActive: Date.now(), getStreams: 0, sawGet: false, grace: null };
     try {
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
@@ -170,16 +192,44 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
     if (!sessions.has(id)) void server.close().catch(() => {});
   };
 
+  /** The client's streams and calls are all gone: end the session unless it comes back within the grace period. */
+  const maybeEnd = (id: string, e: SessionEntry): void => {
+    if (sessions.get(id) !== e || !e.sawGet || e.getStreams > 0 || e.inFlight > 0 || e.grace) return;
+    e.grace = setTimeout(() => {
+      e.grace = null;
+      if (sessions.get(id) === e && e.getStreams === 0 && e.inFlight === 0) void closeOne(id, e);
+    }, streamGraceMs);
+    e.grace.unref?.();
+  };
+
   /** Counts a POST as in flight until its response closes. */
-  const trackRequest = (entry: SessionEntry, res: ServerResponse): void => {
+  const trackRequest = (id: string, entry: SessionEntry, res: ServerResponse): void => {
     entry.inFlight++;
     entry.lastActive = Date.now();
+    cancelGrace(entry);
     let done = false;
     res.on('close', () => {
       if (done) return;
       done = true;
       entry.inFlight--;
       entry.lastActive = Date.now();
+      maybeEnd(id, entry);
+    });
+  };
+
+  /** Counts a GET SSE stream as open until its socket closes. */
+  const trackStream = (id: string, entry: SessionEntry, res: ServerResponse): void => {
+    entry.getStreams++;
+    entry.sawGet = true;
+    entry.lastActive = Date.now();
+    cancelGrace(entry);
+    let done = false;
+    res.on('close', () => {
+      if (done) return;
+      done = true;
+      entry.getStreams--;
+      entry.lastActive = Date.now();
+      maybeEnd(id, entry);
     });
   };
 
@@ -225,7 +275,8 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
     if (typeof sid === 'string' && sid) {
       const entry = sessions.get(sid);
       if (!entry) return replyRpc(res, 404, -32001, 'Session not found');
-      if (method === 'POST') trackRequest(entry, res);
+      if (method === 'POST') trackRequest(sid, entry, res);
+      else if (method === 'GET') trackStream(sid, entry, res);
       else entry.lastActive = Date.now();
       return entry.transport.handleRequest(req, res, body);
     }
@@ -262,6 +313,8 @@ export async function startMcpHost(o: McpHostOptions): Promise<McpHost> {
   const reaper = setInterval(() => {
     const now = Date.now();
     for (const [id, e] of sessions) {
+      // An open GET stream means the client process is alive: the agent may sit idle while the player plays (D4).
+      if (e.getStreams > 0) continue;
       if (e.inFlight === 0 && now - e.lastActive >= idleTimeoutMs) void closeOne(id, e);
     }
   }, reapIntervalMs);

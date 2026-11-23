@@ -32,7 +32,8 @@ export interface PlayerPrompts {
   ask(q: AskRequest): Promise<AskResult>;
   answer(id: string, value: unknown): { ok: true } | { ok: false; error: string };
   pending(): PendingQuestion[];
-  requestApproval(a: { label: string; game: string; pid: number; closesCeTable: boolean; timeoutMs: number }): Promise<ApprovalResult>;
+  /** `signal`: the agent's request; aborting it (cancel, disconnect) drops the card as `stopped`. */
+  requestApproval(a: { label: string; game: string; pid: number; closesCeTable: boolean; timeoutMs: number; signal?: AbortSignal }): Promise<ApprovalResult>;
   /** True when `id` was the pending request (it is answered now). */
   respondApproval(id: string, allow: boolean): boolean;
   approval(): PendingApproval | null;
@@ -161,6 +162,7 @@ export function createPlayerPrompts(deps: PlayerPromptsDeps): PlayerPrompts {
     requestApproval(a) {
       // One request at a time; the session refuses a second agent before it gets here.
       if (pending) settle(pending, 'stopped');
+      if (a.signal?.aborted) return Promise.resolve('stopped');
       return new Promise<ApprovalResult>((resolve) => {
         const info: PendingApproval = {
           id: randomUUID(), label: a.label, game: a.game, pid: a.pid, closesCeTable: a.closesCeTable,
@@ -168,15 +170,18 @@ export function createPlayerPrompts(deps: PlayerPromptsDeps): PlayerPrompts {
         };
         let note: { close(): void } | null = null;
         const timer = setTimeout(() => settle(p, 'timeout'), a.timeoutMs);
+        const onAbort = (): void => settle(p, 'stopped');
         const p: Pending = {
           info,
           resolve: (r) => {
             clearTimeout(timer);
+            a.signal?.removeEventListener('abort', onAbort);
             try { note?.close(); } catch { /* gone */ }
             resolve(r);
           },
         };
         pending = p;
+        a.signal?.addEventListener('abort', onAbort, { once: true });
         try {
           note = deps.notifier.show({
             title: approvalTitle(a.label, a.game, a.pid),

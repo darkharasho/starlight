@@ -1066,8 +1066,9 @@ async function claudeMode() {
   })();
   const code = await Promise.race([exited, sleep(30 * 60_000).then(() => 'timeout')]);
   const tExit = now();
-  // R18: within 5 s after the agent exits, the session is idle and the game isn't traced.
-  const idle = await waitFor(async () => (await S(app, 'agentGetState()')).status === 'idle' && tracerPid(A.pid) === 0, 5000, 100);
+  // R18: once the agent exits, the session is idle and the game isn't traced. Claude Code sends no
+  // DELETE, so the host ends the session when its GET stream has been closed for 15 s (I1); allow 5 s more.
+  const idle = await waitFor(async () => (await S(app, 'agentGetState()')).status === 'idle' && tracerPid(A.pid) === 0, 20_000, 100);
   const exitMs = now() - tExit;
   const stAfter = await S(app, 'agentGetState()');
   running = false;
@@ -1083,7 +1084,7 @@ async function claudeMode() {
     wrongAttach.length ? `denied ${wrongAttach.join(', ')}` : `target ${A.pid}`);
   check('claude -p runs to the end', code === 0 && resultMsg?.subtype === 'success', `exit ${code}, ${resultMsg?.subtype}`);
   check('claude\'s MCP client never sends an Origin header', proxy.log.length > 0 && origins.length === 0, `${proxy.log.length} requests`);
-  check('R18: within 5 s of claude exiting the agent session is idle and TracerPid is 0', !!idle,
+  check('R18: within 20 s (15 s stream grace + 5 s) of claude exiting the agent session is idle and TracerPid is 0', !!idle,
     `${exitMs.toFixed(0)} ms, status ${stAfter.status}, TracerPid ${tracerPid(A.pid)}`);
   if (!idle) {
     // Record how long it takes after all (D4 gap), up to 60 s.

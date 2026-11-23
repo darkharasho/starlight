@@ -10,6 +10,8 @@ import { startMcpHost, type McpHost } from '../../../src/main/agent/mcp-host.js'
 import { createAgentServer } from '../../../src/main/agent/server.js';
 import { ToolError, NOT_ATTACHED, type ActivitySink, type AgentAccess, type AgentClient, type ToolDef } from '../../../src/main/agent/tools.js';
 import { listGamesTool } from '../../../src/main/agent/tools-session.js';
+import { createPlayerPrompts } from '../../../src/main/agent/player-prompt.js';
+import { DEFAULT_AGENT_PREFS } from '../../../src/shared/ipc.js';
 
 const TOKEN = 'test-token-0123456789';
 
@@ -53,11 +55,12 @@ afterEach(async () => {
 async function start(o: {
   port?: number; onSessionClosed?: (id: string) => void; activity?: ActivitySink; clients?: AgentClient[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tools?: ToolDef<any>[]; idleTimeoutMs?: number; reapIntervalMs?: number;
+  tools?: ToolDef<any>[]; idleTimeoutMs?: number; reapIntervalMs?: number; streamGraceMs?: number;
 } = {}): Promise<McpHost> {
   const activity = o.activity ?? fakeActivity();
   const host = await startMcpHost({
     port: o.port ?? 0,
+    ...(o.streamGraceMs !== undefined ? { streamGraceMs: o.streamGraceMs } : {}),
     ...(o.idleTimeoutMs !== undefined ? { idleTimeoutMs: o.idleTimeoutMs } : {}),
     ...(o.reapIntervalMs !== undefined ? { reapIntervalMs: o.reapIntervalMs } : {}),
     token: () => TOKEN,
@@ -101,6 +104,35 @@ function raw(port: number, headers: Record<string, string>, body = '{}', method 
     req.end(body);
   });
 }
+
+/** initialize + notifications/initialized over plain HTTP; returns the session id. */
+async function rawSession(port: number): Promise<string> {
+  const h = { host: `127.0.0.1:${port}`, authorization: `Bearer ${TOKEN}` };
+  const id = await new Promise<string>((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/mcp', headers: {
+      'content-type': 'application/json', accept: 'application/json, text/event-stream', ...h,
+    } }, (res) => { res.resume(); const sid = res.headers['mcp-session-id']; if (typeof sid === 'string') resolve(sid); else reject(new Error('no session')); });
+    req.on('error', reject);
+    req.end(INIT);
+  });
+  expect(await raw(port, { ...h, 'mcp-session-id': id }, JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }))).toBe(202);
+  return id;
+}
+
+/** Opens the session's GET SSE stream; `close()` drops the socket like a client that exited. */
+function openStream(port: number, id: string): Promise<{ status: number; close(): void }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, method: 'GET', path: '/mcp', headers: {
+      host: `127.0.0.1:${port}`, authorization: `Bearer ${TOKEN}`, accept: 'text/event-stream', 'mcp-session-id': id,
+    } }, (res) => { res.resume(); resolve({ status: res.statusCode ?? 0, close: () => req.destroy() }); });
+    req.on('error', () => {});
+    req.on('close', () => {});
+    req.end();
+    req.on('error', reject);
+  });
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const INIT = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } } });
 
@@ -234,23 +266,23 @@ describe('MCP host', () => {
     expect(activity.finished).toEqual([{ id: 1, r: { status: 'refused', error: NOT_ATTACHED } }]);
   });
 
-  it('closes a session that has been idle for 20 minutes', async () => {
+  it('closes a session that never opened a GET stream after 20 idle minutes', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
     const closed = vi.fn();
     const host = await start({ onSessionClosed: closed, idleTimeoutMs: 20 * 60_000, reapIntervalMs: 60_000 });
-    const { client, transport } = await connect(host);
-    const id = transport.sessionId!;
-    await client.listTools();
+    const id = await rawSession(host.port);
+    const h = { host: `127.0.0.1:${host.port}`, authorization: `Bearer ${TOKEN}`, 'mcp-session-id': id };
+    const list = (): Promise<number> => raw(host.port, h, JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }));
+    expect(await list()).toBe(200);
     vi.advanceTimersByTime(19 * 60_000);
     expect(closed).not.toHaveBeenCalled();
-    await client.listTools();  // a request resets the clock
+    expect(await list()).toBe(200);  // a request resets the clock
     vi.advanceTimersByTime(19 * 60_000);
     expect(closed).not.toHaveBeenCalled();
     vi.advanceTimersByTime(2 * 60_000);
     await vi.waitFor(() => expect(closed).toHaveBeenCalledWith(id));
     expect(closed).toHaveBeenCalledTimes(1);
-    expect(await raw(host.port, { host: `127.0.0.1:${host.port}`, authorization: `Bearer ${TOKEN}`, 'mcp-session-id': id },
-      JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list' }))).toBe(404);
+    expect(await list()).toBe(404);
   });
 
   it('never closes a session while a request is in flight', async () => {
@@ -266,13 +298,14 @@ describe('MCP host', () => {
     };
     const closed = vi.fn();
     const host = await start({ onSessionClosed: closed, tools: [slow], idleTimeoutMs: 20 * 60_000, reapIntervalMs: 60_000 });
-    const { client } = await connect(host);
-    const call = client.callTool({ name: 'slow', arguments: {} }, undefined, { timeout: 3_700_000 });
+    const id = await rawSession(host.port);
+    const h = { host: `127.0.0.1:${host.port}`, authorization: `Bearer ${TOKEN}`, 'mcp-session-id': id };
+    const call = raw(host.port, h, JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'slow', arguments: {} } }));
     await started;
     vi.advanceTimersByTime(60 * 60_000);
     expect(closed).not.toHaveBeenCalled();
     release();
-    await expect(call).resolves.toMatchObject({ content: [{ type: 'text', text: '{"done":true}' }] });
+    expect(await call).toBe(200);
     await vi.waitFor(() => {
       vi.advanceTimersByTime(19 * 60_000);
       expect(closed).not.toHaveBeenCalled();
@@ -299,5 +332,108 @@ describe('MCP host', () => {
     hosts.push(h2);
     expect(await raw(h2.port, { host: `127.0.0.1:${h2.port}`, authorization: `Bearer ${TOKEN}` }, INIT)).toBe(500);
     expect(close2).toHaveBeenCalledTimes(1);
+  });
+
+  describe('the agent exiting ends its session (I1, D4)', () => {
+    it('closing the GET stream with nothing in flight ends the session after the grace period', async () => {
+      const closed = vi.fn();
+      const host = await start({ onSessionClosed: closed, streamGraceMs: 150 });
+      const id = await rawSession(host.port);
+      const stream = await openStream(host.port, id);
+      expect(stream.status).toBe(200);
+      await sleep(250);
+      expect(closed).not.toHaveBeenCalled();  // an open stream: the client is alive
+      stream.close();
+      await sleep(60);
+      expect(closed).not.toHaveBeenCalled();  // still inside the grace period
+      await vi.waitFor(() => expect(closed).toHaveBeenCalledWith(id), { timeout: 2000 });
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(await raw(host.port, { host: `127.0.0.1:${host.port}`, authorization: `Bearer ${TOKEN}`, 'mcp-session-id': id },
+        JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list' }))).toBe(404);
+    });
+
+    it('a GET reconnect inside the grace period keeps the session', async () => {
+      const closed = vi.fn();
+      const host = await start({ onSessionClosed: closed, streamGraceMs: 200 });
+      const id = await rawSession(host.port);
+      const first = await openStream(host.port, id);
+      first.close();
+      await sleep(80);
+      let second = await openStream(host.port, id);
+      // The SDK allows one stream per session; the old one may still be winding down.
+      for (let i = 0; second.status === 409 && i < 20; i++) { await sleep(10); second = await openStream(host.port, id); }
+      expect(second.status).toBe(200);
+      await sleep(400);
+      expect(closed).not.toHaveBeenCalled();
+      second.close();
+      await vi.waitFor(() => expect(closed).toHaveBeenCalledWith(id), { timeout: 2000 });
+    });
+
+    it('a POST in flight holds the session open after the stream closes', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      let entered!: () => void;
+      const started = new Promise<void>((r) => { entered = r; });
+      const slow: ToolDef<Record<string, never>> = {
+        name: 'slow', title: 'Slow', description: 'Waits.', tier: 'open', readOnly: true, input: {},
+        run: async () => { entered(); await gate; return { done: true }; },
+        summarize: () => 'slow',
+      };
+      const closed = vi.fn();
+      const host = await start({ onSessionClosed: closed, tools: [slow], streamGraceMs: 100 });
+      const id = await rawSession(host.port);
+      const stream = await openStream(host.port, id);
+      const h = { host: `127.0.0.1:${host.port}`, authorization: `Bearer ${TOKEN}`, 'mcp-session-id': id };
+      const call = raw(host.port, h, JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'slow', arguments: {} } }));
+      await started;
+      stream.close();
+      await sleep(300);
+      expect(closed).not.toHaveBeenCalled();  // the tool call is still running
+      release();
+      await call;
+      await vi.waitFor(() => expect(closed).toHaveBeenCalledWith(id), { timeout: 2000 });
+    });
+
+    it("a pending question resolves 'stopped' when the agent's sockets close", async () => {
+      const prompts = createPlayerPrompts({
+        notifier: { show: () => ({ close: () => {} }) }, focusAgentView: () => {}, onChange: () => {},
+        hotkeys: { set: () => ({ ok: true as const }) }, prefs: async () => ({ ...DEFAULT_AGENT_PREFS }),
+      });
+      let result: unknown = null;
+      const asked = vi.fn();
+      const ask: ToolDef<Record<string, never>> = {
+        name: 'ask', title: 'Ask', description: 'Asks.', tier: 'open', readOnly: true, input: {},
+        run: async (_a, ctx) => {
+          const p = prompts.ask({ question: 'q', answer: 'confirm', timeoutMs: 3_600_000, label: 'Claude', ...(ctx.signal ? { signal: ctx.signal } : {}) });
+          asked();
+          result = await p;
+          return result;
+        },
+        summarize: () => 'ask',
+      };
+      const closed = vi.fn();
+      const host = await start({ onSessionClosed: closed, tools: [ask], streamGraceMs: 100 });
+      const { client } = await connect(host);
+      void client.callTool({ name: 'ask', arguments: {} }, undefined, { timeout: 3_700_000 }).catch(() => {});
+      await vi.waitFor(() => expect(asked).toHaveBeenCalled());
+      expect(prompts.pending()).toHaveLength(1);
+      // The agent process exits: its GET stream and the POST go away, and no DELETE is sent.
+      await client.close();
+      await vi.waitFor(() => expect(closed).toHaveBeenCalled(), { timeout: 2000 });
+      await vi.waitFor(() => expect(result).toEqual({ answered: false, reason: 'stopped' }), { timeout: 2000 });
+      expect(prompts.pending()).toEqual([]);
+    });
+
+    it('a session with an open GET stream is not reaped at 20 minutes', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+      const closed = vi.fn();
+      const host = await start({ onSessionClosed: closed, idleTimeoutMs: 20 * 60_000, reapIntervalMs: 60_000 });
+      const id = await rawSession(host.port);
+      const stream = await openStream(host.port, id);
+      vi.advanceTimersByTime(60 * 60_000);
+      await sleep(20);
+      expect(closed).not.toHaveBeenCalled();
+      stream.close();
+    });
   });
 });

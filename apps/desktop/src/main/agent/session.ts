@@ -62,7 +62,8 @@ export interface AgentSessionDeps {
 }
 
 export interface AgentSession extends AgentAccess {
-  attach(pid: number, client: AgentClient): Promise<AttachInfo>;
+  /** `signal`: the agent's request; aborting it while the player is asked denies the attach. */
+  attach(pid: number, client: AgentClient, o?: { signal?: AbortSignal }): Promise<AttachInfo>;
   stop(reason: StopReason): Promise<void>;
   setCanModify(on: boolean): Promise<void>;
   require(mcpSessionId: string, tier: Tier): Promise<AttachedContext | null>;
@@ -270,7 +271,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
     changed();
   }
 
-  async function attach(pid: number, client: AgentClient): Promise<AttachInfo> {
+  async function attach(pid: number, client: AgentClient, o: { signal?: AbortSignal } = {}): Promise<AttachInfo> {
     if (cur) {
       if (cur.client.mcpSessionId !== client.mcpSessionId) throw new ToolError(OTHER_AGENT(cur.client.label, cur.game.name));
       if (cur.game.pid === pid) return info(cur);
@@ -286,7 +287,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
     if (notTarget) throw new ToolError(notTarget);
     const hit = await checkAntiCheat(pid);
     if (hit) throw new ToolError(antiCheatMessage(hit));
-    if (cur || asking) return attach(pid, client);  // raced with another attach
+    if (cur || asking) return attach(pid, client, o);  // raced with another attach
 
     const myGen = gen;
     const ask: Asking = { client, game: String(pid) };
@@ -308,12 +309,14 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSession {
       throw err;
     }
     if (!stillMine()) throw new ToolError(STOPPED_MIDWAY);
+    if (o.signal?.aborted) { abandon(); throw new ToolError(STOPPED_MIDWAY); }
 
-    // 3. Ask the player.
+    // 3. Ask the player. The agent giving up (cancel, disconnect) drops the card.
     const answer = await deps.prompts.requestApproval({
       label: client.label, game: game.name, pid,
       closesCeTable: deps.owner.ownerOf(pid)?.engine === 'ce',
       timeoutMs: timeoutSec * 1000,
+      ...(o.signal ? { signal: o.signal } : {}),
     });
     if (!stillMine() || answer === 'stopped') { abandon(); throw new ToolError(STOPPED_MIDWAY); }
     if (answer === 'deny') { abandon(); throw new ToolError(DECLINED); }

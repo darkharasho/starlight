@@ -13,7 +13,7 @@ import type { AgentClient, ToolDef } from './tools.js';
 
 /** What attach/detach need from the agent session (kept here so tool files don't import session.ts). */
 export interface SessionControl {
-  attach(pid: number, client: AgentClient): Promise<{
+  attach(pid: number, client: AgentClient, o?: { signal?: AbortSignal }): Promise<{
     pid: number; name: string; proton: boolean; steamAppId: number | null; buildId: string | null; canModify: boolean;
   }>;
   stop(reason: 'agent'): Promise<void>;
@@ -122,7 +122,8 @@ export function attachTool(agent: Pick<SessionControl, 'attach'>): ToolDef<typeo
     readOnly: false,
     input: attachInput,
     async run(args, ctx) {
-      const g = await agent.attach(args.pid, ctx.client);
+      // The request's signal: Esc in the agent (notifications/cancelled) or its session ending drops the card.
+      const g = await agent.attach(args.pid, ctx.client, ctx.signal ? { signal: ctx.signal } : {});
       return {
         attached: true,
         game: { pid: g.pid, name: g.name, proton: g.proton, steamAppId: g.steamAppId, buildId: g.buildId },

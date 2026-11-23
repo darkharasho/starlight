@@ -100,9 +100,16 @@ describe('attach, detach and game_info', () => {
     expect(def.tier).toBe('open');
     expect(def.readOnly).toBe(false);
     const r = await def.run({ pid: 11 }, ctx);
-    expect(attach).toHaveBeenCalledWith(11, ctx.client);
+    expect(attach).toHaveBeenCalledWith(11, ctx.client, {});
     expect(r).toEqual({ attached: true, game: { pid: 11, name: 'Game', proton: true, steamAppId: 123, buildId: '42' }, canModify: true });
     expect(def.summarize({ pid: 11 }, r)).toBe('Attached to Game');
+  });
+
+  it("attach passes the request's abort signal, so a cancelled request drops the approval card", async () => {
+    const attach = vi.fn(async () => ({ pid: 11, name: 'Game', proton: true, steamAppId: 123, buildId: '42', canModify: true }));
+    const ac = new AbortController();
+    await attachTool({ attach }).run({ pid: 11 }, { ...ctx, signal: ac.signal });
+    expect(attach).toHaveBeenCalledWith(11, ctx.client, { signal: ac.signal });
   });
 
   it('detach stops the session as the agent', async () => {
