@@ -14,15 +14,19 @@ export interface EngineClient {
 
 /** Maps a starlightd JSON-RPC error code to the engine's error classes. */
 export function mapRpcError(code: number, message: string): EngineError {
-  switch (code) {
-    case -32001: return new PermissionError(message);
-    case -32002: return new AttachError(message);
-    case -32003: return new ReadError(message);
-    case -32004: return new WriteError(message);
-    case -32005:
-    case -32006: return new ScanError(message);
-    default: return new EngineError(message);
-  }
+  const err = ((): EngineError => {
+    switch (code) {
+      case -32001: return new PermissionError(message);
+      case -32002: return new AttachError(message);
+      case -32003: return new ReadError(message);
+      case -32004: return new WriteError(message);
+      case -32005:
+      case -32006: return new ScanError(message);
+      default: return new EngineError(message);
+    }
+  })();
+  err.code = code;
+  return err;
 }
 
 interface Pending { resolve(v: unknown): void; reject(e: unknown): void }

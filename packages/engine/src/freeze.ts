@@ -1,6 +1,9 @@
 import type { Session } from './session.js';
 import type { ValueType } from './types.js';
 import { encodeValue } from './memory.js';
+import { EngineError } from './errors.js';
+
+const INVALID_PARAMS = -32602;
 
 export interface FreezeSpec {
   address: string;
@@ -23,16 +26,24 @@ export async function freeze(session: Session, spec: FreezeSpec): Promise<Freeze
     interval_ms: spec.intervalMs,
   });
   let active = true;
-  session.onDetached(() => { active = false; });
+  const unsubscribe = session.onDetached(() => { active = false; });
 
   return {
     get active() { return active; },
     cancel: async () => {
       if (!active) return;
       active = false;
+      unsubscribe();
       // The daemon drops freezes when the process exits or the connection closes.
       if (!session.attached || session.client.closed) return;
-      await session.client.call('unfreeze', { id });
+      try {
+        await session.client.call('unfreeze', { id });
+      } catch (err) {
+        // The game exited and the daemon already dropped this freeze, before
+        // its process_exited notification reached us: it's cancelled either way.
+        if (err instanceof EngineError && err.code === INVALID_PARAMS && /unknown freeze id/.test(err.message)) return;
+        throw err;
+      }
     },
   };
 }

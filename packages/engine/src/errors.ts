@@ -1,4 +1,6 @@
 export class EngineError extends Error {
+  /** The JSON-RPC error code, when the error came from starlightd. */
+  code: number | undefined;
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
     this.name = 'EngineError';

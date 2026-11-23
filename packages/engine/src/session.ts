@@ -8,7 +8,8 @@ export interface Session {
   readonly attached: boolean;
   readonly client: EngineClient;
   detach(): Promise<void>;
-  onDetached(cb: (reason: DetachReason) => void): void;
+  /** Returns a function that removes the listener. */
+  onDetached(cb: (reason: DetachReason) => void): () => void;
 }
 
 export async function attach(client: EngineClient, pid: number): Promise<Session> {
@@ -41,6 +42,12 @@ export async function attach(client: EngineClient, pid: number): Promise<Session
         markDetached('manual');
       }
     },
-    onDetached(cb) { cbs.push(cb); },
+    onDetached(cb) {
+      cbs.push(cb);
+      return () => {
+        const i = cbs.indexOf(cb);
+        if (i !== -1) cbs.splice(i, 1);
+      };
+    },
   };
 }
