@@ -39,6 +39,18 @@ jobs:
       - name: Build C test target
         run: make -C packages/engine/test-target
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/starlightd
+
+      - name: Test starlightd
+        run: cargo test --manifest-path packages/starlightd/Cargo.toml
+
+      # The engine tests spawn the debug daemon.
+      - name: Build starlightd (debug)
+        run: cargo build --manifest-path packages/starlightd/Cargo.toml
+
       - name: Build TypeScript packages
         run: pnpm -r build
 

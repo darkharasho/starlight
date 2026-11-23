@@ -65,9 +65,18 @@ It needs no extra setup: better-sqlite3 is already built for Electron (see below
   prebuild). That one build serves `pnpm dev`, packaging and the tests, because
   the desktop tests run under Electron's Node (`ELECTRON_RUN_AS_NODE`). If
   something rebuilds it for Node, run `pnpm --filter @starlight/desktop rebuild:native`.
-  frida and uiohook-napi are N-API, so they work as installed.
+  uiohook-napi is N-API, so it works as installed.
   electron-builder's own rebuild is off (`npmRebuild: false`), because it would
   compile uiohook-napi from source.
+
+## starlightd
+
+The release workflow builds the Rust daemon (`packages/starlightd`, `cargo
+build --release`) and electron-builder bundles it as an extra resource; the
+build fails if the AppImage doesn't contain it. CI and the release `test` job
+run its cargo tests and build the debug binary the engine tests spawn. Nothing
+to do by hand. Changing the daemon changes the binary, so users are asked for
+the ptrace permission once more after updating (only when ptrace_scope > 0).
 
 ## Windows and macOS
 

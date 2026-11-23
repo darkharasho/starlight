@@ -38,6 +38,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: make -C packages/engine/test-target
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/starlightd
+      - run: cargo test --manifest-path packages/starlightd/Cargo.toml
+      # The engine tests spawn the debug daemon.
+      - run: cargo build --manifest-path packages/starlightd/Cargo.toml
       - run: pnpm -r build
       - run: pnpm -r lint
       - run: pnpm -r test
@@ -77,6 +83,10 @@ jobs:
             ~/.cache/electron-builder
           key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/starlightd
+
       - run: pnpm install --frozen-lockfile
       # The desktop main process bundles the workspace packages' dist output.
       - run: pnpm -r --filter '!@starlight/desktop' build
@@ -88,11 +98,23 @@ jobs:
         working-directory: apps/desktop
         run: pnpm build
 
+      # electron-builder's extraResources bundles this binary.
+      - name: Build starlightd (release)
+        run: |
+          cargo build --release --manifest-path packages/starlightd/Cargo.toml
+          test -x packages/starlightd/target/release/starlightd
+
       - name: Package and upload the AppImage
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm exec electron-builder --linux AppImage --publish always
+
+      - name: Check the AppImage bundles starlightd
+        working-directory: apps/desktop
+        run: |
+          ./dist/Starlight-*.AppImage --appimage-extract resources/starlightd >/dev/null
+          test -x squashfs-root/resources/starlightd
 
   # Publishes only once every build has uploaded; a failed build leaves the
   # release as a draft.
