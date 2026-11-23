@@ -4,6 +4,7 @@ import { createServer, connect } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseVdf } from './vdf.js';
+import { PTRACE_MESSAGE } from '../shared/ptrace.js';
 
 // Native Linux games are cheated by Windows CE 7.5 running in Starlight's own
 // Wine prefix, connected to ceserver (Cheat Engine's Linux memory server),
@@ -29,8 +30,7 @@ export const NO_WINE_MESSAGE =
  * unrestricted or ceserver holds CAP_SYS_PTRACE. The renderer offers a
  * one-click fix when it sees this message (matched by `isPtraceBlocked`).
  */
-export const PTRACE_MESSAGE =
-  'Starlight needs your permission once to read native Linux games\' memory.';
+export { PTRACE_MESSAGE };
 
 /** ptrace_scope 3: nothing may attach, not even with permission, until a reboot. */
 export const PTRACE_LOCKED_MESSAGE =

@@ -173,6 +173,8 @@ export interface StartSessionOpts {
   onGameExit?: ((sessionId: string) => void) | undefined;
   // Injectables for tests:
   detectAntiCheatFn?: typeof detectAntiCheat | undefined;
+  /** Whether starlightd lacks CAP_SYS_PTRACE (only asked when ptrace is restricted). */
+  engineNeedsPtraceGrantFn?: (() => Promise<boolean>) | undefined;
   isGameAlive?: ((pid: number) => boolean) | undefined;
   gameWatchMs?: number | undefined;
   detectProtonFn?: typeof detectProton;
@@ -378,7 +380,12 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
       ceServer = await (opts.startCeServerFn ?? startCeServer)({ bin: detect.ceserver });
       // With ptrace restricted, ceserver can only read the game with
       // CAP_SYS_PTRACE (granted once from the UI).
-      if (ptraceScope > 0 && !(ceServer.pid !== undefined && await (opts.hasPtraceCapFn ?? hasPtraceCap)(ceServer.pid))) {
+      // starlightd needs it too: an update that only changed starlightd drops
+      // its capability while ceserver keeps its own, so ask then as well.
+      if (ptraceScope > 0 && (
+        !(ceServer.pid !== undefined && await (opts.hasPtraceCapFn ?? hasPtraceCap)(ceServer.pid))
+        || await (opts.engineNeedsPtraceGrantFn?.() ?? false)
+      )) {
         await ceServer.stop();
         throw new Error(PTRACE_MESSAGE);
       }

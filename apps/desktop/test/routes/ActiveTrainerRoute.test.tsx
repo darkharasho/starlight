@@ -123,4 +123,14 @@ describe('ActiveTrainerRoute — process picker', () => {
     const input = screen.getByLabelText(/process name/i) as HTMLInputElement;
     expect(input.value).toContain(useTrainerStore.getState().trainer!.game.processName.join(', '));
   });
+
+  it('offers Allow when the engine is not permitted to read the game', async () => {
+    const allowAccess = vi.fn(async () => undefined);
+    useLatchState.setState({ error: 'Starlight needs your permission once to read native Linux games\' memory.', needsPermission: true, allowing: false, allowAccess });
+    render(<MemoryRouter><ActiveTrainerRoute /></MemoryRouter>);
+    expect(screen.getByText(/needs your permission once/)).toBeInTheDocument();
+    expect(screen.queryByText(/sysctl/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(allowAccess).toHaveBeenCalledTimes(1);
+  });
 });

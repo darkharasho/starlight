@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  installDaemon, socketPath, bundledBinaryPath, configureStarlightdHost, getEngineClient,
+  installDaemon, socketPath, bundledBinaryPath, configureStarlightdHost, getEngineClient, engineNeedsPtraceGrant,
 } from '../../src/main/starlightd-host.js';
 
 let dir: string;
@@ -89,5 +89,34 @@ describe('getEngineClient', () => {
     const b = await getEngineClient();
     expect(b).not.toBe(a);
     expect(starts).toBe(2);
+  });
+});
+
+describe('engineNeedsPtraceGrant', () => {
+  async function configure(): Promise<void> {
+    await writeFile(join(dir, 'starlightd'), 'daemon');
+    const start = (async () => ({
+      client: { closed: false, onClose() {} },
+      pid: 777,
+      stop: async () => undefined,
+    })) as never;
+    configureStarlightdHost({ runtimeRoot: join(dir, 'rt'), isPackaged: true, resourcesPath: dir, appPath: dir, start });
+  }
+
+  it('is true when the running daemon lacks CAP_SYS_PTRACE', async () => {
+    await configure();
+    const seen: number[] = [];
+    expect(await engineNeedsPtraceGrant(async (pid) => { seen.push(pid); return false; })).toBe(true);
+    expect(seen).toEqual([777]);
+  });
+
+  it('is false when the running daemon has it', async () => {
+    await configure();
+    expect(await engineNeedsPtraceGrant(async () => true)).toBe(false);
+  });
+
+  it('is false when the daemon cannot start (nothing to grant)', async () => {
+    configureStarlightdHost({ runtimeRoot: join(dir, 'rt'), isPackaged: true, resourcesPath: join(dir, 'missing'), appPath: dir });
+    expect(await engineNeedsPtraceGrant(async () => false)).toBe(false);
   });
 });

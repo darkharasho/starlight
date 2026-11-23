@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
-import { configureStarlightdHost, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
+import { configureStarlightdHost, engineNeedsPtraceGrant, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
@@ -340,6 +340,7 @@ app.whenReady().then(async () => {
         game: req.game,
         processes,
         detectedGames: lastDetectedGames,
+        engineNeedsPtraceGrantFn: () => engineNeedsPtraceGrant(),
         onProgress: (message) => broadcast({ type: 'session:progress', message }),
         onSteps: (tables) => broadcast({ type: 'session:tables', tables }),
         onGameExit: (sessionId) => broadcast({ type: 'session:game-exited', sessionId }),

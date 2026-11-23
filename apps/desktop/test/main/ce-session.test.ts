@@ -168,6 +168,29 @@ describe('ce-session', () => {
     })).rejects.toThrow(/timed out|ping/i);   // past the permission check, into launching CE
   });
 
+  it('asks for permission when ceserver has it but starlightd lost it', async () => {
+    const stops: number[] = [];
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'pt4', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      readPtraceScopeFn: async () => 1,
+      startCeServerFn: async () => ({ port: 1, pid: 99, stop: async () => { stops.push(1); } }),
+      hasPtraceCapFn: async () => true,
+      engineNeedsPtraceGrantFn: async () => true,
+    })).rejects.toThrow(PTRACE_MESSAGE);
+    expect(stops).toEqual([1]);
+  });
+
+  it('does not ask about starlightd when ptrace is unrestricted', async () => {
+    const engineNeedsPtraceGrantFn = vi.fn(async () => true);
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'pt5', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      engineNeedsPtraceGrantFn,
+    })).rejects.toThrow(/timed out|ping/i);
+    expect(engineNeedsPtraceGrantFn).not.toHaveBeenCalled();
+  });
+
   it('explains ptrace_scope 3, which no permission can get past', async () => {
     await expect(startSession({
       source: await startCtServer(), cacheKey: 'pt3', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,

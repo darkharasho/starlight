@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startEngine, type EngineClient, type StartedEngine } from '@starlight/engine';
+import { hasPtraceCap } from './ce-native.js';
 
 export function bundledBinaryPath(opts: { isPackaged: boolean; resourcesPath: string; appPath: string }): string {
   return opts.isPackaged
@@ -96,6 +97,21 @@ export async function getEngineClient(): Promise<EngineClient> {
     }
   })();
   return starting;
+}
+
+/**
+ * With ptrace restricted, whether starlightd still needs the permission: the
+ * running daemon lacks CAP_SYS_PTRACE (e.g. an update replaced its bytes, which
+ * drops the capability). False when it can't start at all: there's nothing to grant.
+ */
+export async function engineNeedsPtraceGrant(hasCap: (pid: number) => Promise<boolean> = hasPtraceCap): Promise<boolean> {
+  try {
+    await getEngineClient();
+  } catch {
+    return false;
+  }
+  const engine = running;
+  return engine ? !(await hasCap(engine.pid)) : false;
 }
 
 export async function stopEngine(): Promise<void> {

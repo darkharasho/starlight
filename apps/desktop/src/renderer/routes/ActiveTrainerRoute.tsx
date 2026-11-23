@@ -42,6 +42,23 @@ function LuaHeavyBanner({ supported, total, sourceUrl }: { supported: number; to
   );
 }
 
+/** The engine may not read the game yet: one click asks for the permission. */
+function AllowAccessBanner({ message, allowing, onAllow }: { message: string; allowing: boolean; onAllow: () => Promise<void> }): JSX.Element {
+  return (
+    <div role="alert" className="text-xs text-ink border border-neon-cyan/40 bg-neon-cyan/[0.06] rounded-sm px-3 py-2">
+      <div className="font-semibold mb-1">{message}</div>
+      <div className="text-soft">
+        Linux keeps programs from reading each other&apos;s memory. Allowing it once gives that permission to
+        Starlight&apos;s memory reader only, and it stays allowed after a restart.
+      </div>
+      <button type="button" disabled={allowing} onClick={() => void onAllow()}
+              className="mt-2 rounded-full px-3 py-1 text-xs font-semibold text-[#06231d] bg-neon-cyan hover:brightness-110 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan/50">
+        {allowing ? 'Waiting for your password…' : 'Allow'}
+      </button>
+    </div>
+  );
+}
+
 function ErrorBanner({ message }: { message: string }): JSX.Element {
   const isPermission = /ptrace|permission|EPERM/i.test(message);
   return (
@@ -87,6 +104,9 @@ export function ActiveTrainerRoute(): JSX.Element {
 
   const latchState = useLatchState((s) => s.state);
   const latchError = useLatchState((s) => s.error);
+  const latchNeedsPermission = useLatchState((s) => s.needsPermission);
+  const latchAllowing = useLatchState((s) => s.allowing);
+  const latchAllowAccess = useLatchState((s) => s.allowAccess);
   const pidInput = useLatchState((s) => s.pidInput);
   const setPidInput = useLatchState((s) => s.setPidInput);
   const latch = useLatchState((s) => s.latch);
@@ -218,6 +238,9 @@ export function ActiveTrainerRoute(): JSX.Element {
       setProcessName={setProcessName}
       latchState={latchState}
       latchError={latchError}
+      latchNeedsPermission={latchNeedsPermission}
+      latchAllowing={latchAllowing}
+      latchAllowAccess={latchAllowAccess}
       pidInput={pidInput}
       setPidInput={setPidInput}
       latch={latch}
@@ -278,6 +301,9 @@ interface TrainerViewProps {
   setProcessName: (names: string[]) => Promise<void>;
   latchState: string;
   latchError: string | null;
+  latchNeedsPermission: boolean;
+  latchAllowing: boolean;
+  latchAllowAccess: () => Promise<void>;
   pidInput: string;
   setPidInput: (s: string) => void;
   latch: () => Promise<void>;
@@ -300,6 +326,9 @@ function TrainerView({
   setProcessName,
   latchState,
   latchError,
+  latchNeedsPermission,
+  latchAllowing,
+  latchAllowAccess,
   pidInput,
   setPidInput,
   latch,
@@ -361,7 +390,9 @@ function TrainerView({
         </div>
       </div>
 
-      {(latchError || trainerError) && <ErrorBanner message={latchError ?? trainerError ?? ''} />}
+      {latchNeedsPermission && latchError ? (
+        <AllowAccessBanner message={latchError} allowing={latchAllowing} onAllow={latchAllowAccess} />
+      ) : (latchError || trainerError) && <ErrorBanner message={latchError ?? trainerError ?? ''} />}
 
       {totalCheats > 0 && supportedCount / totalCheats < 0.3 && (
         <LuaHeavyBanner
