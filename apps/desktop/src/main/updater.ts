@@ -15,6 +15,11 @@ export const DEV_UPDATE_MESSAGE = 'Updates only work in the Starlight AppImage.'
 export interface AutoUpdaterLike {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  /**
+   * Where electron-updater writes its own progress lines. Its default is the
+   * console, and writing to a stdout nobody reads crashed Starlight (EPIPE).
+   */
+  logger?: UpdaterLogger | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, listener: (...args: any[]) => void): unknown;
   /**
@@ -24,6 +29,13 @@ export interface AutoUpdaterLike {
    */
   checkForUpdates(): Promise<unknown>;
   quitAndInstall(): void;
+}
+
+export interface UpdaterLogger {
+  info(message?: unknown): void;
+  warn(message?: unknown): void;
+  error(message?: unknown): void;
+  debug?(message: string): void;
 }
 
 export interface UpdaterDeps {
@@ -72,6 +84,14 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     loading ??= deps.load().then((u) => {
       u.autoDownload = true;
       u.autoInstallOnAppQuit = true;
+      // Routine progress ("Checking for update", download details) is dropped;
+      // problems go to warn. The updater never writes to the console itself.
+      u.logger = {
+        info: () => undefined,
+        debug: () => undefined,
+        warn: (m) => warn(`electron-updater: ${String(m)}`),
+        error: (m) => warn(`electron-updater: ${String(m)}`),
+      };
       u.on('checking-for-update', () => {
         if (!busy()) set({ status: 'checking' });
       });
