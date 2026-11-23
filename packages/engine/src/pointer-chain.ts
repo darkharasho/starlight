@@ -1,56 +1,23 @@
 import type { Session } from './session.js';
 import type { PointerChainSpec } from './types.js';
-import { ReadError } from './errors.js';
 
 /* Resolves a pointer chain to a final address (hex string).
  *
  * Semantics, matching Cheat Engine: read 8 bytes (assumed 64-bit) at the base
  * address to get a pointer P. Then for each offset, do P = *(P + offset),
  * EXCEPT for the LAST offset, which is added without dereferencing — the
- * caller wants the final address, not the value behind it.
+ * caller wants the final address, not the value behind it. The walk runs in
+ * starlightd.
  */
 export async function resolvePointerChain(
   session: Session,
   spec: PointerChainSpec,
 ): Promise<string> {
-  const offsets = spec.offsets;
-
-  const script = await session.fridaSession.createScript(`
-    rpc.exports = {
-      walk: function(baseHex, moduleName, offsetHexes) {
-        try {
-          let base;
-          if (moduleName) {
-            const mod = Process.findModuleByName(moduleName);
-            if (!mod) return { error: 'module not found: ' + moduleName };
-            base = mod.base.add(ptr(baseHex));
-          } else {
-            base = ptr(baseHex);
-          }
-          if (offsetHexes.length === 0) {
-            return base.toString();
-          }
-          let p = base.readPointer();
-          for (let i = 0; i < offsetHexes.length - 1; i++) {
-            p = p.add(ptr(offsetHexes[i])).readPointer();
-          }
-          const last = p.add(ptr(offsetHexes[offsetHexes.length - 1]));
-          return last.toString();  // "0x..."
-        } catch (e) {
-          return { error: String(e) };
-        }
-      }
-    };
-  `);
-  await script.load();
-  try {
-    const exp = script.exports as { walk: (b: string, m: string | null, o: string[]) => Promise<string | { error: string }> };
-    const result = await exp.walk(spec.baseAddress, spec.module ?? null, offsets);
-    if (typeof result === 'object' && 'error' in result) {
-      throw new ReadError(`pointer chain failed: ${result.error}`);
-    }
-    return result;
-  } finally {
-    await script.unload();
-  }
+  const { address } = await session.client.call<{ address: string }>('resolve_pointer', {
+    handle: session.handle,
+    ...(spec.module !== undefined ? { module: spec.module } : {}),
+    base: spec.baseAddress,
+    offsets: spec.offsets,
+  });
+  return address;
 }

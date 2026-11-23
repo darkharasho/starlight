@@ -2,19 +2,23 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { attach, type Session } from '../src/session.js';
 import { read, write } from '../src/memory.js';
 import { freeze } from '../src/freeze.js';
+import { startTestEngine } from './helpers/daemon.js';
 import { spawnTarget, type SpawnedTarget } from './helpers/spawn-target.js';
 
 describe('freeze', () => {
   let target: SpawnedTarget;
   let session: Session;
+  let engine: Awaited<ReturnType<typeof startTestEngine>>;
 
   beforeAll(async () => {
+    engine = await startTestEngine();
     target = await spawnTarget();
-    session = await attach(target.pid);
+    session = await attach(engine.client, target.pid);
   });
   afterAll(async () => {
     await session.detach();
     await target.kill();
+    await engine.stop();
   });
 
   it('keeps the value pinned despite external writes', async () => {

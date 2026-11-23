@@ -2,19 +2,23 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { attach, type Session } from '../src/session.js';
 import { read, write } from '../src/memory.js';
 import { resolvePointerChain } from '../src/pointer-chain.js';
+import { startTestEngine } from './helpers/daemon.js';
 import { spawnTarget, type SpawnedTarget } from './helpers/spawn-target.js';
 
 describe('resolvePointerChain', () => {
   let target: SpawnedTarget;
   let session: Session;
+  let engine: Awaited<ReturnType<typeof startTestEngine>>;
 
   beforeAll(async () => {
+    engine = await startTestEngine();
     target = await spawnTarget();
-    session = await attach(target.pid);
+    session = await attach(engine.client, target.pid);
   });
   afterAll(async () => {
     await session.detach();
     await target.kill();
+    await engine.stop();
   });
 
   it('walks g_player_ptr -> Player.stats -> Stats.hp = 250', async () => {
@@ -45,7 +49,7 @@ describe('resolvePointerChain', () => {
   it('resolves a module+offset address with no further offsets', async () => {
     // Verify the module resolution path: passing module='target' and baseAddress='0x0'
     // should return the module base address (a valid hex string). This exercises the
-    // Frida-side module resolution for the ASLR/module path.
+    // daemon-side module resolution path.
     const result = await resolvePointerChain(session, {
       module: 'target',
       baseAddress: '0x0',  // base of module

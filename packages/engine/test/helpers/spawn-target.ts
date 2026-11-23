@@ -13,13 +13,13 @@ export interface SpawnedTarget {
   kill(): Promise<void>;
 }
 
-export async function spawnTarget(): Promise<SpawnedTarget> {
-  // Spawn the target as a grandchild via shell backgrounding so that libuv's
-  // child-process watcher does not race with frida's ptrace SIGSTOP injection.
+export async function spawnTarget(opts: { map?: string } = {}): Promise<SpawnedTarget> {
   // The shell is the direct child; the actual target binary is the grandchild.
+  // Target args go through positional parameters so paths need no shell quoting.
+  const targetArgs = opts.map ? ['--map', opts.map] : [];
   const shell: ChildProcess = spawn(
     '/bin/sh',
-    ['-c', `${TARGET_BINARY} & PID=$!; echo "TARGET_PID:$PID"; wait`],
+    ['-c', '"$0" "$@" & PID=$!; echo "TARGET_PID:$PID"; wait', TARGET_BINARY, ...targetArgs],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   );
   if (!shell.stdout) throw new Error('failed to spawn shell wrapper: no stdout stream');
@@ -93,7 +93,7 @@ export async function spawnTarget(): Promise<SpawnedTarget> {
     offsets,
     kill: () => new Promise((r) => {
       try { process.kill(targetPid, 'SIGTERM'); } catch (_) { /* already gone */ }
-      if (shell.exitCode !== null) return r();
+      if (shell.exitCode !== null || shell.signalCode !== null) return r();
       shell.once('exit', () => r());
       shell.kill('SIGTERM');
     }),

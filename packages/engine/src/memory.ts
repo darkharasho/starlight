@@ -14,25 +14,8 @@ const SIZE_OF: Record<ValueType, number> = {
 };
 
 async function readBytes(session: Session, address: string, length: number): Promise<Buffer> {
-  // Frida exposes a Memory.readByteArray(ptr, len) inside the agent. We run
-  // a tiny script per call to keep the API stateless. For hot paths, callers
-  // can build their own batched script via session.fridaSession.createScript().
-  const script = await session.fridaSession.createScript(`
-    rpc.exports = {
-      read: function(addrHex, len) {
-        const p = ptr(addrHex);
-        return Array.from(new Uint8Array(p.readByteArray(len)));
-      }
-    };
-  `);
-  await script.load();
-  try {
-    const exp = script.exports as { read: (a: string, l: number) => Promise<number[]> };
-    const arr = await exp.read(address, length);
-    return Buffer.from(arr);
-  } finally {
-    await script.unload();
-  }
+  const res = await session.client.call<{ bytes: string }>('read', { handle: session.handle, address, length });
+  return Buffer.from(res.bytes, 'hex');
 }
 
 export async function read(session: Session, address: string, spec: ReadSpec): Promise<PrimitiveValue> {
@@ -69,12 +52,8 @@ async function readString(session: Session, address: string, spec: StringSpec): 
   return buf.toString('utf16le');
 }
 
-export async function write(
-  session: Session,
-  address: string,
-  type: Exclude<ValueType, 'string'>,
-  value: number | bigint,
-): Promise<void> {
+/** Encodes a value as little-endian bytes for the given primitive type. */
+export function encodeValue(type: Exclude<ValueType, 'string'>, value: number | bigint): Buffer {
   const buf = Buffer.alloc(SIZE_OF[type]);
   switch (type) {
     case 'int8':   buf.writeInt8(value as number, 0); break;
@@ -89,22 +68,15 @@ export async function write(
     case 'double': buf.writeDoubleLE(value as number, 0); break;
     default: throw new WriteError(`unsupported type ${String(type)}`);
   }
-  await writeBytes(session, address, buf);
+  return buf;
 }
 
-async function writeBytes(session: Session, address: string, data: Buffer): Promise<void> {
-  const script = await session.fridaSession.createScript(`
-    rpc.exports = {
-      write: function(addrHex, bytes) {
-        ptr(addrHex).writeByteArray(bytes);
-      }
-    };
-  `);
-  await script.load();
-  try {
-    const exp = script.exports as { write: (a: string, b: number[]) => Promise<void> };
-    await exp.write(address, Array.from(data));
-  } finally {
-    await script.unload();
-  }
+export async function write(
+  session: Session,
+  address: string,
+  type: Exclude<ValueType, 'string'>,
+  value: number | bigint,
+): Promise<void> {
+  const bytes = encodeValue(type, value).toString('hex');
+  await session.client.call('write', { handle: session.handle, address, bytes });
 }

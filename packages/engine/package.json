@@ -12,9 +12,6 @@
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {
-    "frida": "^16.5.0"
-  },
   "devDependencies": {
     "@types/node": "^20.12.0",
     "typescript": "^5.5.0",

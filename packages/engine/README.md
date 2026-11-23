@@ -1,14 +1,15 @@
 # @starlight/engine
 
-Cross-platform memory engine for Starlight. Wraps frida-node with a typed API
-for attach/detach, read/write, pointer chains, AOB scans, and freeze loops.
+Memory engine for Starlight. A typed client for `starlightd` (packages/starlightd),
+the native daemon that does the memory work over JSON-RPC on a Unix socket.
+Attach/detach, read/write, modules, pointer chains, AOB scans and freeze loops.
+Nothing is injected into the game.
 
 ## Requirements
 
 - Node 20+
-- Linux: `kernel.yama.ptrace_scope` ≤ 1 (test mode child-process attach works at default value 1)
-- Windows: usually unprivileged for non-DRM games; admin for some
-- macOS: not yet validated (deferred to later phase)
+- Linux x86-64
+- A built `starlightd` (`cargo build` in packages/starlightd for tests)
 
 ## Test target
 
@@ -16,19 +17,17 @@ The C test target in `test-target/` provides a deterministic process for
 integration tests. Build it before running tests:
 
 ```bash
+cargo build --manifest-path ../starlightd/Cargo.toml
 make -C test-target
 pnpm test
 ```
 
-## Linux: ptrace troubleshooting
+## Linux: ptrace
 
-If `attach()` throws `PermissionError`, your kernel is restricting ptrace.
-Tests work at the default `kernel.yama.ptrace_scope=1` because they spawn
-the target as a child process. To attach to arbitrary running processes
-(real games), lower the scope:
+The daemon (not Node) attaches to the game, so it is the daemon binary that
+needs permission. If `attach()` throws `PermissionError`, either:
 
-```bash
-sudo sysctl kernel.yama.ptrace_scope=0
-```
+- set `kernel.yama.ptrace_scope=0` (`sudo sysctl kernel.yama.ptrace_scope=0`), or
+- grant the daemon `cap_sys_ptrace` (`sudo setcap cap_sys_ptrace+ep /path/to/starlightd`).
 
-Or grant cap_sys_ptrace to the Node binary (more targeted, more setup).
+At `ptrace_scope=0` no grant is needed. Tests spawn the target themselves.

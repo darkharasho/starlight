@@ -1,4 +1,6 @@
-export { attach, type Session } from './session.js';
+export { attach, type Session, type DetachReason } from './session.js';
+export { connectEngine, startEngine, type EngineClient, type StartedEngine } from './client.js';
+export { listModules, type ModuleInfo } from './modules.js';
 export { read, write, type PrimitiveValue } from './memory.js';
 export * from './types.js';
 export {
