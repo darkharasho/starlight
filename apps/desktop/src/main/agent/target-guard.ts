@@ -6,14 +6,16 @@
 // process's memory. The agent also must not reach Starlight itself (its main
 // process, the daemon, its helpers), where a write could defeat the approval
 // and switch gates. So, before asking the player:
-//   - every uid of the process (real, effective, saved, filesystem) must be ours;
+//   - every uid and gid of the process (real, effective, saved, filesystem) must be ours;
+//   - /proc/<pid> must be owned by us (the kernel makes it root's for a non-dumpable process);
 //   - the process must not be Starlight's main process or the daemon, nor a
 //     descendant of Starlight in Starlight's own session. Games Starlight starts
 //     are spawned detached (their own session), so they stay allowed.
-import { readFile } from 'node:fs/promises';
+import { readFile, stat as fsStat } from 'node:fs/promises';
 
 export const NOT_YOURS = "That process isn't one of your games; Starlight only attaches to programs you started.";
 export const IS_STARLIGHT = "That's part of Starlight itself, not a game. Pick the game from list_games.";
+export const NOT_DUMPABLE = "That process doesn't allow debugging (it isn't dumpable), so Starlight won't attach to it.";
 export const GONE = "That process isn't running any more. Call list_games for the running games.";
 
 export interface TargetGuardDeps {
@@ -22,6 +24,9 @@ export interface TargetGuardDeps {
   /** `/proc/<pid>/stat`. */
   readStat(pid: number): Promise<string>;
   uid: number;
+  gid: number;
+  /** The owner of `/proc/<pid>` (from `stat`). */
+  procOwner(pid: number): Promise<{ uid: number }>;
   selfPid: number;
   daemonPid(): number | null;
 }
@@ -30,6 +35,11 @@ const MAX_DEPTH = 64;
 
 function uids(status: string): number[] | null {
   const m = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m.exec(status);
+  return m ? [m[1], m[2], m[3], m[4]].map(Number) : null;
+}
+
+function gids(status: string): number[] | null {
+  const m = /^Gid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m.exec(status);
   return m ? [m[1], m[2], m[3], m[4]].map(Number) : null;
 }
 
@@ -55,6 +65,11 @@ export async function checkAttachTarget(pid: number, deps: TargetGuardDeps): Pro
   }
   const ids = uids(status);
   if (!ids || ids.some((u) => u !== deps.uid)) return NOT_YOURS;
+  const gs = gids(status);
+  if (!gs || gs.some((g) => g !== deps.gid)) return NOT_YOURS;
+  let owner: { uid: number };
+  try { owner = await deps.procOwner(pid); } catch { return GONE; }
+  if (owner.uid !== deps.uid) return NOT_DUMPABLE;
 
   const target = parentAndSession(stat);
   if (!target) return GONE;
@@ -81,6 +96,8 @@ export function procTargetDeps(o: { daemonPid(): number | null }): TargetGuardDe
     readStatus: (pid) => readFile(`/proc/${pid}/status`, 'utf8'),
     readStat: (pid) => readFile(`/proc/${pid}/stat`, 'utf8'),
     uid: process.getuid?.() ?? -1,
+    gid: process.getgid?.() ?? -1,
+    procOwner: (pid) => fsStat(`/proc/${pid}`).then((s) => ({ uid: s.uid })),
     selfPid: process.pid,
     daemonPid: o.daemonPid,
   };
