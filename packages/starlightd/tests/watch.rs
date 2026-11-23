@@ -133,15 +133,15 @@ fn access_watch_reports_reads_too() {
 
 #[test]
 fn late_thread_hits_are_reported() {
-    let t = Target::spawn(&["--late-writer", "300"]);
+    let t = Target::spawn(&["--late-writer", "1000"]);
     let d = Daemon::start();
     let mut c = d.client();
     let h = attach(&mut c, &t);
-    let id = watch_start(&mut c, json!({"handle": h, "address": t.addr("g_counter"), "size": 4, "kind": "write", "duration_ms": 3000}))
+    let id = watch_start(&mut c, json!({"handle": h, "address": t.addr("g_counter"), "size": 4, "kind": "write", "duration_ms": 5000}))
         .unwrap()["id"]
         .clone();
     assert_eq!(thread_count(t.pid), 1, "the writer thread must not exist yet when the watch starts");
-    std::thread::sleep(Duration::from_millis(800));
+    std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(thread_count(t.pid), 2, "the writer thread should exist by now");
     let rep = watch_stop(&mut c, &id);
     let hits = rep["hits"].as_array().unwrap();

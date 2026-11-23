@@ -5,7 +5,8 @@
 //! per watch turns the tracer's traps into hits grouped by instruction: a data breakpoint traps
 //! *after* the access, so the reported address is the start of the instruction ending at `rip`
 //! (`disasm::instruction_before`, ruling R10), with `next = rip`, a count, and the registers of
-//! the first hit. The collector ends the watch at its deadline, at `max_hits`, when the process
+//! the first hit. If no instruction can be found ending at `rip` (unreadable or undecodable
+//! code), the hit's `address` is `null` and `text` is `"??"`; `next` is still `rip`. The collector ends the watch at its deadline, at `max_hits`, when the process
 //! exits, or when asked (`watch_stop`, detach, connection close), clears the slot, and sends
 //! `watch_ended` unless the client stopped it.
 use crate::cleanup::{Owner, Teardown};
@@ -18,7 +19,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Arc, Condvar, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_DURATION_MS: u64 = 10_000;
@@ -77,7 +78,8 @@ fn release_slot(pid: i32, slot: usize) {
 /// One instruction that touched the watched address.
 #[derive(Clone)]
 struct Hit {
-    address: u64,
+    /// Start of the instruction; `None` if none could be found ending at `next`.
+    address: Option<u64>,
     next: u64,
     module: Option<String>,
     text: String,
@@ -113,7 +115,7 @@ impl Hit {
         .map(|(k, v)| (k.to_string(), Value::String(format!("{v:#x}"))))
         .collect();
         json!({
-            "address": format!("{:#x}", self.address),
+            "address": self.address.map(|a| format!("{a:#x}")),
             "next": format!("{:#x}", self.next),
             "module": self.module,
             "text": self.text,
@@ -144,17 +146,22 @@ struct Watch {
 }
 
 impl Watch {
+    /// The state, even if a collector panicked while holding it.
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Ask the collector to end the watch (unless it already has) and wait until it is done.
     fn end(&self, reason: Reason) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.lock();
         s.request.get_or_insert(reason);
         while !s.finished {
-            s = self.cv.wait(s).unwrap();
+            s = self.cv.wait(s).unwrap_or_else(|e| e.into_inner());
         }
     }
 
     fn report(&self) -> Value {
-        let s = self.state.lock().unwrap();
+        let s = self.lock();
         json!({
             "active": s.reason.is_none(),
             "reason": s.reason.map(Reason::as_str),
@@ -245,7 +252,7 @@ impl Watches {
                 w.end(Reason::Detached);
             }
         }));
-        w.state.lock().unwrap().token = Some(token);
+        w.lock().token = Some(token);
         Ok(id)
     }
 
@@ -265,7 +272,7 @@ impl Watches {
     pub fn stop(&self, id: u32) -> Result<Value, RpcError> {
         let w = self.live.lock().unwrap().remove(&id).ok_or_else(|| unknown(id))?;
         w.end(Reason::Stopped);
-        if let Some(token) = w.state.lock().unwrap().token.take() {
+        if let Some(token) = w.lock().token.take() {
             self.owner.remove(token);
         }
         Ok(w.report())
@@ -290,27 +297,32 @@ struct Collector {
 
 impl Collector {
     fn run(self) {
+        // Even if collecting panics, the watch is marked finished (so `Watch::end` returns)
+        // and its slot is released.
+        let mut fin = Finish { w: self.w.clone(), pid: self.t.pid, slot: self.slot, release_slot: true };
         let reason = self.collect();
-        let Collector { w, conn, t, tracer, traps, slot, .. } = self;
+        let Collector { w, conn, tracer, traps, slot, .. } = self;
         // Disarm before anything else; a gone process has nothing left to disarm.
+        let mut cleared = false;
         for _ in 0..CLEAR_TRIES {
             match tracer.set_watch_slot(slot, None) {
-                Ok(()) => break,
-                Err(e) if e.code == -32002 => break, // ProcessNotFound
-                Err(_) => {}
+                Ok(()) => cleared = true,
+                Err(e) if e.code == -32002 => cleared = true, // ProcessNotFound
+                Err(_) => continue,
             }
+            break;
         }
-        release_slot(t.pid, slot);
-        w.state.lock().unwrap().reason = Some(reason);
+        // A slot that may still be armed stays claimed, so no other watch is handed it (its
+        // hits are still swallowed by the tracer, and its detach clears the registers).
+        fin.release_slot = cleared;
+        w.lock().reason = Some(reason);
         drop(traps);
-        // The last holder detaches here, outside every lock; detaching also clears every
-        // debug register, should the clear above have failed.
+        // The last holder detaches here, outside every lock.
         drop(tracer);
         if reason != Reason::Stopped {
             conn.send_notification("watch_ended", json!({ "id": w.id, "reason": reason.as_str() }));
         }
-        w.state.lock().unwrap().finished = true;
-        w.cv.notify_all();
+        drop(fin);
     }
 
     /// Collect hits until the watch has to end; returns why.
@@ -321,7 +333,7 @@ impl Collector {
         let mut sym: Option<Symbolizer> = None;
         let mut total = 0u64;
         loop {
-            if let Some(r) = self.w.state.lock().unwrap().request {
+            if let Some(r) = self.w.lock().request {
                 return r;
             }
             let now = Instant::now();
@@ -341,10 +353,10 @@ impl Collector {
             }
             let rip = trap.regs.rip;
             match sites.get(&rip) {
-                Some(&i) => self.w.state.lock().unwrap().hits[i].count += 1,
+                Some(&i) => self.w.lock().hits[i].count += 1,
                 None => {
                     let hit = self.describe(rip, trap.regs, &mut sym);
-                    let mut s = self.w.state.lock().unwrap();
+                    let mut s = self.w.lock();
                     sites.insert(rip, s.hits.len());
                     s.hits.push(hit);
                 }
@@ -358,19 +370,42 @@ impl Collector {
 
     /// A new hit for the instruction that ends at `rip`.
     fn describe(&self, rip: u64, regs: libc::user_regs_struct, sym: &mut Option<Symbolizer>) -> Hit {
-        let start = disasm::instruction_before(&self.t, rip);
-        let address = start.unwrap_or(rip);
-        let text = start
-            .and_then(|s| disasm::read_code(&self.t, s, (rip - s) as usize).ok())
-            .and_then(|b| disasm::decode(&b, address, 1).into_iter().next())
+        let address = disasm::instruction_before(&self.t, rip);
+        let text = address
+            .and_then(|s| disasm::read_code(&self.t, s, (rip - s) as usize).ok().map(|b| (s, b)))
+            .and_then(|(s, b)| disasm::decode(&b, s, 1).into_iter().next())
             .map_or_else(|| "??".to_string(), |i| i.text);
-        let mut name = sym.as_ref().and_then(|s| s.name(address));
+        // Without a start, the module is named after `next` (the same code region).
+        let at = address.unwrap_or(rip);
+        let mut name = sym.as_ref().and_then(|s| s.name(at));
         if name.is_none() {
             // First hit, or a module loaded since: refresh the module list.
             *sym = modules::list(&self.t).ok().map(|m| Symbolizer::new(&m));
-            name = sym.as_ref().and_then(|s| s.name(address));
+            name = sym.as_ref().and_then(|s| s.name(at));
         }
         Hit { address, next: rip, module: name, text, count: 1, regs }
+    }
+}
+
+/// Marks a collector's watch finished, and releases its slot unless told not to, when the
+/// collector ends, normally or by panicking.
+struct Finish {
+    w: Arc<Watch>,
+    pid: i32,
+    slot: usize,
+    release_slot: bool,
+}
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        if self.release_slot {
+            release_slot(self.pid, self.slot);
+        }
+        let mut s = self.w.lock();
+        s.reason.get_or_insert(Reason::Stopped);
+        s.finished = true;
+        drop(s);
+        self.w.cv.notify_all();
     }
 }
 
@@ -400,7 +435,7 @@ mod tests {
         let mut regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
         regs.rip = 0x401136;
         regs.r15 = 0xabc;
-        let h = Hit { address: 0x401130, next: 0x401136, module: Some("target+0x1130".into()), text: "mov [404108],eax".into(), count: 3, regs };
+        let h = Hit { address: Some(0x401130), next: 0x401136, module: Some("target+0x1130".into()), text: "mov [404108],eax".into(), count: 3, regs };
         let v = h.to_json();
         assert_eq!(v["address"], "0x401130");
         assert_eq!(v["next"], "0x401136");
@@ -408,5 +443,9 @@ mod tests {
         assert_eq!(v["registers"]["rip"], "0x401136");
         assert_eq!(v["registers"]["r15"], "0xabc");
         assert_eq!(v["registers"].as_object().unwrap().len(), 18);
+        // No instruction found ending at `next`: no address, `next` still reported.
+        let v = Hit { address: None, text: "??".into(), ..h }.to_json();
+        assert_eq!(v["address"], Value::Null);
+        assert_eq!(v["next"], "0x401136");
     }
 }

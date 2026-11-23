@@ -303,6 +303,9 @@ struct Thread {
     step_trap_pending: bool,
     /// Released at detach so a watch hit's queued SIGTRAP is reported (and swallowed) first.
     watch_trap_pending: bool,
+    /// Slots (bit n = DRn) whose queued hit predates the slot's last clear or re-arm: that hit
+    /// belongs to the previous watch on the slot, so it is swallowed but never reported.
+    stale: u64,
     /// Watch slots have not been applied yet (a new thread before its first stop).
     fresh: bool,
 }
@@ -318,6 +321,7 @@ impl Thread {
             restore: None,
             step_trap_pending: false,
             watch_trap_pending: false,
+            stale: 0,
             fresh,
         }
     }
@@ -521,6 +525,17 @@ enum Step {
     Abandoned(RpcError),
 }
 
+/// `si_code` of a SIGTRAP raised by a hardware breakpoint (no single-step involved).
+const TRAP_HWBKPT: i32 = 4;
+/// DR6 BS: the trap (also) came from a single-step.
+const DR6_BS: u64 = 1 << 14;
+
+/// The DR6 hit bits of a trap that belong to the slots' current watches: active slots, minus
+/// hits that were already queued when their slot was last cleared or re-armed.
+fn reportable(dr6: u64, active: u64, stale: u64) -> u64 {
+    dr6 & active & !stale & 0xf
+}
+
 /// Stay attached at most this long at detach waiting for threads that must be cleaned up
 /// (debug registers armed, or registers still to restore) before the kernel lets them go.
 const DETACH_PATIENCE: Duration = Duration::from_secs(30);
@@ -656,8 +671,10 @@ impl Core {
         self.armed != 0 && peek_debugreg(tid, 6).is_ok_and(|dr6| dr6 & self.armed != 0)
     }
 
-    /// If DR6 names a slot we armed, the SIGTRAP is ours: clear DR6, and report the hit if its
-    /// slot is still active (a hit of a slot cleared meanwhile is only swallowed).
+    /// If this SIGTRAP is a hit on a slot we armed (DR6 names it, `si_code == TRAP_HWBKPT`), it
+    /// is ours: clear DR6, report the hit if its slot is active and the hit is not stale, and
+    /// return true so it is swallowed. A trap that also carries a single-step (`TRAP_TRACE`, DR6
+    /// BS) is the game's own step: our hit is still reported, but the trap goes to the game.
     fn take_watch_trap(&mut self, tid: i32) -> bool {
         if self.armed == 0 {
             return false;
@@ -666,15 +683,19 @@ impl Core {
         if dr6 & self.armed == 0 {
             return false;
         }
-        let _ = poke_debugreg(tid, 6, 0);
+        let si_code = get_siginfo(tid).map(|si| si.si_code);
+        let ours = si_code == Some(TRAP_HWBKPT) && dr6 & DR6_BS == 0;
+        // Our bits are consumed either way; the game's own DR6 bits (BS) are left alone.
+        let _ = poke_debugreg(tid, 6, dr6 & !self.armed);
         let active: u64 = (0..4).filter(|&i| self.slots[i].is_some()).map(|i| 1u64 << i).sum();
-        if dr6 & active != 0 {
+        let stale = self.threads.get_mut(&tid).map_or(0, |t| std::mem::take(&mut t.stale));
+        if reportable(dr6, active, stale) != 0 {
             if let Ok(regs) = get_regs(tid) {
                 let trap = Trap { tid, regs, dr6 };
                 self.shared.subscribers.lock().unwrap().retain(|s| s.send(trap).is_ok());
             }
         }
-        true
+        ours
     }
 
     /// Let a stopped thread go: resume it (`PTRACE_CONT`, or `PTRACE_LISTEN` for a group-stop),
@@ -812,6 +833,9 @@ impl Core {
     /// that won't stop is released by the kernel when this thread exits.
     fn detach_all(&mut self) {
         let deadline = Instant::now() + DETACH_PATIENCE;
+        // Threads already given one grace period for a queued watch trap: if DR6 still names a
+        // slot afterwards it is stale (no trap is coming), so they are detached regardless.
+        let mut waited = std::collections::HashSet::new();
         loop {
             let _ = self.stop_all(false);
             let stopped: Vec<i32> = self.threads.iter().filter(|(_, t)| t.state.stopped()).map(|(&t, _)| t).collect();
@@ -827,9 +851,11 @@ impl Core {
                         let _ = poke_debugreg(tid, i, 0);
                     }
                 }
-                if self.watch_trap_queued(tid) {
+                // A group-stopped thread would not run to report it: detach it as it is.
+                if self.threads[&tid].state != State::Group && !waited.contains(&tid) && self.watch_trap_queued(tid) {
                     // A watch hit's SIGTRAP is still queued; detached, the game would get it.
                     // Disarmed now, so it is the last one: let it arrive and be swallowed.
+                    waited.insert(tid);
                     self.release(tid, false);
                     if let Some(th) = self.threads.get_mut(&tid) {
                         th.watch_trap_pending = true;
@@ -920,6 +946,13 @@ impl Stopped<'_> {
         }
         let dr7: u64 = self.core.slots.iter().enumerate().filter_map(|(i, c)| c.map(|c| c.dr7_bits(i))).fold(0, |a, b| a | b);
         for &tid in &self.tids.clone() {
+            // A hit on this slot already queued (an interrupt is reported before a pending
+            // signal) belongs to the slot's previous watch, not to the one set now.
+            if peek_debugreg(tid, 6).is_ok_and(|dr6| dr6 & (1 << slot) != 0) {
+                if let Some(th) = self.core.threads.get_mut(&tid) {
+                    th.stale |= 1 << slot;
+                }
+            }
             // The address before enabling it, and disabling before clearing the address: the
             // kernel validates each DR7 write against the address registers.
             let r = match cfg {
@@ -1186,6 +1219,48 @@ pub(crate) mod tests {
             assert!(!thread_finished(pid, pid), "the game died after detach");
             assert!(u64::from_le_bytes(read_mem(pid, calls)) > before, "the spin thread stopped");
         }
+    }
+
+    #[test]
+    fn reportable_masks_inactive_and_stale_slots() {
+        // Hits on slots 0 and 2; slot 2 is no longer active.
+        assert_eq!(reportable(0b0101, 0b0011, 0), 0b0001);
+        // Slot 0's hit was queued before it was re-armed: it belongs to the previous watch.
+        assert_eq!(reportable(0b0101, 0b0101, 0b0001), 0b0100);
+        // BS and other DR6 bits never count as slot hits.
+        assert_eq!(reportable(DR6_BS | 0b1000, 0b1111, 0), 0b1000);
+        assert_eq!(reportable(0xffff_0ff0, 0b1111, 0), 0);
+    }
+
+    /// A hit queued when its slot is re-armed for another address (an interrupt is reported
+    /// before a pending signal) belongs to the old watch: the new one must never see it.
+    #[test]
+    fn a_reused_slot_never_reports_the_previous_watchs_queued_hit() {
+        let t = TestTarget::spawn(&["--spin"]);
+        let pid = t.pid();
+        let calls = DrConfig { addr: t.addrs["g_spin_calls"], len: 8, rw: DrRw::Write };
+        // Nothing writes g_health: any trap on its slot is a stale one.
+        let quiet = DrConfig { addr: t.addrs["g_health"], len: 4, rw: DrRw::Write };
+        let tr = for_pid(pid).unwrap();
+        let traps = tr.subscribe_traps();
+        for round in 0..40 {
+            tr.set_watch_slot(0, Some(calls)).unwrap();
+            traps.recv_timeout(Duration::from_secs(1)).expect("no trap within 1 s");
+            if round % 2 == 0 {
+                tr.set_watch_slot(0, None).unwrap(); // clear, then re-arm
+            }
+            tr.set_watch_slot(0, Some(quiet)).unwrap();
+            // Everything sent before the re-arm returned is already in the channel.
+            while traps.try_recv().is_ok() {}
+            std::thread::sleep(Duration::from_millis(5));
+            if let Ok(trap) = traps.try_recv() {
+                panic!("round {round}: the re-armed slot reported a stale hit at rip {:#x}", trap.regs.rip);
+            }
+        }
+        tr.set_watch_slot(0, None).unwrap();
+        drop(tr);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!thread_finished(pid, pid), "the game died");
     }
 
     /// A remote syscall on a thread whose watch hit is still queued: the hit's SIGTRAP is
