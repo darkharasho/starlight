@@ -25,13 +25,16 @@ const OK: VerifyResult = { status: 'ok', reasons: [] };
 let dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.map((d) => rm(d, { recursive: true, force: true }))); dirs = []; });
 
-async function setup(o: { verify?: VerifyResult; catalog?: unknown } = {}) {
+async function setup(o: { verify?: VerifyResult; catalog?: unknown; engine?: Record<string, unknown> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'tl-'));
   dirs.push(dir);
   const verify = vi.fn(async () => o.verify ?? OK);
   const onSaved = vi.fn();
   const catalogTrainerFor = vi.fn(async () => (o.catalog ?? null) as never);
-  const defs = libraryTools({ dir, verify: verify as never, onSaved, catalogTrainerFor, now: () => new Date('2026-11-23T12:00:00.000Z') });
+  const defs = libraryTools({
+    dir, verify: verify as never, onSaved, catalogTrainerFor, now: () => new Date('2026-11-23T12:00:00.000Z'),
+    ...(o.engine ? { engine: o.engine as never } : {}),
+  });
   const ac = new AbortController();
   const attached = { gen: 1, session: { id: 'x' } as unknown as Session, signal: ac.signal, game: GAME, client: CLIENT, describe: async () => null, track: {} } as unknown as AttachedContext;
   const ctx: ToolContext = { mcpSessionId: 's1', client: CLIENT, attached };
@@ -112,6 +115,77 @@ describe('save_cheat', () => {
     const client = await connectTools(s.defs, { access: { require: async () => s.ctx.attached }, activity: { start: () => 1, finish: () => undefined } });
     const bad = await client.callTool({ name: 'save_cheat', arguments: { cheat: DRAFT, category: 'x'.repeat(41) } });
     expect(bad.isError).toBe(true);
+  });
+});
+
+const PATCH = {
+  name: 'No damage', type: 'patch',
+  site: { kind: 'aob', module: 'target', pattern: '29 87 B0 01 00 00 8B 47' },
+  enable: [{ op: 'writeBytes', at: 'site', bytes: '909090909090' }, { op: 'writeBytes', at: 'site+0x6', bytes: '9090' }],
+};
+
+describe('save_cheat: patch cheats always get the full check (D9, I4)', () => {
+  const live = (bytes: Record<string, string>) => ({
+    resolveCheatAddress: vi.fn(async () => '0x401000'),
+    readMany: vi.fn(async (_s: unknown, items: Array<{ address: string; length: number }>) =>
+      items.map((i) => (bytes[i.address] !== undefined ? Buffer.from(bytes[i.address]!, 'hex') : null))),
+  });
+
+  it('stores a verify block for a patch cheat that had none, and verifies with it', async () => {
+    const s = await setup({ engine: live({ '0x401000': '2987b0010000', '0x401006': '8b47' }) });
+    await s.tool('save_cheat').run({ cheat: PATCH }, s.ctx);
+    expect(s.verify).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ verify: {} }));
+    const c = (await loadUserTrainer(s.dir, '9kings'))!.categories[0]!.cheats[0] as { verify?: unknown };
+    expect(c.verify).toEqual({});
+  });
+
+  it('fills in writeBytes original from the running game', async () => {
+    const eng = live({ '0x401000': '2987B0010000', '0x401006': '8b47' });
+    const s = await setup({ engine: eng });
+    await s.tool('save_cheat').run({ cheat: PATCH }, s.ctx);
+    const c = (await loadUserTrainer(s.dir, '9kings'))!.categories[0]!.cheats[0] as { enable: Array<{ original?: string }> };
+    expect(c.enable.map((e) => e.original)).toEqual(['2987b0010000', '8b47']);
+    expect(eng.readMany).toHaveBeenCalledWith(expect.anything(), [{ address: '0x401000', length: 6 }]);
+    expect(eng.readMany).toHaveBeenCalledWith(expect.anything(), [{ address: '0x401006', length: 2 }]);
+  });
+
+  it('keeps an original the agent gave and skips steps that are not at the site', async () => {
+    const eng = live({ '0x401000': '2987b0010000' });
+    const s = await setup({ engine: eng });
+    const cheat = { ...PATCH, enable: [
+      { op: 'alloc', name: 'cave', size: 64 },
+      { op: 'writeBytes', at: 'cave', bytes: 'c3' },
+      { op: 'writeBytes', at: 'site', bytes: '909090909090', original: 'aabbccddeeff' },
+    ] };
+    await s.tool('save_cheat').run({ cheat }, s.ctx);
+    const c = (await loadUserTrainer(s.dir, '9kings'))!.categories[0]!.cheats[0] as { enable: Array<{ original?: string }> };
+    expect(c.enable.map((e) => e.original)).toEqual([undefined, undefined, 'aabbccddeeff']);
+    expect(eng.readMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the code already holds the patch bytes (a test patch is still on)', async () => {
+    const s = await setup({ engine: live({ '0x401000': '909090909090', '0x401006': '8b47' }) });
+    await expect(s.tool('save_cheat').run({ cheat: PATCH }, s.ctx)).rejects.toThrow(/already holds this patch.*test_cheat/);
+    expect(await loadUserTrainer(s.dir, '9kings')).toBeNull();
+  });
+
+  it('a saved patch whose AOB now matches twice shows needs-update', async () => {
+    const { verifyCheat } = await import('@starlight/engine');
+    const s = await setup({ engine: live({ '0x401000': '2987b0010000', '0x401006': '8b47' }) });
+    await s.tool('save_cheat').run({ cheat: PATCH }, s.ctx);
+    const saved = (await loadUserTrainer(s.dir, '9kings'))!.categories[0]!.cheats[0]!;
+    // After a game update the pattern is in two places.
+    const session = { handle: 1, client: { call: async (m: string) => (m === 'aob_scan' ? { matches: ['0x401000', '0x509000'] } : { values: [] }) } } as unknown as Session;
+    const r = await verifyCheat(session, saved);
+    expect(r.status).toBe('needs-update');
+    expect(r.reasons[0]).toMatch(/matches 2 places in target/);
+  });
+
+  it('a library cheat without verify (v1 or older) is never needs-update', async () => {
+    const { verifyCheat } = await import('@starlight/engine');
+    const session = { handle: 1, client: { call: async () => ({ matches: [] }) } } as unknown as Session;
+    const old = { id: 'old', ...PATCH } as never;
+    expect(await verifyCheat(session, old)).toEqual({ status: 'unverified', reasons: [] });
   });
 });
 
