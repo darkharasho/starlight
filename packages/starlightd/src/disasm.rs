@@ -10,7 +10,6 @@ use iced_x86::{Decoder, DecoderError, DecoderOptions, FlowControl, Formatter, In
 pub const MAX_INSN_LEN: usize = 15;
 const PAGE: u64 = 4096;
 /// How far back `instruction_before` looks for a decode anchor.
-#[allow(dead_code)]
 const BACK_WINDOW: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,7 +120,6 @@ pub fn decode(bytes: &[u8], ip: u64, count: usize) -> Vec<Insn> {
 /// (`buf` ends at `rip`). Forward-decodes from anchors in `buf`, earliest first, and takes the
 /// last instruction of the first chain that lands exactly on `rip`; otherwise falls back to the
 /// latest single instruction in `rip-15..rip-1` that ends at `rip`.
-#[allow(dead_code)] // used by the watchpoint task
 pub fn instruction_before_bytes(buf: &[u8], rip: u64) -> Option<u64> {
     let base = rip.checked_sub(buf.len() as u64)?;
     let len = buf.len();
@@ -157,7 +155,6 @@ pub fn instruction_before_bytes(buf: &[u8], rip: u64) -> Option<u64> {
 }
 
 /// Read the bytes preceding `rip` (shrinking to what's readable) and find the instruction ending at it.
-#[allow(dead_code)] // used by the watchpoint task
 pub fn instruction_before(t: &Target, rip: u64) -> Option<u64> {
     let want = BACK_WINDOW as u64 + MAX_INSN_LEN as u64;
     let want = want.min(rip);
@@ -166,7 +163,6 @@ pub fn instruction_before(t: &Target, rip: u64) -> Option<u64> {
 }
 
 /// Last `want` bytes before `end`, shrunk to the start of `end`'s page if that's all that's readable.
-#[allow(dead_code)] // used by the watchpoint task
 fn read_tail(t: &Target, end: u64, want: u64) -> Result<Vec<u8>, RpcError> {
     match mem::read_bytes(t, end - want, want as usize) {
         Ok(b) => Ok(b),

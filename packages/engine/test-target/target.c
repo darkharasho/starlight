@@ -105,7 +105,13 @@ int main(int argc, char** argv) {
             if (pthread_create(&th, NULL, spin_loop, NULL) != 0) { perror("--spin"); return 1; }
         }
     }
+    /* --late-writer <ms>: start the writer thread only <ms> after the listing below is printed,
+     * so tests can watch g_counter before the thread that writes it exists. */
+    long late_writer_ms = -1;
     for (int i = 1; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--late-writer") == 0) {
+            late_writer_ms = atol(argv[i + 1]);
+        }
         if (strcmp(argv[i], "--map") == 0) {
             int fd = open(argv[i + 1], O_RDONLY);
             struct stat st;
@@ -139,6 +145,12 @@ int main(int argc, char** argv) {
     printf("offset stats_in_player=%zu\n", offsetof(Player, stats));
     printf("offset hp_in_stats=%zu\n",     offsetof(Stats, hp));
     fflush(stdout);
+
+    if (late_writer_ms >= 0) {
+        usleep((useconds_t)late_writer_ms * 1000);
+        pthread_t th;
+        if (pthread_create(&th, NULL, writer_loop, NULL) != 0) { perror("--late-writer"); return 1; }
+    }
 
     /* Idle loop. Tests will read/write our memory, then SIGTERM us. */
     while (1) {

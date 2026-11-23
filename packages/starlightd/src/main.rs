@@ -18,6 +18,7 @@ mod signature;
 mod scan;
 mod symbols;
 mod tracer;
+mod watch;
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;

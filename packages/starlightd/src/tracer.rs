@@ -26,7 +26,6 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(1);
 
 /// Hardware watchpoint condition (DR7 R/W bits).
-#[allow(dead_code)] // used by watchpoints (Task 9)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrRw {
     Write,
@@ -34,7 +33,6 @@ pub enum DrRw {
 }
 
 /// One debug-register slot: break when `len` bytes at `addr` are written or accessed.
-#[allow(dead_code)] // used by watchpoints (Task 9)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrConfig {
     pub addr: u64,
@@ -61,9 +59,9 @@ impl DrConfig {
 }
 
 /// A hit on one of our watch slots: the thread, its registers after the access, and DR6.
-#[allow(dead_code)] // used by watchpoints (Task 9)
 #[derive(Clone, Copy)]
 pub struct Trap {
+    #[allow(dead_code)] // diagnostics
     pub tid: i32,
     pub regs: libc::user_regs_struct,
     pub dr6: u64,
@@ -200,7 +198,6 @@ impl Tracer {
 
     /// Set (or clear, with `None`) debug-register slot `slot` (0–3) on every thread, and on every
     /// thread created later before it first runs.
-    #[allow(dead_code)] // used by watchpoints (Task 9)
     pub fn set_watch_slot(&self, slot: usize, cfg: Option<DrConfig>) -> Result<(), RpcError> {
         if slot > 3 {
             return Err(RpcError::invalid_params("debug register slot must be 0..=3"));
@@ -209,7 +206,6 @@ impl Tracer {
     }
 
     /// Hits on our watch slots, from now on.
-    #[allow(dead_code)] // used by watchpoints (Task 9)
     pub fn subscribe_traps(&self) -> Receiver<Trap> {
         let (tx, rx) = mpsc::channel();
         self.shared.subscribers.lock().unwrap().push(tx);
@@ -305,6 +301,8 @@ struct Thread {
     /// Our syscall finished but its single-step SIGTRAP is still queued (another stop was
     /// reported first): swallow it when it comes, never deliver or detach with it pending.
     step_trap_pending: bool,
+    /// Released at detach so a watch hit's queued SIGTRAP is reported (and swallowed) first.
+    watch_trap_pending: bool,
     /// Watch slots have not been applied yet (a new thread before its first stop).
     fresh: bool,
 }
@@ -319,6 +317,7 @@ impl Thread {
             regroup: false,
             restore: None,
             step_trap_pending: false,
+            watch_trap_pending: false,
             fresh,
         }
     }
@@ -330,6 +329,10 @@ struct Core {
     slots: [Option<DrConfig>; 4],
     /// Some debug register was written, so detach must clear them.
     dr_used: bool,
+    /// Slots (bit n = DRn) ever armed by this tracer. A hit's SIGTRAP can still be queued when
+    /// its slot is cleared; DR6 naming any of these marks it as ours, so it is swallowed rather
+    /// than delivered (which would kill the game).
+    armed: u64,
     /// How long a remote syscall's single-step may take (tests shorten it).
     step_timeout: Duration,
     shared: Arc<Shared>,
@@ -484,7 +487,7 @@ fn tracer_main(pid: i32, rx: Receiver<Cmd>, ready: Sender<Result<(), RpcError>>,
         }
     };
     let _ = ready.send(Ok(()));
-    let mut core = Core { pid, threads, slots: [None; 4], dr_used: false, step_timeout: STOP_TIMEOUT, shared };
+    let mut core = Core { pid, threads, slots: [None; 4], dr_used: false, armed: 0, step_timeout: STOP_TIMEOUT, shared };
     loop {
         core.pump();
         if core.threads.is_empty() {
@@ -590,6 +593,7 @@ impl Core {
         let th = self.threads.get_mut(&tid).unwrap();
         th.state = state;
         th.info = info;
+        th.watch_trap_pending = false;
         th.in_signal_stop = event == 0;
         if th.fresh {
             th.fresh = false;
@@ -605,13 +609,18 @@ impl Core {
         let (sig, event) = (libc::WSTOPSIG(status), status >> 16);
         let done = get_regs(tid).ok().filter(|r| r.rip == site + 2).map(|r| r.rax);
         let info = if event == 0 { get_siginfo(tid) } else { None };
+        let step_trap = event == 0 && sig == libc::SIGTRAP && done.is_some();
         let Some(th) = self.threads.get_mut(&tid) else { return StepStop::Again };
         th.in_signal_stop = event == 0;
-        let step_trap = event == 0 && sig == libc::SIGTRAP && done.is_some();
         if event == 0 && sig == libc::SIGTRAP && !step_trap && std::mem::take(&mut th.step_trap_pending) {
             // The late trap of an earlier remote syscall on this thread: swallow it.
             return StepStop::Again;
         }
+        if event == 0 && sig == libc::SIGTRAP && !step_trap && self.take_watch_trap(tid) {
+            // A watch hit queued before the step: ours, not the game's.
+            return StepStop::Again;
+        }
+        let th = self.threads.get_mut(&tid).unwrap();
         if !step_trap {
             if event == 0 {
                 // A signal of the game (a real SIGTRAP included).
@@ -640,20 +649,30 @@ impl Core {
         }
     }
 
-    /// If DR6 names one of our active slots, report the hit and clear DR6.
+    /// True if `tid`'s DR6 names a slot we armed: one of our hits whose SIGTRAP has not been
+    /// taken yet (`take_watch_trap` clears DR6). The kernel resets DR6 only at the thread's next
+    /// debug exception, which can't come before that SIGTRAP is reported.
+    fn watch_trap_queued(&self, tid: i32) -> bool {
+        self.armed != 0 && peek_debugreg(tid, 6).is_ok_and(|dr6| dr6 & self.armed != 0)
+    }
+
+    /// If DR6 names a slot we armed, the SIGTRAP is ours: clear DR6, and report the hit if its
+    /// slot is still active (a hit of a slot cleared meanwhile is only swallowed).
     fn take_watch_trap(&mut self, tid: i32) -> bool {
-        let active: u64 = (0..4).filter(|&i| self.slots[i].is_some()).map(|i| 1u64 << i).sum();
-        if active == 0 {
+        if self.armed == 0 {
             return false;
         }
         let Ok(dr6) = peek_debugreg(tid, 6) else { return false };
-        if dr6 & active == 0 {
+        if dr6 & self.armed == 0 {
             return false;
         }
         let _ = poke_debugreg(tid, 6, 0);
-        if let Ok(regs) = get_regs(tid) {
-            let trap = Trap { tid, regs, dr6 };
-            self.shared.subscribers.lock().unwrap().retain(|s| s.send(trap).is_ok());
+        let active: u64 = (0..4).filter(|&i| self.slots[i].is_some()).map(|i| 1u64 << i).sum();
+        if dr6 & active != 0 {
+            if let Ok(regs) = get_regs(tid) {
+                let trap = Trap { tid, regs, dr6 };
+                self.shared.subscribers.lock().unwrap().retain(|s| s.send(trap).is_ok());
+            }
         }
         true
     }
@@ -808,14 +827,26 @@ impl Core {
                         let _ = poke_debugreg(tid, i, 0);
                     }
                 }
+                if self.watch_trap_queued(tid) {
+                    // A watch hit's SIGTRAP is still queued; detached, the game would get it.
+                    // Disarmed now, so it is the last one: let it arrive and be swallowed.
+                    self.release(tid, false);
+                    if let Some(th) = self.threads.get_mut(&tid) {
+                        th.watch_trap_pending = true;
+                    }
+                    continue;
+                }
                 self.release(tid, true);
                 self.threads.remove(&tid);
             }
-            // Give threads waiting for their late step trap a moment without interrupts (an
-            // interrupt would again be reported before the trap).
+            // Give threads waiting for a late trap a moment without interrupts (an interrupt
+            // would again be reported before the trap).
             let grace = Instant::now() + Duration::from_millis(200);
             while Instant::now() < grace
-                && self.threads.values().any(|t| t.step_trap_pending && t.state == State::Running)
+                && self
+                    .threads
+                    .values()
+                    .any(|t| (t.step_trap_pending || t.watch_trap_pending) && t.state == State::Running)
             {
                 match self.wait_any() {
                     Some((tid, status)) => self.on_event(tid, status),
@@ -871,7 +902,7 @@ impl Stopped<'_> {
     }
 
     /// Write debug register `idx` (0–3 addresses, 6 status, 7 control) of `tid`.
-    #[allow(dead_code)] // used by watchpoints (Task 9)
+    #[allow(dead_code)] // watches use set_watch_slot; kept for raw debug-register access
     pub fn set_debugreg(&mut self, tid: i32, idx: usize, value: u64) -> Result<(), RpcError> {
         self.check(tid)?;
         if !matches!(idx, 0..=3 | 6 | 7) {
@@ -884,6 +915,9 @@ impl Stopped<'_> {
     fn apply_slot(&mut self, slot: usize, cfg: Option<DrConfig>) -> Result<(), RpcError> {
         self.core.slots[slot] = cfg;
         self.core.dr_used = true;
+        if cfg.is_some() {
+            self.core.armed |= 1 << slot;
+        }
         let dr7: u64 = self.core.slots.iter().enumerate().filter_map(|(i, c)| c.map(|c| c.dr7_bits(i))).fold(0, |a, b| a | b);
         for &tid in &self.tids.clone() {
             // The address before enabling it, and disabling before clearing the address: the
@@ -1121,6 +1155,66 @@ pub(crate) mod tests {
         drop(tr);
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "target died after detach (stray SIGTRAP?)");
+    }
+
+    /// A hit that is already pending (its SIGTRAP queued but not yet reported) when its slot is
+    /// cleared, or when the tracer detaches, must still be swallowed: delivered to the game,
+    /// SIGTRAP kills it. `--spin` stores to `g_spin_calls` in a tight loop, so a hit is nearly
+    /// always pending.
+    #[test]
+    fn clearing_or_detaching_amid_a_trap_storm_never_kills_the_game() {
+        for _ in 0..3 {
+            let t = TestTarget::spawn(&["--spin"]);
+            let pid = t.pid();
+            let calls = t.addrs["g_spin_calls"];
+            let cfg = DrConfig { addr: calls, len: 8, rw: DrRw::Write };
+            let tr = for_pid(pid).unwrap();
+            let traps = tr.subscribe_traps();
+            for _ in 0..20 {
+                tr.set_watch_slot(0, Some(cfg)).unwrap();
+                traps.recv_timeout(Duration::from_secs(1)).unwrap_or_else(|e| panic!("no trap within 1 s ({e:?}); game dead: {}", thread_finished(pid, pid)));
+                tr.set_watch_slot(0, None).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!thread_finished(pid, pid), "the game died after its slot was cleared");
+            tr.set_watch_slot(0, Some(cfg)).unwrap();
+            traps.recv_timeout(Duration::from_secs(1)).expect("no trap within 1 s");
+            drop(tr); // detach while hits keep coming
+            assert_eq!(tracer_pid_of(pid), 0);
+            let before = u64::from_le_bytes(read_mem(pid, calls));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!thread_finished(pid, pid), "the game died after detach");
+            assert!(u64::from_le_bytes(read_mem(pid, calls)) > before, "the spin thread stopped");
+        }
+    }
+
+    /// A remote syscall on a thread whose watch hit is still queued: the hit's SIGTRAP is
+    /// reported first, during the single-step, and must be swallowed there, not queued for the game.
+    #[test]
+    fn remote_syscall_on_a_thread_with_a_queued_hit_swallows_it() {
+        let t = TestTarget::spawn(&["--spin"]);
+        let pid = t.pid();
+        let calls = t.addrs["g_spin_calls"];
+        let tr = for_pid(pid).unwrap();
+        tr.set_syscall_site(find_site(pid));
+        let traps = tr.subscribe_traps();
+        tr.set_watch_slot(2, Some(DrConfig { addr: calls, len: 8, rw: DrRw::Write })).unwrap();
+        traps.recv_timeout(Duration::from_secs(1)).expect("no trap within 1 s");
+        for _ in 0..30 {
+            let r = tr
+                .with_stopped(move |s| {
+                    let spin = *s.tids().iter().find(|&&t| t != pid).unwrap();
+                    s.syscall_on(spin, libc::SYS_getpid, [0; 6])
+                })
+                .unwrap();
+            assert_eq!(r.unwrap(), pid as i64);
+        }
+        tr.set_watch_slot(2, None).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!thread_finished(pid, pid), "a queued watch SIGTRAP reached the game");
+        drop(tr);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!thread_finished(pid, pid), "the game died after detach");
     }
 
     fn find_site(pid: i32) -> u64 {

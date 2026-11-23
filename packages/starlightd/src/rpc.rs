@@ -2,6 +2,8 @@
 use crate::cleanup::{self, Owner};
 use crate::scan::{FirstReq, NextReq, Scans};
 use crate::patch::Patches;
+use crate::tracer::DrRw;
+use crate::watch::{self, Watches};
 use crate::{aob, asm, disasm, mem, modules, pointer, process::Handles, signature, symbols};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -10,7 +12,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -84,6 +86,7 @@ pub struct ConnState {
     pub owner: Arc<Owner>,
     pub scans: Scans,
     pub patches: Patches,
+    pub watches: Watches,
 }
 
 /// Methods that can take long; they run on their own thread and answer out of order,
@@ -121,6 +124,7 @@ impl Session {
             handles: Handles::new(conn.clone(), owner.clone()),
             scans: Scans::new(owner.clone()),
             patches: Patches::new(owner.clone()),
+            watches: Watches::new(owner.clone(), conn.clone()),
             owner,
         });
         Session { conn, state }
@@ -466,6 +470,35 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             state.patches.revert(id, force)?;
             Ok(json!({}))
         }
+        "watch_start" => {
+            let handle = param_handle(params)?;
+            let t = handles.get(handle)?;
+            let addr = param_addr(params, "address")?;
+            let size = param_u64(params, "size")?;
+            let rw = match param_str(params, "kind")? {
+                "write" => DrRw::Write,
+                "access" => DrRw::Access,
+                _ => return Err(RpcError::invalid_params("kind must be \"write\" or \"access\"")),
+            };
+            let duration_ms = match params.get("duration_ms") {
+                None | Some(Value::Null) => watch::DEFAULT_DURATION_MS,
+                Some(_) => param_u64(params, "duration_ms")?,
+            };
+            let max_hits = match params.get("max_hits") {
+                None | Some(Value::Null) => watch::DEFAULT_MAX_HITS,
+                Some(_) => param_u64(params, "max_hits")?,
+            };
+            let id = state.watches.start(handle, t, addr, size, rw, duration_ms, max_hits)?;
+            // As for patches: if detach ran the handle's teardown before this watch's was
+            // registered, end it here so it never outlives the handle.
+            if handles.get(handle).is_err() {
+                state.watches.cancel(id);
+                return Err(RpcError::unknown_handle(format!("unknown handle: {handle}")));
+            }
+            Ok(json!({ "id": id }))
+        }
+        "watch_poll" => state.watches.poll(param_id(params)?),
+        "watch_stop" => state.watches.stop(param_id(params)?),
         "freeze" => {
             let handle = param_handle(params)?;
             let addr = param_addr(params, "address")?;
@@ -525,6 +558,10 @@ const MAX_PATCH: usize = 4096;
 
 fn param_str<'a>(params: &'a Value, key: &str) -> Result<&'a str, RpcError> {
     params.get(key).and_then(Value::as_str).ok_or_else(|| RpcError::invalid_params(format!("{key} must be a string")))
+}
+
+fn param_id(params: &Value) -> Result<u32, RpcError> {
+    u32::try_from(param_u64(params, "id")?).map_err(|_| RpcError::invalid_params("id out of range"))
 }
 
 fn param_scan(params: &Value) -> Result<u32, RpcError> {
