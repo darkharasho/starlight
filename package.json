@@ -8,7 +8,9 @@
     "test": "pnpm -r test",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
-    "build:test-target": "make -C packages/engine/test-target"
+    "build:test-target": "make -C packages/engine/test-target",
+    "release": "node scripts/release.mjs",
+    "dist": "pnpm --filter @starlight/desktop dist"
   },
   "packageManager": "pnpm@9.12.0"
 }

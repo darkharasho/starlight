@@ -9,6 +9,14 @@ import { getConfig } from './user-config.js';
 import { getCachedIndex } from './catalog-host.js';
 import type { DetectedGame, CatalogIndex, ManualGame } from '../shared/ipc.js';
 
+/**
+ * Steam lists its own compatibility tools and runtimes as installed "apps".
+ * They aren't games, so they don't belong in the library.
+ */
+export function isSteamTool(name: string): boolean {
+  return /^(proton\b|steam linux runtime|steamworks common redistributables|steam controller configs)/i.test(name.trim());
+}
+
 const execFileAsync = promisify(execFile);
 
 export interface LibraryScanner {
@@ -100,6 +108,7 @@ export class SteamScanner implements LibraryScanner {
             const name = (state as Record<string, unknown>)['name'];
             const installdir = (state as Record<string, unknown>)['installdir'];
             if (typeof appId !== 'string' || typeof name !== 'string' || typeof installdir !== 'string') continue;
+            if (isSteamTool(name)) continue;
             games.push({
               source: 'steam',
               appId,

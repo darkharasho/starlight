@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HashRouter } from 'react-router-dom';
 import App from './App.js';
+import '@fontsource-variable/figtree';
 import './index.css';
 import { starlight } from './ipc-client.js';
 import { useTrainerStore } from './stores/trainer-store.js';

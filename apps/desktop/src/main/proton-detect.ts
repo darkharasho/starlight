@@ -17,6 +17,13 @@ export interface ProtonInfo {
   protonDir: string;
   /** Full path to the `proton` launcher script. */
   protonBin: string;
+  /**
+   * Every STEAM_COMPAT_* variable Steam gave the game. Proton builds the game's
+   * S: drive from STEAM_COMPAT_INSTALL_PATH / _LIBRARY_PATHS and deletes S: when
+   * they're missing — so CE must be launched with them, or the running game
+   * loses the drive it loads its assets from.
+   */
+  compatEnv: Record<string, string>;
 }
 
 export interface DetectProtonOpts {
@@ -73,11 +80,15 @@ export async function detectProton(opts: DetectProtonOpts): Promise<ProtonInfo |
   const protonDir = await resolveProtonDir(env, fileExists);
   if (!protonDir) return null;
 
+  const compatEnv: Record<string, string> = {};
+  for (const [k, v] of env) if (k.startsWith('STEAM_COMPAT_')) compatEnv[k] = v;
+
   return {
     compatDataPath,
     clientInstallPath,
     protonDir,
     protonBin: join(protonDir, 'proton'),
+    compatEnv,
   };
 }
 

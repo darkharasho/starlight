@@ -20,6 +20,8 @@ export interface CeProtonLaunch {
   compatDataPath: string;
   /** STEAM_COMPAT_CLIENT_INSTALL_PATH — the Steam client install dir. */
   clientInstallPath: string;
+  /** The game's STEAM_COMPAT_* variables (see ProtonInfo.compatEnv). */
+  compatEnv?: Record<string, string> | undefined;
 }
 
 export interface CeProcessOpts {
@@ -64,6 +66,7 @@ export async function spawnCeProcess(opts: CeProcessOpts): Promise<CeProcessHand
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
           ...process.env,
+          ...opts.proton.compatEnv,
           STEAM_COMPAT_DATA_PATH: opts.proton.compatDataPath,
           STEAM_COMPAT_CLIENT_INSTALL_PATH: opts.proton.clientInstallPath,
         },

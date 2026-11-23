@@ -14,20 +14,15 @@ export function TitleBar(): JSX.Element {
 
   return (
     <div
-      className="h-9 shrink-0 flex items-center bg-panel border-b border-line relative select-none"
+      className="h-9 shrink-0 flex items-center bg-shell relative select-none"
       style={DRAG}
     >
       {/* Centered title block */}
       <div className="absolute inset-0 flex items-center justify-center gap-2 pointer-events-none">
         <StarlightLogo
-          className="size-4 text-neon-cyan drop-shadow-[0_0_4px_rgba(0,255,200,0.6)]"
+          className="size-4 text-neon-cyan"
         />
-        <span
-          className="text-[11px] font-bold tracking-widest text-neon-cyan"
-          style={{ textShadow: '0 0 8px rgba(0,255,200,0.5)' }}
-        >
-          STARLIGHT
-        </span>
+        <span className="text-[13px] font-semibold text-ink">Starlight</span>
       </div>
 
       {/* Window controls — pinned right, no-drag so they're clickable */}

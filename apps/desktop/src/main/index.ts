@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
@@ -13,13 +13,30 @@ import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { detectCeRuntime } from './ce-runtime-detect.js';
 import { installCeRuntime, installWindowsCe } from './ce-runtime-install.js';
-import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, getActiveSession as ceGetActiveSession } from './ce-session.js';
+import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession } from './ce-session.js';
+import { cleanCeError } from './ce-session.js';
+import { launchGame } from './game-launcher.js';
+import { matchGameToProcess } from './game-matcher.js';
 import { killStaleCeProcesses } from './ce-process.js';
 import { buildCatalogIndex, type CatalogEntry } from './game-matcher.js';
 import { join } from 'node:path';
 
 let lastDetectedGames: import('../shared/ipc.js').DetectedGame[] = [];
 let catalogIndex = new Map<string, CatalogEntry>();
+
+function broadcast(e: import('../shared/ipc.js').StarlightEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send(CHANNELS.event, e);
+}
+
+/** Remembers the table that worked for a game so the next launch starts with it. */
+async function rememberTable(cacheKey: string, tableId: number | null): Promise<void> {
+  if (tableId === null || tableId === 0) return;
+  const cfg = await getConfig();
+  if (cfg.tableChoices[cacheKey] === tableId) return;
+  await updateConfig({ tableChoices: { [cacheKey]: tableId } });
+}
+
+let sessionCacheKey: string | null = null;
 
 const latchDetector = new LatchDetector({
   catalogIndex: () => catalogIndex,
@@ -298,11 +315,19 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: { source: string; cacheKey: string; pid?: number; processName?: string; game?: { id: string; name: string; steamAppId?: number | null } }) => {
+  ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: import('../shared/ipc.js').CeSessionStartRequest): Promise<import('../shared/ipc.js').CeSessionStartResult> => {
     try {
       const processes = await processHost.listOnce();
+      // An explicit table is the user's pick and is loaded as is. Otherwise
+      // start from the table that worked last time and let the session move on
+      // to the game's other tables if that one no longer matches.
+      const cfg = await getConfig();
+      const explicit = req.tableId !== undefined;
       const r = await ceStartSession({
         source: req.source,
+        sources: req.sources,
+        tableId: req.tableId ?? cfg.tableChoices[req.cacheKey],
+        autoPick: !explicit,
         cacheKey: req.cacheKey,
         runtimeRoot: CE_RUNTIME_ROOT,
         ctCacheDir: CT_CACHE_DIR,
@@ -311,11 +336,30 @@ app.whenReady().then(async () => {
         game: req.game,
         processes,
         detectedGames: lastDetectedGames,
+        onProgress: (message) => broadcast({ type: 'session:progress', message }),
+        onSteps: (tables) => broadcast({ type: 'session:tables', tables }),
+        onGameExit: (sessionId) => broadcast({ type: 'session:game-exited', sessionId }),
+        onEvent: (e) => {
+          if (e['type'] === 'hotkey' && typeof e['id'] === 'number') {
+            broadcast({
+              type: 'ce:hotkey', recordId: e['id'], ok: e['ok'] === true, active: e['active'] === true,
+              error: typeof e['error'] === 'string' ? cleanCeError(e['error']) : undefined,
+            });
+          }
+        },
       });
-      return { ok: true as const, sessionId: r.sessionId, records: r.records, proton: r.proton, attached: req.pid !== undefined || (r.needsPicker === false && !!req.game), needsPicker: r.needsPicker };
+      sessionCacheKey = req.cacheKey;
+      if (r.attached && (explicit || r.verdict === 'works')) void rememberTable(req.cacheKey, r.tableId).catch(() => {});
+      return {
+        ok: true as const, sessionId: r.sessionId, records: r.records, proton: r.proton,
+        attached: r.attached, needsPicker: r.needsPicker, running: r.running,
+        tables: r.tables, tableId: r.tableId, tableError: r.tableError, process: r.process,
+        hiddenIds: r.hiddenIds, prereqErrors: r.prereqErrors, verdict: r.verdict, attempts: r.attempts,
+      };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const reason = /not installed/i.test(msg) ? 'runtime-missing' as const :
+      const reason = /still connected/i.test(msg) ? 'busy' as const :
+                     /not installed/i.test(msg) ? 'runtime-missing' as const :
                      /not running/i.test(msg) ? 'not-running' as const :
                      /spawn|timed out/i.test(msg) ? 'spawn-failed' as const :
                      'unknown' as const;
@@ -326,6 +370,29 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.ceSessionEnd, async (_evt, req: { sessionId: string }) => ceEndSession(req));
   ipcMain.handle(CHANNELS.ceSessionSetActive, async (_evt, req: { sessionId: string; recordId: number; active: boolean }) =>
     ceSetActive(req));
+  ipcMain.handle(CHANNELS.ceSessionCall, async (_evt, req: { sessionId: string; method: string; params?: unknown }) =>
+    ceCallSession(req));
+  ipcMain.handle(CHANNELS.ceSessionRetry, async (_evt, req: { sessionId: string }) => {
+    const r = await ceRetryTables(req);
+    if (r.ok && r.verdict === 'works' && sessionCacheKey) void rememberTable(sessionCacheKey, r.tableId).catch(() => {});
+    return r;
+  });
+
+  ipcMain.handle(CHANNELS.launchGame, async (_evt, req: import('../shared/ipc.js').LaunchTarget) => {
+    // Only ever launch something the library scan itself found.
+    const game = lastDetectedGames.find((g) => g.source === req.source && g.appId === req.appId);
+    if (!game) return { ok: false as const, error: 'That game is no longer in your library.' };
+    return launchGame(game, {
+      openExternal: (url) => shell.openExternal(url),
+      manualExePath: async (appId) => (await getConfig()).manualGames.find((g) => g.id === appId)?.exePath ?? null,
+    });
+  });
+
+  ipcMain.handle(CHANNELS.findGameProcess, async (_evt, req: { game: { id: string; name: string; steamAppId?: number | null } }) => {
+    const processes = await processHost.listOnce();
+    const m = await matchGameToProcess(req.game, { processes, detectedGames: lastDetectedGames }).catch(() => null);
+    return m && m !== 'ambiguous' ? m : null;
+  });
 
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {

@@ -4,8 +4,9 @@ import { mkdir, rm, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer, type Server } from 'node:http';
+import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { startSession, setActive, endSession, getActiveSession, toWinePath } from '../../src/main/ce-session.js';
+import { startSession, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
 
 let dir: string;
 let installDir: string;
@@ -161,13 +162,379 @@ describe('ce-session', () => {
     })).rejects.toThrow(/timed out|ping/i);
   });
 
-  it('throws "game not running" when the matcher finds no process', async () => {
+  it('previews the table instead of failing when the game is not running', async () => {
     await writeFile(binary, '#!/bin/sh\nsleep 30\n'); await chmod(binary, 0o755);
+    const ct = '<CheatTable><CheatEntries>'
+      + '<CheatEntry><ID>1</ID><Description>"Enable"</Description><Options moHideChildren="1"/><VariableType>Auto Assembler Script</VariableType>'
+      + '<CheatEntries><CheatEntry><ID>2</ID><Description>"God Mode"</Description><VariableType>Auto Assembler Script</VariableType></CheatEntry></CheatEntries></CheatEntry>'
+      + '</CheatEntries></CheatTable>';
+    const srv = createServer((_req, res) => { res.writeHead(200); res.end(ct); });
+    const source = await new Promise<string>((resolve) => srv.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(srv.address() as { port: number }).port}/x.CT`)));
+    try {
+      const r = await startSession({
+        source, cacheKey: 'auto2', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+        game: { id: '9-kings', name: '9 Kings', steamAppId: null },
+        resolveMatch: async () => null,
+      });
+      expect(r).toMatchObject({ attached: false, running: false, verdict: 'unknown' });
+      expect(r.records.map((x) => x.name)).toEqual(['Enable', 'God Mode']);
+      // The list is shown as it will look once the prerequisite is on.
+      expect(r.hiddenIds).toEqual([1]);
+    } finally {
+      await new Promise<void>((res) => srv.close(() => res()));
+    }
+  });
+
+  // ── a scripted stand-in for Cheat Engine that speaks the real bridge protocol ──
+  // A table may carry its own behaviour in a `<!--FAKE {...}-->` comment:
+  //   records: what list_records returns;  enable: { "<id>": true | "error text" };
+  //   check: { "<id>": true | false | "unknown" }.
+  // An `enable` value of "flag" succeeds only once the file `<dir>/flag` exists.
+  async function installFakeCe(log: string, opts: { readyAfterMs?: number } = {}): Promise<void> {
+    const src = `#!/usr/bin/env node
+const fs = require('fs');
+const lua = fs.readFileSync('autorun/zzz-starlight.lua', 'utf8');
+const url = /local BRIDGE_URL = "([^"]+)"/.exec(lua)[1];
+const first = /local CT_PATH = (.*)/.exec(lua)[1];
+fs.appendFileSync(${JSON.stringify(log)}, 'ct=' + first + '\\n');
+let ready = false; setTimeout(() => { ready = true; }, ${opts.readyAfterMs ?? 0});
+let path = first === 'nil' ? null : JSON.parse(first);
+let on = new Set();
+const spec = () => {
+  if (!path) return null;
+  const m = /<!--FAKE (.*?)-->/s.exec(fs.readFileSync(path, 'utf8'));
+  return m ? JSON.parse(m[1]) : null;
+};
+const STALE = 'Lua error in the script at line 25:[string "local syntaxcheck,memrec=..."]:146: No hook installed.\\r\\n\\r\\naddrA: 0 matches';
+const reply = (cmd) => {
+  const sp = spec();
+  switch (cmd.method) {
+    case 'ping': return { ok: true, ready, attached: true };
+    case 'status': return { attached: true, pid: 460, ready };
+    // Like the real thing, an empty list comes back as {} (an empty Lua table).
+    case 'list_records':
+      if (!ready || !path) return { records: {} };
+      if (sp) return { records: sp.records.map((r) => ({ isGroupHeader: false, kind: 'script', depth: 0, ...r, isActive: on.has(r.id) })) };
+      return { records: [{ id: 7, name: 'God Mode', isActive: false, isGroupHeader: false, kind: 'script', depth: 0 }] };
+    case 'refresh': return { states: (sp ? sp.records : []).map((r) => ({ id: r.id, a: on.has(r.id) })) };
+    case 'set_active': {
+      let how = sp && sp.enable ? sp.enable[String(cmd.params.id)] : undefined;
+      if (how === 'flag') how = fs.existsSync(${JSON.stringify(join(dir, 'flag'))}) ? true : undefined;
+      if (how === true) { if (cmd.params.active) on.add(cmd.params.id); else on.delete(cmd.params.id); return { ok: true, active: cmd.params.active }; }
+      return { ok: false, active: false, error: typeof how === 'string' ? how : STALE };
+    }
+    case 'check_script': {
+      const how = sp && sp.check ? sp.check[String(cmd.params.id)] : 'unknown';
+      if (how === 'unknown' || how === undefined) return { unknown: true };
+      return how ? { ok: true, found: 1 } : { ok: false, found: 0, missing: 1, error: "signature 'x' is not in the game" };
+    }
+    case 'load_table': path = cmd.params.path; on = new Set(); return { ok: true };
+    case 'set_hotkeys': return { ok: true, count: cmd.params.bindings.length };
+    case 'set_speed': return { ok: true, speed: cmd.params.speed };
+    case 'shutdown': return { ok: true };
+    default: return { ok: false, error: 'unknown method' };
+  }
+};
+(async () => {
+  for (;;) {
+    try {
+      const r = await fetch(url + '/poll');
+      if (r.status === 200) {
+        const cmd = await r.json();
+        if (cmd.method !== 'ping') fs.appendFileSync(${JSON.stringify(log)}, cmd.method + (cmd.method === 'load_table' ? ' ' + cmd.params.path.split('/').pop() : '') + '\\n');
+        await fetch(url + '/result', { method: 'POST', body: JSON.stringify({ id: cmd.id, result: reply(cmd) }) });
+        if (cmd.method === 'set_hotkeys' && cmd.params.bindings.length > 0) {
+          // "press" the first hotkey
+          await fetch(url + '/event', { method: 'POST', body: JSON.stringify({ type: 'hotkey', id: cmd.params.bindings[0].id, ok: true, active: true }) });
+        }
+      }
+    } catch { /* bridge not up yet / closing */ }
+    await new Promise((r) => setTimeout(r, 15));
+  }
+})();
+`;
+    await writeFile(binary, src);
+    await chmod(binary, 0o755);
+  }
+
+  /** Serves fake tables (filename → behaviour) and returns a table list for them, newest first. */
+  async function serveTables(specs: Record<string, unknown>): Promise<{ tables: { id: number; filename: string; url: string; topicUrl: string }[]; close: () => Promise<void> }> {
+    const srv = createServer((req, res) => {
+      const spec = specs[(req.url ?? '').slice(1)];
+      res.writeHead(spec ? 200 : 404);
+      res.end(`<CheatTable><!--FAKE ${JSON.stringify(spec)}--></CheatTable>`);
+    });
+    const base = await new Promise<string>((resolve) => srv.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(srv.address() as { port: number }).port}`)));
+    const names = Object.keys(specs);
+    return {
+      tables: names.map((f, i) => ({ id: (names.length - i) * 10, filename: f, url: `${base}/${f}`, topicUrl: 't' })),
+      close: () => new Promise<void>((r) => srv.close(() => r())),
+    };
+  }
+  const MASTER = [
+    { id: 1, name: 'Enable', opts: '[moHideChildren]' },
+    { id: 2, name: 'God Mode', depth: 1 },
+    { id: 3, name: 'Infinite Ammo', depth: 1 },
+  ];
+
+  const native = { pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', isGameAlive: () => true };
+
+  it('attaches, waits for the table to finish loading, and lists records', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log, { readyAfterMs: 400 });
     const source = await startCtServer();
-    await expect(startSession({
-      source, cacheKey: 'auto2', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
-      game: { id: '9-kings', name: '9 Kings', steamAppId: null },
-      resolveMatch: async () => null,
-    })).rejects.toThrow(/not running/i);
+    const r = await startSession({ source, cacheKey: 'live1', runtimeRoot: dir, ctCacheDir, ...native });
+    // list_records before "ready" would have returned [] — we must have waited.
+    expect(r.records.map((x) => x.name)).toEqual(['God Mode']);
+    expect(r).toMatchObject({ attached: true, proton: false, tableId: 0, process: { pid: 4242, name: 'game' } });
+    expect(r.tables).toHaveLength(1);
+  });
+
+  it('returns the table\'s own error text, cleaned up, when a cheat fails to enable', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'live2', runtimeRoot: dir, ctCacheDir, ...native });
+    const out = await setActive({ sessionId: r.sessionId, recordId: 7, active: true });
+    expect(out).toEqual({ ok: false, error: 'No hook installed.\naddrA: 0 matches' });
+  });
+
+  it('runs allow-listed tool commands and rejects everything else', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'live3', runtimeRoot: dir, ctCacheDir, ...native });
+    expect(await callSession({ sessionId: r.sessionId, method: 'set_speed', params: { speed: 2 } })).toEqual({ ok: true, speed: 2 });
+    expect(await callSession({ sessionId: r.sessionId, method: 'shutdown' })).toMatchObject({ ok: false, error: expect.stringMatching(/unsupported/) });
+    expect(await callSession({ sessionId: 'nope', method: 'set_speed' })).toMatchObject({ ok: false, error: 'session not active' });
+  });
+
+  it('asks Cheat Engine to undo its cheats before the session ends', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log);
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'live4', runtimeRoot: dir, ctCacheDir, ...native });
+    await endSession({ sessionId: r.sessionId });
+    expect((await readFile(log, 'utf8')).trim().split('\n').pop()).toBe('shutdown');
+    expect(getActiveSession()).toBeNull();
+  });
+
+  it('starts a tools-only session (no table) for a running game', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log);
+    const r = await startSession({ sources: [], cacheKey: 'tools-x', runtimeRoot: dir, ctCacheDir, ...native });
+    expect(r).toMatchObject({ attached: true, tableId: null, tables: [] });
+    expect(r.records).toEqual([]);   // not the `{}` Cheat Engine actually sent
+    expect(await readFile(log, 'utf8')).toContain('ct=nil');
+  });
+
+  it('a tools-only session with no process yet asks for one instead of failing', async () => {
+    const r = await startSession({ sources: [], cacheKey: 'tools-y', runtimeRoot: dir, ctCacheDir });
+    expect(r).toMatchObject({ attached: false, needsPicker: true, records: [], tableId: null });
+  });
+
+  it('loads the requested table and caches each attachment separately', async () => {
+    const served: string[] = [];
+    const srv = createServer((req, res) => { served.push(req.url ?? ''); res.writeHead(200); res.end(`<CheatTable><CheatEntries><CheatEntry><ID>1</ID><Description>"from ${req.url}"</Description></CheatEntry></CheatEntries></CheatTable>`); });
+    const base = await new Promise<string>((resolve) => srv.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(srv.address() as { port: number }).port}`)));
+    const tables = [
+      { id: 30, filename: 'new.CT', url: `${base}/new.CT`, topicUrl: 't' },
+      { id: 10, filename: 'old.CT', url: `${base}/old.CT`, topicUrl: 't' },
+    ];
+    try {
+      const common = { sources: ['https://forum.example/viewtopic.php?t=1'], cacheKey: 'game', runtimeRoot: dir, ctCacheDir, listTablesFn: async () => tables };
+      const newest = await startSession(common);
+      expect(newest.tableId).toBe(30);
+      expect(newest.records[0]!.name).toBe('from /new.CT');
+      const picked = await startSession({ ...common, tableId: 10 });
+      expect(picked.tableId).toBe(10);
+      expect(picked.records[0]!.name).toBe('from /old.CT');
+      expect(picked.tables).toEqual(tables);
+      // Re-opening a table already fetched doesn't download it again.
+      await startSession(common);
+      expect(served).toEqual(['/new.CT', '/old.CT']);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
+  it('switches the table\'s prerequisite on by itself and reports it as hidden', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log);
+    const t = await serveTables({ 'game.CT': { records: MASTER, enable: { 1: true } } });
+    try {
+      const r = await startSession({ sources: ['https://f.example/viewtopic.php?t=1'], cacheKey: 'pre1', runtimeRoot: dir, ctCacheDir, listTablesFn: async () => t.tables, ...native });
+      expect(r).toMatchObject({ verdict: 'works', hiddenIds: [1], prereqErrors: {}, tableId: 10 });
+      expect(r.records.find((x) => x.id === 1)!.isActive).toBe(true);
+      expect(r.records.find((x) => x.id === 2)!.isActive).toBe(false);   // real cheats are left to the user
+      expect((await readFile(log, 'utf8')).split('\n').filter((l) => l === 'set_active')).toHaveLength(1);
+    } finally { await t.close(); }
+  });
+
+  it('moves on to an older table when the newest no longer matches the game', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log);
+    const t = await serveTables({
+      'new.CT': { records: MASTER, enable: {} },
+      'old.CT': { records: MASTER, enable: { 1: true } },
+    });
+    const progress: string[] = [];
+    const steps: string[] = [];
+    try {
+      const r = await startSession({
+        sources: ['https://f.example/viewtopic.php?t=1'], cacheKey: 'pick1', runtimeRoot: dir, ctCacheDir,
+        listTablesFn: async () => t.tables, onProgress: (m) => progress.push(m),
+        onSteps: (list) => steps.push(list.map((x) => `${x.filename}:${x.state}`).join(' ')), ...native,
+      });
+      expect(r.tableId).toBe(10);
+      expect(r.verdict).toBe('works');
+      expect(r.attempts).toEqual([
+        { id: 20, filename: 'new.CT', verdict: 'broken' },
+        { id: 10, filename: 'old.CT', verdict: 'works' },
+      ]);
+      expect(progress).toHaveLength(1);
+      // The connecting screen is told about every table as its turn comes and goes.
+      expect(steps).toEqual([
+        'new.CT:checking old.CT:waiting',
+        'new.CT:broken old.CT:waiting',
+        'new.CT:broken old.CT:checking',
+        'new.CT:broken old.CT:works',
+      ]);
+      // Swapped inside the running Cheat Engine — it was launched once.
+      const lines = (await readFile(log, 'utf8')).split('\n');
+      expect(lines.filter((l) => l.startsWith('ct=')).length).toBe(1);
+      expect(lines.filter((l) => l.startsWith('load_table'))).toEqual(['load_table pick1-a10.ct']);
+    } finally { await t.close(); }
+  });
+
+  it('prefers a table it could not judge over one known not to match', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const FLAT = [{ id: 5, name: 'God Mode' }];
+    const t = await serveTables({
+      'newest.CT': { records: FLAT, check: { 5: false } },      // its signature is gone
+      'lua.CT': { records: FLAT, check: { 5: 'unknown' } },      // Lua-driven: can't tell
+    });
+    try {
+      const r = await startSession({ sources: ['https://f.example/viewtopic.php?t=1'], cacheKey: 'pick2', runtimeRoot: dir, ctCacheDir, listTablesFn: async () => t.tables, ...native });
+      expect(r.attempts.map((a) => a.verdict)).toEqual(['broken', 'unknown']);
+      expect(r.tableId).toBe(10);
+      expect(r.verdict).toBe('unknown');
+    } finally { await t.close(); }
+  });
+
+  it('judges a table with no prerequisite by its cheats\' signatures, without switching any on', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log);
+    const t = await serveTables({ 'flat.CT': { records: [{ id: 5, name: 'God Mode' }, { id: 6, name: 'Add 1000 Gold' }], check: { 5: true, 6: true } } });
+    try {
+      const r = await startSession({ sources: ['https://f.example/viewtopic.php?t=1'], cacheKey: 'flat1', runtimeRoot: dir, ctCacheDir, listTablesFn: async () => t.tables, ...native });
+      expect(r).toMatchObject({ verdict: 'works', hiddenIds: [] });
+      const lines = (await readFile(log, 'utf8')).split('\n');
+      expect(lines.filter((l) => l === 'check_script')).toHaveLength(2);
+      expect(lines).not.toContain('set_active');
+    } finally { await t.close(); }
+  });
+
+  it('loads an explicitly chosen table as is, with the reason its prerequisite failed', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const t = await serveTables({
+      'new.CT': { records: MASTER, enable: {} },
+      'old.CT': { records: MASTER, enable: { 1: true } },
+    });
+    try {
+      const r = await startSession({
+        sources: ['https://f.example/viewtopic.php?t=1'], cacheKey: 'pick3', runtimeRoot: dir, ctCacheDir,
+        listTablesFn: async () => t.tables, tableId: 20, autoPick: false, ...native,
+      });
+      expect(r).toMatchObject({ tableId: 20, verdict: 'broken', hiddenIds: [] });
+      expect(r.prereqErrors[1]).toBe('No hook installed.\naddrA: 0 matches');
+      expect(r.attempts).toHaveLength(1);
+    } finally { await t.close(); }
+  });
+
+  it('retryTables finds the table once the game has finished loading', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const t = await serveTables({ 'game.CT': { records: MASTER, enable: { 1: 'flag' } } });
+    try {
+      const r = await startSession({ sources: ['https://f.example/viewtopic.php?t=1'], cacheKey: 'retry1', runtimeRoot: dir, ctCacheDir, listTablesFn: async () => t.tables, ...native });
+      expect(r.verdict).toBe('broken');
+      await writeFile(join(dir, 'flag'), '');      // "the game finished loading"
+      const again = await retryTables({ sessionId: r.sessionId });
+      expect(again).toMatchObject({ ok: true, verdict: 'works', hiddenIds: [1], tableId: 10 });
+      expect(await retryTables({ sessionId: 'nope' })).toEqual({ ok: false, error: 'session not active' });
+    } finally { await t.close(); }
+  });
+
+  it('ends the session by itself when the game exits', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    let alive = true;
+    let exited = 0;
+    const r = await startSession({
+      source: await startCtServer(), cacheKey: 'gone1', runtimeRoot: dir, ctCacheDir, ...native,
+      isGameAlive: () => alive, gameWatchMs: 20, onGameExit: () => { exited++; },
+    });
+    await new Promise((res) => setTimeout(res, 80));
+    expect(getActiveSession()?.sessionId).toBe(r.sessionId);
+    alive = false;
+    await new Promise((res) => setTimeout(res, 150));
+    expect(exited).toBe(1);
+    expect(getActiveSession()).toBeNull();
+  });
+
+  it('notices a real game process exiting', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const game = spawn('sleep', ['30']);
+    let exited = 0;
+    await startSession({
+      source: await startCtServer(), cacheKey: 'gone3', runtimeRoot: dir, ctCacheDir, ...native,
+      pid: game.pid!, isGameAlive: undefined, gameWatchMs: 20, onGameExit: () => { exited++; },
+    });
+    await new Promise((res) => setTimeout(res, 80));
+    expect(exited).toBe(0);
+    game.kill('SIGKILL');
+    await new Promise((res) => game.once('exit', res));
+    await new Promise((res) => setTimeout(res, 100));
+    expect(exited).toBe(1);
+  });
+
+  it('stops watching the game once the session is ended', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    let alive = true;
+    let exited = 0;
+    const r = await startSession({
+      source: await startCtServer(), cacheKey: 'gone2', runtimeRoot: dir, ctCacheDir, ...native,
+      isGameAlive: () => alive, gameWatchMs: 20, onGameExit: () => { exited++; },
+    });
+    await endSession({ sessionId: r.sessionId });
+    alive = false;
+    await new Promise((res) => setTimeout(res, 100));
+    expect(exited).toBe(0);
+  });
+
+  it('refuses to start another game while one is connected, and keeps it', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'one-a', runtimeRoot: dir, ctCacheDir, ...native });
+    await expect(startSession({ source: 'http://127.0.0.1:1/x.CT', cacheKey: 'one-b', runtimeRoot: dir, ctCacheDir, ...native }))
+      .rejects.toThrow(/still connected/);
+    expect(getActiveSession()?.sessionId).toBe(r.sessionId);
+  });
+
+  it('forwards hotkey presses from Cheat Engine', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const events: Record<string, unknown>[] = [];
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'hk1', runtimeRoot: dir, ctCacheDir, onEvent: (e) => events.push(e), ...native });
+    expect(await callSession({ sessionId: r.sessionId, method: 'set_hotkeys', params: { bindings: [{ id: 7, keys: [0x61] }], replace: [] } })).toEqual({ ok: true, count: 1 });
+    await new Promise((res) => setTimeout(res, 200));
+    expect(events).toEqual([{ type: 'hotkey', id: 7, ok: true, active: true }]);
+  });
+});
+
+describe('cleanCeError', () => {
+  it('strips the Lua chunk prefix and blank padding', () => {
+    expect(cleanCeError('Lua error in the script at line 25:[string "local syntaxcheck,memrec=...\r..."]:146: No hook installed.\r\n\r\naddrA: 0 matches'))
+      .toBe('No hook installed.\naddrA: 0 matches');
+  });
+  it('leaves plain messages alone', () => {
+    expect(cleanCeError("Error while scanning for AOB's : CashAOB \r\n\r\nError: Not all results found"))
+      .toBe("Error while scanning for AOB's : CashAOB\nError: Not all results found");
+  });
+  it('recognises version-mismatch failures', () => {
+    expect(isStaleTableError('Error: Not all results found')).toBe(true);
+    expect(isStaleTableError('not attached to a game process')).toBe(false);
   });
 });

@@ -7,9 +7,9 @@ html, body, #root {
 }
 
 body {
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum' 0;
   background-color: theme('colors.bg');
-  background-image: theme('backgroundImage.neon-grid');
-  background-size: theme('backgroundSize.grid-26');
   color: theme('colors.ink');
   font-family: theme('fontFamily.sans');
   margin: 0;
@@ -17,9 +17,8 @@ body {
 
 /* Neon utility — used on active/glowing elements */
 @layer utilities {
-  .glow-cyan  { box-shadow: 0 0 12px rgba(0,255,200,0.30); }
-  .glow-pink  { box-shadow: 0 0 12px rgba(255,0,180,0.30); }
-  .glow-green { box-shadow: 0 0 12px rgba(0,255,122,0.30); }
+  /* Formerly neon halos; now a hint of lift so accents sit on the surface rather than buzz. */
+  .glow-cyan, .glow-pink, .glow-green { box-shadow: 0 1px 2px rgba(8,10,18,0.3); }
 }
 
 /* Neon Arcade scrollbars (Chromium / Electron) */
@@ -36,11 +35,10 @@ body {
   border-radius: 5px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 255, 200, 0.45);
-  box-shadow: 0 0 6px rgba(0, 255, 200, 0.4);
+  background: rgba(142, 150, 171, 0.6);
 }
 *::-webkit-scrollbar-thumb:active {
-  background: rgba(0, 255, 200, 0.7);
+  background: rgba(142, 150, 171, 0.8);
 }
 *::-webkit-scrollbar-corner {
   background: theme('colors.bg');
@@ -50,4 +48,15 @@ body {
 * {
   scrollbar-width: thin;
   scrollbar-color: theme('colors.line') theme('colors.bg');
+}
+
+@keyframes sl-fill { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+
+/* Motion is decoration here: with reduced motion everything settles at once. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

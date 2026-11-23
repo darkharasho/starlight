@@ -23,6 +23,10 @@ const api: StarlightApi = {
   ceSessionStart:     (req) => ipcRenderer.invoke(CHANNELS.ceSessionStart, req),
   ceSessionEnd:       (req) => ipcRenderer.invoke(CHANNELS.ceSessionEnd, req),
   ceSessionSetActive: (req) => ipcRenderer.invoke(CHANNELS.ceSessionSetActive, req),
+  ceSessionCall:      (req) => ipcRenderer.invoke(CHANNELS.ceSessionCall, req),
+  ceSessionRetry:     (req) => ipcRenderer.invoke(CHANNELS.ceSessionRetry, req),
+  launchGame:         (req) => ipcRenderer.invoke(CHANNELS.launchGame, req),
+  findGameProcess:    (req) => ipcRenderer.invoke(CHANNELS.findGameProcess, req),
   onCeRuntimeProgress: (cb: (e: CeRuntimeProgressEvent) => void) => {
     const handler = (_e: unknown, payload: CeRuntimeProgressEvent) => cb(payload);
     ipcRenderer.on(CHANNELS.ceRuntimeProgress, handler);

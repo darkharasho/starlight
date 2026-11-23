@@ -16,11 +16,13 @@ const AppPreferencesSchema = z.object({
   pollIntervalMs: z.number().int().min(500).max(30000).default(2000),
   catalogRefreshOnLaunch: z.boolean().default(true),
   autoAttachOnDetect: z.boolean().default(false),
+  cheatHotkeys: z.boolean().default(true),
 }).default({
   theme: 'dark',
   pollIntervalMs: 2000,
   catalogRefreshOnLaunch: true,
   autoAttachOnDetect: false,
+  cheatHotkeys: true,
 });
 
 const ManualGameSchema = z.object({
@@ -46,13 +48,17 @@ export const UserConfigSchema = z.object({
     z.string(),
     z.record(z.string(), CheatHotkeyOverrideSchema),
   ).default({}),
+  tableChoices: z.record(z.string(), z.number()).default({}),
+  cheatHotkeys: z.record(z.string(), z.record(z.string(), z.string().nullable())).default({}),
 }).default({
   schemaVersion: 1,
   processNameOverrides: {},
   recents: [],
-  preferences: { theme: 'dark', pollIntervalMs: 2000, catalogRefreshOnLaunch: true, autoAttachOnDetect: false },
+  preferences: { theme: 'dark', pollIntervalMs: 2000, catalogRefreshOnLaunch: true, autoAttachOnDetect: false, cheatHotkeys: true },
   manualGames: [],
   hotkeyOverrides: {},
+  tableChoices: {},
+  cheatHotkeys: {},
 });
 
 export type UserConfigInferred = z.infer<typeof UserConfigSchema>;

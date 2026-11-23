@@ -1,0 +1,37 @@
+appId: com.darkharasho.starlight
+productName: Starlight
+directories:
+  buildResources: build
+  output: dist
+# Workspace packages (@starlight/*) are bundled into out/main by electron-vite,
+# so the app only ships its compiled output plus the native/runtime deps listed
+# in package.json "dependencies".
+files:
+  - out/**/*
+  - package.json
+  # The main process loads the window icon from <appPath>/build/icon.png.
+  - build/icon.png
+# Each build uploads into a draft GitHub release for its tag; the release
+# workflow publishes it once every build has passed.
+publish:
+  - provider: github
+    owner: darkharasho
+    repo: starlight
+    releaseType: draft
+# The package name is scoped (@starlight/desktop), so name the files explicitly.
+executableName: starlight
+extraMetadata:
+  desktopName: starlight.desktop
+linux:
+  icon: build/icons
+  syncDesktopName: true
+  category: Game
+  maintainer: darkharasho
+  target:
+    - AppImage
+appImage:
+  artifactName: Starlight-${version}.${ext}
+# better-sqlite3 is rebuilt for Electron by the `rebuild:native` script before
+# packaging. electron-builder's own rebuild would also compile uiohook-napi from
+# source (needs X11 dev headers); it and frida are N-API and work as-is.
+npmRebuild: false

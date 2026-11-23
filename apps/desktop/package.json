@@ -4,41 +4,29 @@
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
-  "build": {
-    "appId": "com.darkharasho.starlight",
-    "productName": "Starlight",
-    "directories": { "buildResources": "build" },
-    "files": ["out/**/*", "package.json"],
-    "linux": { "icon": "build/icons", "category": "Game" },
-    "win": { "icon": "build/icon.ico" },
-    "mac": { "icon": "build/icon.icns" }
-  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "dist": "./scripts/dist.sh",
+    "rebuild:native": "electron-rebuild --only better-sqlite3"
   },
   "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "frida": "^16.5.0",
+    "ps-list": "^8.1.1",
+    "uiohook-napi": "^1.5.4",
+    "yauzl": "^3.1.3",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
+    "@fontsource-variable/figtree": "^5.3.0",
     "@starlight/catalog": "workspace:*",
     "@starlight/ct-importer": "workspace:*",
     "@starlight/engine": "workspace:*",
-    "@types/react-window": "^2.0.0",
-    "@types/yazl": "^2.4.5",
-    "better-sqlite3": "^11.3.0",
-    "ps-list": "^8.1.1",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0",
-    "react-router-dom": "^6.26.0",
-    "react-window": "^2.2.7",
-    "uiohook-napi": "^1.5.4",
-    "yauzl": "^3.1.3",
-    "yazl": "^2.5.1",
-    "zod": "^3.23.0",
-    "zustand": "^4.5.0"
-  },
-  "devDependencies": {
     "@testing-library/jest-dom": "^6.5.0",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.0",
@@ -46,16 +34,28 @@
     "@types/node": "^20.12.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "@types/react-window": "^2.0.0",
     "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.5",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.20",
     "electron": "^32.0.0",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^2.3.0",
     "jsdom": "^24.1.0",
+    "luaparse": "^0.3.1",
     "postcss": "^8.4.40",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "react-router-dom": "^6.26.0",
+    "react-window": "^2.2.7",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.5.0",
     "vite": "^5.4.0",
-    "vitest": "^2.0.0"
-  }
+    "vitest": "^2.0.0",
+    "yazl": "^2.5.1",
+    "zustand": "^4.5.0"
+  },
+  "description": "Game trainer manager for Linux",
+  "author": "darkharasho"
 }

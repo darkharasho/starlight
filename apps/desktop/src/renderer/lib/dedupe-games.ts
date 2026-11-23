@@ -23,12 +23,13 @@ function stripJunk(name: string): string {
 }
 
 /**
- * Grouping key: junk tokens stripped, then lowercase alphanumerics only — so
+ * Grouping key (also the stable per-game identity used for table choices and
+ * table caching): junk tokens stripped, then lowercase alphanumerics only — so
  * "10,000,000" and "10,000,000 table v: 1.0 CT" collapse together. Falls back
  * to the raw normalized name if stripping leaves nothing (a game literally
  * named e.g. "Table").
  */
-function normKey(name: string): string {
+export function gameKey(name: string): string {
   const raw = name.toLowerCase().replace(/[^a-z0-9]/g, '');
   const stripped = stripJunk(name).toLowerCase().replace(/[^a-z0-9]/g, '');
   return stripped || raw;
@@ -63,7 +64,7 @@ export function dedupeGames<T extends DedupableGame>(games: T[]): T[] {
   games.forEach((g, i) => {
     // Names that normalize to nothing (pure punctuation) can't be grouped —
     // keep each as-is under a unique key.
-    const key = normKey(g.name) || `__raw__${i}`;
+    const key = gameKey(g.name) || `__raw__${i}`;
     const cur = best.get(key);
     if (cur === undefined) { best.set(key, g); order.push(key); }
     else if (isBetter(g, cur)) best.set(key, g);

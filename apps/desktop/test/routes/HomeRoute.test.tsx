@@ -68,9 +68,9 @@ describe('HomeRoute', () => {
     expect(screen.getByRole('button', { name: /Load Trainer/i })).toBeInTheDocument();
   });
 
-  it('renders Featured Trainers section', () => {
+  it('renders the All Trainers section', () => {
     render(<MemoryRouter><HomeRoute /></MemoryRouter>);
-    expect(screen.getByText(/Featured Trainers/i)).toBeInTheDocument();
+    expect(screen.getByText(/All Trainers/i)).toBeInTheDocument();
   });
 
   it('does not render Recently Played when recents is empty', () => {

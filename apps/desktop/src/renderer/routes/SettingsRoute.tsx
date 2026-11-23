@@ -85,6 +85,19 @@ export function SettingsRoute(): JSX.Element {
             className="accent-neon-cyan size-4"
           />
         </label>
+        <label className="flex items-center justify-between gap-3 text-xs">
+          <span>
+            <div className="text-ink">In-game cheat hotkeys</div>
+            <div className="text-[10px] text-muted">Switch cheats on and off from inside the game. The first cheats get numpad keys; change any of them on the cheat itself</div>
+          </span>
+          <input
+            aria-label="In-game cheat hotkeys"
+            type="checkbox"
+            checked={config.preferences.cheatHotkeys !== false}
+            onChange={() => void update({ preferences: { cheatHotkeys: config.preferences.cheatHotkeys === false } })}
+            className="accent-neon-cyan size-4"
+          />
+        </label>
       </div>
 
       <div className="mt-8 pt-6 border-t border-line max-w-[480px]">

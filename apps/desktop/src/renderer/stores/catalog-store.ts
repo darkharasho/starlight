@@ -2,10 +2,16 @@ import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
 import type { CatalogIndex, FetchTrainerRequest } from '../../shared/ipc.js';
 import type { CatalogIndexEntry, StarlightTrainer } from '@starlight/catalog/schema';
-import { dedupeGames } from '../lib/dedupe-games.js';
+import { dedupeGames, gameKey } from '../lib/dedupe-games.js';
 
 interface CatalogState {
   index: CatalogIndex | null;
+  /**
+   * Game key → every thread URL the catalog has for that game. The display
+   * index keeps one entry per game, but each title variant it collapsed is a
+   * different thread with its own tables — all of them are worth offering.
+   */
+  tableSources: Map<string, string[]>;
   loading: boolean;
   error: string | null;
   /** Catalog id of the trainer currently being fetched, or null. */
@@ -37,6 +43,7 @@ function buildRequest(entry: CatalogIndexEntry): FetchTrainerRequest | null {
 
 export const useCatalogStore = create<CatalogState>((set) => ({
   index: null,
+  tableSources: new Map(),
   loading: false,
   error: null,
   fetchingTrainerId: null,
@@ -48,7 +55,15 @@ export const useCatalogStore = create<CatalogState>((set) => ({
       if (r.ok) {
         // Collapse title-variant duplicates for display.
         const index = { ...r.index, games: dedupeGames(r.index.games) };
-        set({ index, loading: false });
+        const tableSources = new Map<string, string[]>();
+        for (const g of r.index.games) {
+          if (!g.trainerSource) continue;
+          const key = gameKey(g.name);
+          const list = tableSources.get(key);
+          if (!list) tableSources.set(key, [g.trainerSource]);
+          else if (!list.includes(g.trainerSource)) list.push(g.trainerSource);
+        }
+        set({ index, tableSources, loading: false });
       } else {
         set({ loading: false, error: r.error });
       }

@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, rm, chmod } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fromBuffer as openZipFromBuffer, type Entry } from 'yauzl';
@@ -95,6 +95,7 @@ export async function installWindowsCe(opts: InstallWindowsCeOpts): Promise<void
   const buf = await downloadVerified(opts.url, opts.sha256, tmpZip, opts.onProgress);
   await extractZipTo(buf, windowsbin, opts.onProgress);
   await rm(tmpZip, { force: true });
+  await neutralizeCePrank(windowsbin);
   opts.onProgress({ phase: 'done' });
 }
 
@@ -128,4 +129,27 @@ function extractZipTo(buf: Buffer, dest: string, onProgress: (e: ProgressEvent) 
       zip.readEntry();
     });
   });
+}
+
+
+/**
+ * Strips Cheat Engine's built-in "prank" easter eggs from an extracted CE tree:
+ * a random maniacal laugh (autorun/soundextension.lua + autorun/dlls/dnd.dat)
+ * and a window-resize gag (autorun/eatme.lua). Called after every install so
+ * the pranks never come back even when the runtime is re-downloaded. Missing
+ * files are ignored; dnd.dat is zero-filled in place (deleting it makes CE exit).
+ */
+export async function neutralizeCePrank(ceDir: string): Promise<void> {
+  const disabled = '-- disabled by starlight (CE prank easter egg)\n';
+  const luaTargets = [
+    join(ceDir, 'autorun', 'soundextension.lua'),
+    join(ceDir, 'autorun', 'eatme.lua'),
+  ];
+  await Promise.all(luaTargets.map((f) => writeFile(f, disabled).catch(() => {})));
+
+  const dnd = join(ceDir, 'autorun', 'dlls', 'dnd.dat');
+  try {
+    const buf = await readFile(dnd);
+    await writeFile(dnd, Buffer.alloc(buf.length));
+  } catch { /* not present; nothing to do */ }
 }

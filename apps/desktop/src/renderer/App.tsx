@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Routes, Route } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { TitleBar } from './components/TitleBar.js';
@@ -10,6 +10,9 @@ import { useLatchState } from './stores/latch-store.js';
 import { useConfigStore, attachConfigEvents } from './stores/config-store.js';
 import { useCatalogStore } from './stores/catalog-store.js';
 import { useCeSessionStore } from './stores/ce-session-store.js';
+import { attachProcessEvents } from './stores/process-store.js';
+import { useLibraryStore } from './stores/library-store.js';
+import { useFollowSession } from './lib/use-follow-session.js';
 
 import { HomeRoute } from './routes/HomeRoute.js';
 import { LibraryRoute } from './routes/LibraryRoute.js';
@@ -21,12 +24,16 @@ import { SettingsRoute } from './routes/SettingsRoute.js';
 export default function App(): JSX.Element {
   const latchState = useLatchState((s) => s.state);
   const ceSessionId = useCeSessionStore((s) => s.sessionId);
-  const navigate = useNavigate();
-
-  useEffect(() => { if (ceSessionId) navigate('/active'); }, [ceSessionId, navigate]);
+  useFollowSession(ceSessionId);
 
   useEffect(() => {
     attachConfigEvents();
+    // Subscribe before anything else: the main process announces a running
+    // game once, so a listener attached later (e.g. only when the Library tab
+    // is opened) would miss it and the pill would sit on "Waiting for game".
+    if (window.starlight) attachProcessEvents();
+    // Play needs to know what's installed, whichever screen the game is opened from.
+    if (window.starlight) void useLibraryStore.getState().scan();
     void (async () => {
       await useConfigStore.getState().load();
       const cfg = useConfigStore.getState().config;
@@ -60,13 +67,13 @@ export default function App(): JSX.Element {
     return unsub;
   }, []);
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex flex-col h-screen bg-shell">
       <TitleBar />
       <div className="flex flex-1 min-h-0">
         <Sidebar />
-        <div className="flex flex-col flex-1 min-w-0">
+        <div className="flex flex-col flex-1 min-w-0 bg-bg rounded-tl-2xl">
           <TopBar latchState={latchState} />
-          <main className="flex-1 overflow-y-auto p-5">
+          <main className="flex-1 overflow-y-auto px-6 pb-6 pt-1">
             <ErrorBoundary area="this view">
               <Routes>
                 <Route path="/"        element={<HomeRoute />} />

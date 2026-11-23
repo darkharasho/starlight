@@ -5,8 +5,9 @@ import { PageHeader } from '../components/PageHeader.js';
 import { useSearchStore } from '../stores/search-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
-import { useTrainerStore } from '../stores/trainer-store.js';
-import { useCeSessionStore } from '../stores/ce-session-store.js';
+import { openCatalogGame } from '../lib/open-game.js';
+import { installedGameKeys } from '../lib/installed.js';
+import { gameKey } from '../lib/dedupe-games.js';
 import type { CatalogGame } from '../types/catalog-game.js';
 
 export function SearchRoute(): JSX.Element {
@@ -14,35 +15,21 @@ export function SearchRoute(): JSX.Element {
   const query = useSearchStore((s) => s.query);
   const index = useCatalogStore((s) => s.index);
   const load = useCatalogStore((s) => s.load);
-  const fetchTrainer = useCatalogStore((s) => s.trainer);
   const detectedGames = useLibraryStore((s) => s.games);
-  const setActiveTrainerFromCatalog = useTrainerStore((s) => s.setActiveTrainerFromCatalog);
-  const startCeSession = useCeSessionStore((s) => s.start);
 
   useEffect(() => { if (!index) void load(); }, [index, load]);
 
-  const installedSteamIds = new Set(
-    detectedGames.filter(g => g.source === 'steam').map(g => Number(g.appId)),
-  );
+  const installedKeys = installedGameKeys(detectedGames);
   const allGames: CatalogGame[] = (index?.games ?? []).map(entry => ({
     ...entry,
-    installed: entry.steamAppId != null && installedSteamIds.has(entry.steamAppId),
+    installed: installedKeys.has(gameKey(entry.name)),
   }));
   const matches = query.trim()
     ? allGames.filter((g) => g.name.toLowerCase().includes(query.trim().toLowerCase()))
     : [];
 
   async function onSelect(g: CatalogGame): Promise<void> {
-    if (g.trainerSource) {
-      const ok = await startCeSession({ source: g.trainerSource, cacheKey: g.id, game: { id: g.id, name: g.name, steamAppId: g.steamAppId ?? null } });
-      if (ok) { navigate('/active'); return; }
-      if (useCeSessionStore.getState().notRunning) navigate('/active');
-      return;
-    }
-    const trainer = await fetchTrainer(g);
-    if (!trainer) return;
-    await setActiveTrainerFromCatalog(trainer);
-    navigate('/active');
+    await openCatalogGame(g, navigate);
   }
 
   return (

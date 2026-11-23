@@ -20,13 +20,13 @@ describe('TopBar pill priority', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for game');
   });
 
-  it('shows LATCHED when a Cheat Engine session is attached, even if latchState is waiting', () => {
+  it('shows Connected when a Cheat Engine session is attached, even if latchState is waiting', () => {
     useCeSessionStore.setState({ attached: true, sessionId: 'abc' });
     renderTopBar('waiting');
-    expect(screen.getByRole('status')).toHaveTextContent('LATCHED');
+    expect(screen.getByRole('status')).toHaveTextContent('Connected');
   });
 
-  it('does not show LATCHED when a session exists but is not yet attached', () => {
+  it('does not show Connected when a session exists but is not yet attached', () => {
     useCeSessionStore.setState({ attached: false, sessionId: 'abc' });
     renderTopBar('waiting');
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for game');
@@ -36,6 +36,6 @@ describe('TopBar pill priority', () => {
     useCeSessionStore.setState({ attached: true, sessionId: 'abc' });
     useDetectionStore.setState({ detected: { game: { id: 'g', name: 'G' }, pid: 1, name: 'g.exe', confidence: 'name' } });
     renderTopBar('waiting');
-    expect(screen.getByRole('status')).toHaveTextContent('LATCHED');
+    expect(screen.getByRole('status')).toHaveTextContent('Connected');
   });
 });

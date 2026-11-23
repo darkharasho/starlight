@@ -61,6 +61,12 @@ export interface CtRecord {
   id: number;
   name: string;
   isGroupHeader: boolean;
+  /** `script` = Auto Assembler/Lua toggle, `value` = an editable address, `header` = a section. */
+  kind: 'script' | 'value' | 'header';
+  /** Nesting level (0 = top of the table). */
+  depth: number;
+  /** The record's CE option flags, e.g. "moHideChildren,moActivateChildrenAsWell". */
+  opts?: string;
 }
 
 function asArray<T>(v: T | T[] | undefined): T[] {
@@ -75,16 +81,27 @@ function asArray<T>(v: T | T[] | undefined): T[] {
 export function listCtRecords(xml: string): CtRecord[] {
   const root = parseCt(xml);
   const out: CtRecord[] = [];
-  const walk = (entries: CtEntry[]): void => {
+  const walk = (entries: CtEntry[], depth: number): void => {
     for (const e of entries) {
-      out.push({
+      const isGroupHeader = e.GroupHeader === 1;
+      const isScript = e.AssemblerScript !== undefined || /auto assembler/i.test(String(e.VariableType ?? ''));
+      const rec: CtRecord = {
         id: e.ID ?? out.length,                                 // CE uses `r.ID or idx`
-        name: (e.Description ?? 'Unnamed').replace(/^"+|"+$/g, ''),
-        isGroupHeader: e.GroupHeader === 1,
-      });
-      walk(asArray(e.CheatEntries?.CheatEntry));
+        name: String(e.Description ?? 'Unnamed').replace(/^"+|"+$/g, ''),
+        isGroupHeader,
+        kind: isGroupHeader ? 'header' : isScript ? 'script' : 'value',
+        depth,
+      };
+      // <Options moHideChildren="1" …/> — the flags are attribute names.
+      const options = e['Options'];
+      if (options && typeof options === 'object') {
+        const flags = Object.keys(options).filter((k) => k.startsWith('@_mo')).map((k) => k.slice(2));
+        if (flags.length > 0) rec.opts = flags.join(',');
+      }
+      out.push(rec);
+      walk(asArray(e.CheatEntries?.CheatEntry), depth + 1);
     }
   };
-  walk(asArray(root.CheatTable.CheatEntries?.CheatEntry));
+  walk(asArray(root.CheatTable.CheatEntries?.CheatEntry), 0);
   return out;
 }
