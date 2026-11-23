@@ -28,6 +28,11 @@ const api: StarlightApi = {
   launchGame:         (req) => ipcRenderer.invoke(CHANNELS.launchGame, req),
   allowMemoryAccess:  () => ipcRenderer.invoke(CHANNELS.allowMemoryAccess),
   findGameProcess:    (req) => ipcRenderer.invoke(CHANNELS.findGameProcess, req),
+  userCheatsList:       (req) => ipcRenderer.invoke(CHANNELS.userCheatsList, req),
+  userCheatsSetActive:  (req) => ipcRenderer.invoke(CHANNELS.userCheatsSetActive, req),
+  userCheatsSetValue:   (req) => ipcRenderer.invoke(CHANNELS.userCheatsSetValue, req),
+  userCheatsRemove:     (req) => ipcRenderer.invoke(CHANNELS.userCheatsRemove, req),
+  userCheatsDisableAll: (req) => ipcRenderer.invoke(CHANNELS.userCheatsDisableAll, req),
   onEvent: (listener) => {
     const handler = (_evt: unknown, e: StarlightEvent): void => listener(e);
     ipcRenderer.on(CHANNELS.event, handler);

@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
-import { configureStarlightdHost, engineNeedsPtraceGrant, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
+import { configureStarlightdHost, getEngineClient, engineNeedsPtraceGrant, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
@@ -15,6 +15,8 @@ import { resolveBoxart } from './boxart-host.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
 import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd } from './ce-session.js';
+import { createUserCheatsHost } from './user-cheats-host.js';
+import { userCheatsDir } from './user-cheats.js';
 import { createGameOwner } from './game-owner.js';
 import { setGameOwner } from './game-owner-singleton.js';
 import { cleanCeError } from './ce-session.js';
@@ -44,6 +46,13 @@ const gameOwner = createGameOwner({
   onChange: (pid) => { if (ceGetActiveSession()?.pid === pid) broadcastEngine(); },
 });
 setGameOwner(gameOwner);
+
+const userCheatsHost = createUserCheatsHost({
+  dir: userCheatsDir(app.getPath('userData')),
+  getClient: getEngineClient,
+  owner: gameOwner,
+  onChange: (key) => broadcast({ type: 'userCheats:changed', key }),
+});
 
 /** Remembers the table that worked for a game so the next launch starts with it. */
 async function rememberTable(cacheKey: string, tableId: number | null): Promise<void> {
@@ -424,6 +433,12 @@ app.whenReady().then(async () => {
     return m && m !== 'ambiguous' ? m : null;
   });
 
+  ipcMain.handle(CHANNELS.userCheatsList, (_evt, req: { key: string; pid: number | null }) => userCheatsHost.list(req.key, req.pid));
+  ipcMain.handle(CHANNELS.userCheatsSetActive, (_evt, req: Parameters<typeof userCheatsHost.setActive>[0]) => userCheatsHost.setActive(req));
+  ipcMain.handle(CHANNELS.userCheatsSetValue, (_evt, req: Parameters<typeof userCheatsHost.setValue>[0]) => userCheatsHost.setValue(req));
+  ipcMain.handle(CHANNELS.userCheatsRemove, (_evt, req: { key: string; id: string }) => userCheatsHost.remove(req.key, req.id));
+  ipcMain.handle(CHANNELS.userCheatsDisableAll, (_evt, req: { pid: number }) => userCheatsHost.disableAll(req.pid));
+
   ipcMain.on(CHANNELS.windowMinimize, (evt) => BrowserWindow.fromWebContents(evt.sender)?.minimize());
   ipcMain.on(CHANNELS.windowToggleMaximize, (evt) => {
     const w = BrowserWindow.fromWebContents(evt.sender);
@@ -470,6 +485,7 @@ app.on('before-quit', async () => {
   processHost.pause();
   shutdownHotkeys();
   unregisterHotkeys();
+  try { await userCheatsHost.end(); } catch { /* quitting */ }
   await engineHost.detach();
   await stopEngine();
   const s = ceGetActiveSession();

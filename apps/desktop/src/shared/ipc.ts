@@ -38,6 +38,12 @@ export const CHANNELS = {
   launchGame:      'starlight:launchGame',
   allowMemoryAccess: 'starlight:allowMemoryAccess',
   findGameProcess: 'starlight:findGameProcess',
+  // The user's own cheats
+  userCheatsList:        'starlight:userCheats:list',
+  userCheatsSetActive:   'starlight:userCheats:setActive',
+  userCheatsSetValue:    'starlight:userCheats:setValue',
+  userCheatsRemove:      'starlight:userCheats:remove',
+  userCheatsDisableAll:  'starlight:userCheats:disableAll',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
   windowToggleMaximize: 'starlight:window:toggleMaximize',
@@ -124,6 +130,17 @@ export type IpcOk<T = void> = T extends void ? { ok: true } : { ok: true; value:
 export type IpcErr = { ok: false; error: string };
 export type IpcResult<T = void> = IpcOk<T> | IpcErr;
 
+/** A cheat in the player's own library, with its state for the running game. */
+export interface UserCheatView {
+  cheat: import('@starlight/ct-importer').StarlightCheat;
+  active: boolean;
+  value?: number;
+  /** null when not attached to a game */
+  verify: { status: 'ok' | 'needs-update' | 'unverified'; reasons: string[] } | null;
+}
+
+export type SetActiveResult = { ok: true } | { ok: false; error: string; confirm?: 'close-ce' };
+
 export interface DetectedGame {
   source: 'steam' | 'manual' | 'epic' | 'heroic' | 'lutris';
   appId: string;
@@ -157,6 +174,7 @@ export type StarlightEvent =
   /** The attached game exited; main already closed Cheat Engine. */
   | { type: 'session:game-exited';  sessionId: string }
   /** Who runs the game's cheats changed (Cheat Engine or starlightd). */
+  | { type: 'userCheats:changed'; key: string }
   | { type: 'session:engine'; sessionId: string; engine: 'ce' | 'starlightd'; holders: ('agent' | 'user-cheats')[] }
   | { type: 'ce:hotkey';            recordId: number; ok: boolean; active: boolean; error?: string | undefined }
   /** The trainer engine's install state changed (downloads run in the background). */
@@ -300,6 +318,12 @@ export interface StarlightApi {
   /** Asks (desktop password prompt) to let Starlight read native games' memory. */
   allowMemoryAccess(): Promise<{ ok: true } | { ok: false; cancelled?: boolean; error: string }>;
   findGameProcess(req: { game: { id: string; name: string; steamAppId?: number | null } }): Promise<{ pid: number; name: string } | null>;
+  // The user's own cheats
+  userCheatsList(req: { key: string; pid: number | null }): Promise<UserCheatView[]>;
+  userCheatsSetActive(req: { key: string; pid: number; id: string; on: boolean; closeCe?: boolean; value?: number }): Promise<SetActiveResult>;
+  userCheatsSetValue(req: { key: string; pid: number; id: string; value: number }): Promise<IpcResult>;
+  userCheatsRemove(req: { key: string; id: string }): Promise<IpcResult>;
+  userCheatsDisableAll(req: { pid: number }): Promise<void>;
   // Window controls
   windowMinimize():       void;
   windowToggleMaximize(): void;
