@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, rm, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,7 @@ import { createServer, type Server } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { startSession, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
+import { PTRACE_MESSAGE } from '../../src/main/ce-native.js';
 
 let dir: string;
 /** Windows CE's directory in the runtime (CheatEngineWindows75). */
@@ -58,13 +59,45 @@ const nativeLaunch = {
 };
 
 describe('ce-session', () => {
-  it('rejects start when runtime is not installed', async () => {
+  it('rejects an attach when the trainer engine is missing and nothing can install it', async () => {
     await rm(join(winCeDir, 'cheatengine-x86_64.exe'), { force: true });
-    // Any source URL is fine — the detect failure gates before the download.
-    const source = await startCtServer();
     await expect(startSession({
-      source, cacheKey: 'k1', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
-    })).rejects.toThrow(/not installed|not-installed/i);
+      source: await startCtServer(), cacheKey: 'k1', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+    })).rejects.toThrow(/isn't installed/i);
+  });
+
+  it('waits for the trainer engine download before attaching', async () => {
+    await rm(join(winCeDir, 'cheatengine-x86_64.exe'), { force: true });
+    const progress: string[] = [];
+    const ensureRuntime = vi.fn(async () => {
+      await writeFile(join(winCeDir, 'cheatengine-x86_64.exe'), 'MZ');
+      return { ok: true as const, status: { status: 'ready' as const, winCeDir, winCeExe: join(winCeDir, 'cheatengine-x86_64.exe'), ceserver: join(dir, 'ceserver-7.5', 'ceserver') } };
+    });
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'k1b', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      ensureRuntime, onProgress: (m) => progress.push(m),
+    })).rejects.toThrow(/timed out|ping/i);   // got as far as launching CE
+    expect(ensureRuntime).toHaveBeenCalledTimes(1);
+    expect(progress).toContain('Downloading the trainer engine…');
+  });
+
+  it('reports a failed trainer engine download', async () => {
+    await rm(join(winCeDir, 'cheatengine-x86_64.exe'), { force: true });
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'k1c', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      ensureRuntime: async () => ({ ok: false as const, error: 'offline' }),
+    })).rejects.toThrow("Couldn't download the trainer engine: offline");
+  });
+
+  it('previews a table without the trainer engine installed', async () => {
+    await rm(join(winCeDir, 'cheatengine-x86_64.exe'), { force: true });
+    const ensureRuntime = vi.fn();
+    const r = await startSession({ source: await startCtServer(), cacheKey: 'k1d', runtimeRoot: dir, ctCacheDir, ensureRuntime });
+    expect(r.attached).toBe(false);
+    expect(ensureRuntime).not.toHaveBeenCalled();
   });
 
   it('times out cleanly when CE never responds to ping', async () => {
@@ -98,6 +131,36 @@ describe('ce-session', () => {
     expect(out).toContain('local CT_PATH = "Z:\\\\');   // the table, as a Wine path
   });
 
+  it('asks for permission when ptrace is restricted and ceserver lacks CAP_SYS_PTRACE', async () => {
+    const stops: number[] = [];
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'pt1', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      readPtraceScopeFn: async () => 1,
+      startCeServerFn: async () => ({ port: 1, pid: 99, stop: async () => { stops.push(1); } }),
+      hasPtraceCapFn: async () => false,
+    })).rejects.toThrow(PTRACE_MESSAGE);
+    expect(stops).toEqual([1]);   // ceserver isn't left running
+  });
+
+  it('attaches with ptrace restricted once ceserver has CAP_SYS_PTRACE', async () => {
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'pt2', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      readPtraceScopeFn: async () => 1,
+      startCeServerFn: async () => ({ port: 1, pid: 99, stop: async () => {} }),
+      hasPtraceCapFn: async (pid) => pid === 99,
+    })).rejects.toThrow(/timed out|ping/i);   // past the permission check, into launching CE
+  });
+
+  it('explains ptrace_scope 3, which no permission can get past', async () => {
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'pt3', runtimeRoot: dir, ctCacheDir, pingTimeoutMs: 500,
+      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
+      readPtraceScopeFn: async () => 3,
+    })).rejects.toThrow(/ptrace_scope 3/);
+  });
+
   it('stops waiting at once when Wine exits without starting Cheat Engine', async () => {
     await writeFile(binary, '#!/bin/sh\nexit 1\n');
     const t0 = Date.now();
@@ -106,14 +169,6 @@ describe('ce-session', () => {
       pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game', ...nativeLaunch,
     })).rejects.toThrow(/closed while starting \(Wine/);
     expect(Date.now() - t0).toBeLessThan(10_000);
-  });
-
-  it('says how to allow memory access when ptrace is restricted', async () => {
-    await expect(startSession({
-      source: await startCtServer(), cacheKey: 'native2', runtimeRoot: dir, ctCacheDir,
-      pid: 4242, detectProtonFn: async () => null, readComm: async () => 'game',
-      ...nativeLaunch, readPtraceScopeFn: async () => 1,
-    })).rejects.toThrow(/ptrace_scope=0/);
   });
 
   it('asks for Proton or Wine when a native game has nothing to run Cheat Engine with', async () => {
@@ -519,6 +574,20 @@ const reply = (cmd) => {
       expect(again).toMatchObject({ ok: true, verdict: 'works', hiddenIds: [1], tableId: 10 });
       expect(await retryTables({ sessionId: 'nope' })).toEqual({ ok: false, error: 'session not active' });
     } finally { await t.close(); }
+  });
+
+  it('lets a game that just started finish loading before matching its table', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    const calls: [number, string[]][] = [];
+    const progress: string[] = [];
+    const r = await startSession({
+      source: await startCtServer(), cacheKey: 'load1', runtimeRoot: dir, ctCacheDir, ...native,
+      onProgress: (m) => progress.push(m),
+      waitForGameFn: async (pid, modules) => { calls.push([pid, modules]); await new Promise((res) => setTimeout(res, 900)); },
+    });
+    expect(r.attached).toBe(true);
+    expect(calls).toEqual([[4242, []]]);
+    expect(progress).toContain('Waiting for the game to finish loading…');
   });
 
   it('ends the session by itself when the game exits', async () => {

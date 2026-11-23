@@ -4,7 +4,6 @@ import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { TitleBar } from './components/TitleBar.js';
 import { TrainerLoadingOverlay } from './components/TrainerLoadingOverlay.js';
-import { RuntimeSetupModal } from './components/RuntimeSetupModal.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { useLatchState } from './stores/latch-store.js';
 import { useConfigStore, attachConfigEvents } from './stores/config-store.js';
@@ -13,6 +12,7 @@ import { useCeSessionStore } from './stores/ce-session-store.js';
 import { attachProcessEvents } from './stores/process-store.js';
 import { useLibraryStore } from './stores/library-store.js';
 import { attachUpdateEvents } from './stores/update-store.js';
+import { attachCeRuntimeEvents } from './stores/ce-runtime-store.js';
 import { useFollowSession } from './lib/use-follow-session.js';
 
 import { HomeRoute } from './routes/HomeRoute.js';
@@ -45,6 +45,7 @@ export default function App(): JSX.Element {
   }, []);
 
   useEffect(() => (window.starlight ? attachUpdateEvents() : undefined), []);
+  useEffect(() => (window.starlight ? attachCeRuntimeEvents() : undefined), []);
 
   useEffect(() => {
     if (!window.starlight) {
@@ -91,7 +92,6 @@ export default function App(): JSX.Element {
         </div>
       </div>
       <TrainerLoadingOverlay />
-      <RuntimeSetupModal />
     </div>
   );
 }

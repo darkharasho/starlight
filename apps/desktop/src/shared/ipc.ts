@@ -28,7 +28,6 @@ export const CHANNELS = {
   // CE runtime
   ceRuntimeStatus:   'starlight:ceRuntime:status',
   ceRuntimeInstall:  'starlight:ceRuntime:install',
-  ceRuntimeProgress: 'starlight:ceRuntime:progress',
   // CE session
   ceSessionStart:     'starlight:ceSession:start',
   ceSessionEnd:       'starlight:ceSession:end',
@@ -37,6 +36,7 @@ export const CHANNELS = {
   ceSessionRetry:     'starlight:ceSession:retry',
   // Launching games
   launchGame:      'starlight:launchGame',
+  allowMemoryAccess: 'starlight:allowMemoryAccess',
   findGameProcess: 'starlight:findGameProcess',
   // Window controls
   windowMinimize:       'starlight:window:minimize',
@@ -157,6 +157,8 @@ export type StarlightEvent =
   /** The attached game exited; main already closed Cheat Engine. */
   | { type: 'session:game-exited';  sessionId: string }
   | { type: 'ce:hotkey';            recordId: number; ok: boolean; active: boolean; error?: string | undefined }
+  /** The trainer engine's install state changed (downloads run in the background). */
+  | { type: 'ceRuntime:status'; status: CeRuntimeStatus; error?: string | undefined }
   | { type: 'game:detected'; game: { id: string; name: string; steamAppId?: number | null }; pid: number; name: string; confidence: 'exact' | 'name' };
 
 export interface WindowState { maximized: boolean }
@@ -166,12 +168,6 @@ export type CeRuntimeStatus =
   /** `missing` lists what still has to be downloaded (an update can add a part). */
   | { status: 'not-installed'; missing: ('windows-ce' | 'ceserver')[] }
   | { status: 'installing'; phase: string; current?: number; total?: number };
-
-export interface CeRuntimeProgressEvent {
-  phase: 'downloading' | 'verifying' | 'extracting' | 'done';
-  current?: number;
-  total?: number;
-}
 
 export interface CeSessionRecord {
   id: number;
@@ -257,7 +253,7 @@ export type CeSessionStartResult =
       tables: CeTable[];
       process?: { pid: number; name?: string | undefined } | undefined;
     } & CeSessionTableState)
-  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'unknown' };
+  | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'ptrace' | 'unknown' };
 
 export interface StarlightApi {
   loadTrainer():     Promise<LoadTrainerResult>;
@@ -286,7 +282,6 @@ export interface StarlightApi {
   // CE runtime
   ceRuntimeStatus(): Promise<CeRuntimeStatus>;
   ceRuntimeInstall(): Promise<{ ok: true } | { ok: false; error: string }>;
-  onCeRuntimeProgress(cb: (e: CeRuntimeProgressEvent) => void): () => void;
   // CE session
   ceSessionStart(req: CeSessionStartRequest): Promise<CeSessionStartResult>;
   ceSessionEnd(req: { sessionId: string }): Promise<{ ok: boolean }>;
@@ -297,6 +292,8 @@ export interface StarlightApi {
   ceSessionRetry(req: { sessionId: string }): Promise<({ ok: true } & CeSessionTableState) | { ok: false; error: string }>;
   // Launching games
   launchGame(req: LaunchTarget): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Asks (desktop password prompt) to let Starlight read native games' memory. */
+  allowMemoryAccess(): Promise<{ ok: true } | { ok: false; cancelled?: boolean; error: string }>;
   findGameProcess(req: { game: { id: string; name: string; steamAppId?: number | null } }): Promise<{ pid: number; name: string } | null>;
   // Window controls
   windowMinimize():       void;

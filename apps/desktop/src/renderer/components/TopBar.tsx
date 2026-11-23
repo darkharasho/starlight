@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { LatchPill } from './LatchPill.js';
+import { RuntimeStatusChip } from './RuntimeStatusChip.js';
 import type { LatchState } from '../stores/latch-store.js';
 import { useDetectionStore } from '../stores/detection-store.js';
 import { useCeSessionStore } from '../stores/ce-session-store.js';
@@ -59,7 +60,8 @@ export function TopBar({ latchState }: Props): JSX.Element {
         onKeyDown={(e) => { if (e.key === 'Enter' && query.trim() && location.pathname !== '/search') navigate('/search'); }}
         className="flex-1 max-w-[440px] h-[38px] rounded-full bg-panel border border-transparent px-4 text-sm text-ink placeholder:text-muted transition-colors hover:border-line focus:outline-none focus:border-neon-cyan/70"
       />
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-2">
+        <RuntimeStatusChip />
         <LatchPill
           state={effectiveState}
           detectedLabel={detectedLabel}

@@ -8,11 +8,11 @@ import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } fr
 import { LatchDetector } from './latch-detector.js';
 import { fetchCatalog, fetchTrainer } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
-import type { FetchTrainerRequest, CeRuntimeProgressEvent } from '../shared/ipc.js';
+import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
-import { detectCeRuntime, WIN_CE_DIR, CESERVER_DIR, CESERVER_BIN } from './ce-runtime-detect.js';
-import { installCeServer, installWindowsCe } from './ce-runtime-install.js';
+import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
+import { grantPtraceCap, isPtraceBlocked } from './ce-native.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession } from './ce-session.js';
 import { cleanCeError } from './ce-session.js';
 import { launchGame } from './game-launcher.js';
@@ -101,6 +101,21 @@ function createWindow(): void {
 const CE_RUNTIME_ROOT = join(app.getPath('userData'), 'runtime');
 const CT_CACHE_DIR = join(app.getPath('userData'), 'ct-cache');
 const CE_MANIFEST_URL = 'https://raw.githubusercontent.com/darkharasho/starlight-runtimes/main/manifest.json';
+
+// The trainer engine downloads itself in the background; nobody is asked.
+const runtimeManager = createRuntimeManager({
+  runtimeRoot: CE_RUNTIME_ROOT,
+  fetchManifest: async () => {
+    const res = await fetch(CE_MANIFEST_URL);
+    if (!res.ok) throw new Error(`runtime list HTTP ${res.status}`);
+    return await res.json() as RuntimeManifest;
+  },
+  onStatus: (status, error) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.webContents.isDestroyed()) win.webContents.send(CHANNELS.event, { type: 'ceRuntime:status', status, error });
+    }
+  },
+});
 
 engineHost.onDetached((reason) => {
   unregisterHotkeys();
@@ -278,45 +293,15 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.resolveBoxart, async (_evt, req: import('../shared/ipc.js').ResolveBoxartRequest):
     Promise<import('../shared/ipc.js').ResolveBoxartResult> => resolveBoxart(req));
 
-  ipcMain.handle(CHANNELS.ceRuntimeStatus, async () =>
-    detectCeRuntime({ runtimeRoot: CE_RUNTIME_ROOT }));
-
-  ipcMain.handle(CHANNELS.ceRuntimeInstall, async (evt) => {
-    try {
-      const manifestRes = await fetch(CE_MANIFEST_URL);
-      if (!manifestRes.ok) return { ok: false as const, error: `manifest HTTP ${manifestRes.status}` };
-      // `platforms['linux-x64']` (Linux CE 7.6.6) stays in the manifest for
-      // Starlight 0.2 and older; this version doesn't use it.
-      const manifest = await manifestRes.json() as {
-        cheatEngine: {
-          windows?: { url: string; sha256: string };
-          ceserver?: { url: string; sha256: string; extractedDir?: string; binaryRelative?: string };
-        };
-      };
-      const onProgress = (e: CeRuntimeProgressEvent): void => evt.sender.send(CHANNELS.ceRuntimeProgress, e);
-      // Only what's missing: an update can add a part to an existing install.
-      const status = await detectCeRuntime({ runtimeRoot: CE_RUNTIME_ROOT });
-      const missing = status.status === 'ready' ? [] : status.missing;
-      if (missing.includes('windows-ce')) {
-        const win = manifest.cheatEngine.windows;
-        if (!win) return { ok: false as const, error: 'The runtime list has no Windows Cheat Engine.' };
-        await installWindowsCe({ url: win.url, sha256: win.sha256, destDir: join(CE_RUNTIME_ROOT, WIN_CE_DIR), onProgress });
-      }
-      if (missing.includes('ceserver')) {
-        const srv = manifest.cheatEngine.ceserver;
-        if (!srv) return { ok: false as const, error: 'The runtime list has no ceserver.' };
-        await installCeServer({
-          url: srv.url,
-          sha256: srv.sha256,
-          runtimeRoot: CE_RUNTIME_ROOT,
-          binaryRelative: srv.binaryRelative ?? `${srv.extractedDir ?? CESERVER_DIR}/${CESERVER_BIN}`,
-          onProgress,
-        });
-      }
-      return { ok: true as const };
-    } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
-    }
+  ipcMain.handle(CHANNELS.ceRuntimeStatus, async () => runtimeManager.status());
+  ipcMain.handle(CHANNELS.allowMemoryAccess, async () => {
+    const r = await runtimeManager.ensure();
+    if (!r.ok) return { ok: false as const, error: `Couldn't download the trainer engine: ${r.error}` };
+    return grantPtraceCap({ bin: r.status.ceserver });
+  });
+  ipcMain.handle(CHANNELS.ceRuntimeInstall, async () => {
+    const r = await runtimeManager.ensure();
+    return r.ok ? { ok: true as const } : r;
   });
 
   ipcMain.handle(CHANNELS.ceSessionStart, async (_evt, req: import('../shared/ipc.js').CeSessionStartRequest): Promise<import('../shared/ipc.js').CeSessionStartResult> => {
@@ -335,6 +320,7 @@ app.whenReady().then(async () => {
         cacheKey: req.cacheKey,
         runtimeRoot: CE_RUNTIME_ROOT,
         ctCacheDir: CT_CACHE_DIR,
+        ensureRuntime: () => runtimeManager.ensure(),
         pid: req.pid,
         processName: req.processName,
         game: req.game,
@@ -362,8 +348,9 @@ app.whenReady().then(async () => {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const reason = /still connected/i.test(msg) ? 'busy' as const :
-                     /not installed/i.test(msg) ? 'runtime-missing' as const :
+      const reason = isPtraceBlocked(msg) ? 'ptrace' as const :
+                     /still connected/i.test(msg) ? 'busy' as const :
+                     /isn't installed|download the trainer engine/i.test(msg) ? 'runtime-missing' as const :
                      /not running/i.test(msg) ? 'not-running' as const :
                      /spawn|timed out/i.test(msg) ? 'spawn-failed' as const :
                      'unknown' as const;
@@ -429,6 +416,7 @@ app.whenReady().then(async () => {
 
   processHost.start();
   createWindow();
+  runtimeManager.ensureInBackground();
   void updater.start();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

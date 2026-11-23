@@ -24,9 +24,22 @@ export interface WineRunner {
 export const NO_WINE_MESSAGE =
   'Native Linux games need Proton or Wine to run Cheat Engine. Install Proton from Steam (any version), or install Wine.';
 
+/**
+ * Native games: Linux only lets ceserver read a game's memory when ptrace is
+ * unrestricted or ceserver holds CAP_SYS_PTRACE. The renderer offers a
+ * one-click fix when it sees this message (matched by `isPtraceBlocked`).
+ */
 export const PTRACE_MESSAGE =
-  'Linux is blocking Starlight from reading other programs\' memory (ptrace_scope is on). '
-  + 'Run "sudo sysctl kernel.yama.ptrace_scope=0" and try again (it resets on reboot).';
+  'Starlight needs your permission once to read native Linux games\' memory.';
+
+/** ptrace_scope 3: nothing may attach, not even with permission, until a reboot. */
+export const PTRACE_LOCKED_MESSAGE =
+  'Linux is set to block all memory access between programs (ptrace_scope 3) until the next reboot, '
+  + 'so native Linux games can\'t be cheated in this session.';
+
+export function isPtraceBlocked(message: string): boolean {
+  return message === PTRACE_MESSAGE;
+}
 
 async function exists(p: string): Promise<boolean> {
   try { await access(p, constants.F_OK); return true; } catch { return false; }
@@ -163,6 +176,8 @@ export async function readPtraceScope(): Promise<number> {
 
 export interface CeServerHandle {
   port: number;
+  /** ceserver's pid (absent from test doubles). */
+  pid?: number | undefined;
   stop: () => Promise<void>;
 }
 
@@ -212,9 +227,64 @@ export async function startCeServer(opts: { bin: string; readyTimeoutMs?: number
 
   const deadline = Date.now() + (opts.readyTimeoutMs ?? 5000);
   while (Date.now() < deadline && !exited) {
-    if (await canConnect(port)) return { port, stop };
+    if (await canConnect(port)) return { port, pid: child.pid, stop };
     await new Promise((r) => setTimeout(r, 100));
   }
   await stop();
   throw new Error(exited ? 'ceserver exited during startup' : 'ceserver did not start listening');
+}
+
+/** CAP_SYS_PTRACE's bit in the kernel's capability sets. */
+const CAP_SYS_PTRACE = 19n;
+
+/** Whether a running process holds CAP_SYS_PTRACE (from /proc/<pid>/status). */
+export async function hasPtraceCap(pid: number, read = (p: string) => readFile(p, 'utf8')): Promise<boolean> {
+  try {
+    const m = /^CapEff:\s*([0-9a-f]+)$/m.exec(await read(`/proc/${pid}/status`));
+    return m ? ((BigInt(`0x${m[1]}`) >> CAP_SYS_PTRACE) & 1n) === 1n : false;
+  } catch {
+    return false;
+  }
+}
+
+const SETCAP_PATHS = ['/usr/sbin/setcap', '/sbin/setcap', '/usr/bin/setcap'];
+
+export type GrantResult = { ok: true } | { ok: false; cancelled?: boolean; error: string };
+
+export interface GrantPtraceOpts {
+  /** The ceserver binary to give CAP_SYS_PTRACE. */
+  bin: string;
+  exists?: (p: string) => Promise<boolean>;
+  /** Runs a command, resolving with its exit code and stderr. */
+  run?: (cmd: string, args: string[]) => Promise<{ code: number | null; stderr: string }>;
+}
+
+function runCommand(cmd: string, args: string[]): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    child.once('error', (err) => resolve({ code: null, stderr: err.message }));
+    child.once('exit', (code) => resolve({ code, stderr }));
+  });
+}
+
+/**
+ * Gives Starlight's ceserver (only that binary) permission to read other
+ * programs' memory, through the desktop's password prompt (pkexec). It lasts
+ * until ceserver is reinstalled: rewriting the file drops the permission.
+ */
+export async function grantPtraceCap(opts: GrantPtraceOpts): Promise<GrantResult> {
+  const has = opts.exists ?? exists;
+  const run = opts.run ?? runCommand;
+  let setcap: string | undefined;
+  for (const p of SETCAP_PATHS) if (await has(p)) { setcap = p; break; }
+  const manual = `sudo setcap cap_sys_ptrace=ep "${opts.bin}"`;
+  if (!setcap) return { ok: false, error: `Couldn't find setcap. Run this in a terminal, then try again: ${manual}` };
+  const r = await run('pkexec', [setcap, 'cap_sys_ptrace=ep', opts.bin]);
+  if (r.code === 0) return { ok: true };
+  // pkexec: 126 = the password prompt was dismissed, 127 = not authorized.
+  if (r.code === 126 || r.code === 127) return { ok: false, cancelled: true, error: 'Permission wasn\'t granted.' };
+  if (r.code === null) return { ok: false, error: `Couldn't ask for permission (${r.stderr.trim() || 'pkexec missing'}). Run this in a terminal, then try again: ${manual}` };
+  return { ok: false, error: `setcap failed: ${r.stderr.trim() || `exit ${r.code}`}` };
 }

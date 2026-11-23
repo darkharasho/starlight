@@ -7,10 +7,11 @@ const mockRetry = vi.fn();
 const mockLaunch = vi.fn();
 const mockFind = vi.fn();
 const mockUpdateConfig = vi.fn();
+const mockAllow = vi.fn();
 vi.mock('../../src/renderer/ipc-client.js', () => ({
   starlight: () => ({
     ceSessionStart: mockStart, ceSessionEnd: vi.fn().mockResolvedValue({ ok: true }), ceSessionSetActive: mockSetActive, ceSessionCall: mockCall,
-    ceSessionRetry: mockRetry, launchGame: mockLaunch, findGameProcess: mockFind, updateConfig: mockUpdateConfig,
+    ceSessionRetry: mockRetry, launchGame: mockLaunch, findGameProcess: mockFind, updateConfig: mockUpdateConfig, allowMemoryAccess: mockAllow,
   }),
   api: () => ({}),
 }));
@@ -23,14 +24,16 @@ beforeEach(() => {
   mockSetActive.mockReset();
   mockCall.mockReset();
   mockCall.mockResolvedValue({ states: [] });
-  mockRetry.mockReset(); mockLaunch.mockReset(); mockFind.mockReset(); mockUpdateConfig.mockReset();
-  Object.assign(playTiming, { pollMs: 2, timeoutMs: 200, settleMs: 2 });
+  mockRetry.mockReset(); mockLaunch.mockReset(); mockFind.mockReset(); mockUpdateConfig.mockReset(); mockAllow.mockReset();
+  Object.assign(playTiming, { pollMs: 2, timeoutMs: 200 });
   useConfigStore.setState({ config: { preferences: { cheatHotkeys: true }, cheatHotkeys: {} } as never });
   useLibraryStore.setState({ games: [] });
   useCeSessionStore.setState({
     sessionId: null,
     starting: false,
     startError: null,
+    startReason: null,
+    allowingAccess: false,
     records: [],
     attached: false,
     proton: false,
@@ -160,7 +163,7 @@ describe('ce-session-store Play', () => {
     const unsub = useCeSessionStore.subscribe((s) => { if (phases[phases.length - 1] !== s.launch?.phase) phases.push(s.launch?.phase); });
     expect(await useCeSessionStore.getState().play(req)).toBe(true);
     unsub();
-    expect(phases).toEqual(['launching', 'waiting', 'loading', undefined]);
+    expect(phases).toEqual(['launching', 'waiting', undefined]);
     expect(mockLaunch).toHaveBeenCalledWith({ source: 'steam', appId: '440' });
     // Only the pid goes over: the process list's name can be truncated.
     const sent = mockStart.mock.calls[0]![0];
@@ -332,5 +335,38 @@ describe('ce-session-store one game at a time', () => {
     mockStart.mockResolvedValueOnce({ ok: true, sessionId: 'pb', records: [], proton: false, attached: false, running: false });
     expect(await useCeSessionStore.getState().start(B)).toBe(true);
     expect(useCeSessionStore.getState().sessionId).toBe('pb');
+  });
+});
+
+describe('ce-session-store native game permission', () => {
+  const req = { cacheKey: 'k', source: 'https://x/t.CT', pid: 42 };
+
+  it('keeps the reason a start needs permission, then attaches again once it is allowed', async () => {
+    mockStart.mockResolvedValueOnce({ ok: false, error: 'needs permission', reason: 'ptrace' });
+    await useCeSessionStore.getState().start(req);
+    expect(useCeSessionStore.getState().startReason).toBe('ptrace');
+
+    mockAllow.mockResolvedValueOnce({ ok: true });
+    mockStart.mockResolvedValueOnce({ ok: true, sessionId: 's1', records: [], proton: false, attached: true });
+    await useCeSessionStore.getState().allowMemoryAccess();
+    expect(mockStart).toHaveBeenLastCalledWith(expect.objectContaining({ pid: 42 }));
+    expect(useCeSessionStore.getState()).toMatchObject({ sessionId: 's1', startError: null, startReason: null, allowingAccess: false });
+  });
+
+  it('leaves the request up when the password prompt is dismissed', async () => {
+    mockStart.mockResolvedValueOnce({ ok: false, error: 'needs permission', reason: 'ptrace' });
+    await useCeSessionStore.getState().start(req);
+    mockAllow.mockResolvedValueOnce({ ok: false, cancelled: true, error: 'no' });
+    await useCeSessionStore.getState().allowMemoryAccess();
+    expect(useCeSessionStore.getState()).toMatchObject({ startError: 'needs permission', startReason: 'ptrace' });
+    expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows why granting failed', async () => {
+    mockStart.mockResolvedValueOnce({ ok: false, error: 'needs permission', reason: 'ptrace' });
+    await useCeSessionStore.getState().start(req);
+    mockAllow.mockResolvedValueOnce({ ok: false, error: 'setcap failed: boom' });
+    await useCeSessionStore.getState().allowMemoryAccess();
+    expect(useCeSessionStore.getState()).toMatchObject({ startError: 'setcap failed: boom', startReason: null });
   });
 });
