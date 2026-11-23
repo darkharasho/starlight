@@ -55,4 +55,32 @@ describe('engine-host.attach anti-cheat', () => {
     expect(attachMock).not.toHaveBeenCalled();
     expect(getClient).not.toHaveBeenCalled();
   });
+  it('re-checks before writing: anti-cheat loaded after attach detaches and refuses', async () => {
+    const freezeMock = vi.fn(async () => ({ cancel: vi.fn(async () => undefined) }));
+    const detachMock = vi.fn(async () => undefined);
+    vi.doMock('../../src/main/starlightd-host.js', () => ({ getEngineClient: async () => ({}) }));
+    vi.doMock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+    vi.doMock('@starlight/engine', () => ({
+      attach: vi.fn(async () => ({ pid: 9, handle: 1, attached: true, onDetached: vi.fn(), detach: detachMock })),
+      read: vi.fn(), write: vi.fn(), resolvePointerChain: vi.fn(), aobScan: vi.fn(), freeze: freezeMock,
+      AttachError: class extends Error {}, PermissionError: class extends Error {}, ScanError: class extends Error {},
+      ReadError: class extends Error {}, WriteError: class extends Error {},
+    }));
+    const eh = await import('../../src/main/engine-host.js');
+    let calls = 0;
+    const hit = { name: 'Easy Anti-Cheat', module: 'easyanticheat_x64.dll' };
+    expect((await eh.attach(9, async () => (++calls === 1 ? null : hit))).ok).toBe(true);
+    eh.setActiveTrainer({
+      game: { name: 'g', processName: ['x'] },
+      categories: [{ name: 'c', cheats: [{
+        id: 'hp', name: 'HP', type: 'toggle', valueType: 'uint32', value: 1,
+        address: { kind: 'absolute', address: '0x100' },
+      }] }],
+    } as never);
+    const r = await eh.toggleCheat('hp', true);
+    expect(r).toEqual({ ok: false, error: antiCheatMessage(hit) });
+    expect(freezeMock).not.toHaveBeenCalled();
+    expect(detachMock).toHaveBeenCalled();
+    expect(eh.isAttached()).toBe(false);
+  });
 });

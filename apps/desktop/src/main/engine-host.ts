@@ -52,8 +52,12 @@ export async function cancelAllFreezes(): Promise<void> {
   lastValues.clear();
 }
 
+/** Kept from attach() so writes can look again (tests inject a fake). */
+let detectAntiCheatFn_: typeof detectAntiCheat = detectAntiCheat;
+
 export async function attach(pid: number, detectAntiCheatFn: typeof detectAntiCheat = detectAntiCheat): Promise<AttachResult> {
   if (session) await detach();
+  detectAntiCheatFn_ = detectAntiCheatFn;
   // Checked before the daemon is even started: a refused attach touches nothing.
   const hit = await detectAntiCheatFn(pid);
   if (hit) return { ok: false, code: 'anti-cheat', message: antiCheatMessage(hit) };
@@ -87,6 +91,17 @@ export async function detach(): Promise<void> {
   session = null;
   if (detachedListener) detachedListener('manual');
   attachListener?.(false);
+}
+
+/**
+ * A game attached while loading may map its anti-cheat later, so look again
+ * before changing its memory. On a hit, detach and return the message.
+ */
+async function antiCheatLoaded(s: Session): Promise<string | null> {
+  const hit = await detectAntiCheatFn_(s.pid);
+  if (!hit) return null;
+  await detach();
+  return antiCheatMessage(hit);
 }
 
 export function isAttached(): boolean { return session !== null && session.attached; }
@@ -147,6 +162,9 @@ export async function toggleCheat(cheatId: string, on: boolean): Promise<IpcResu
       return { ok: true };
     }
 
+    const refused = await antiCheatLoaded(session);
+    if (refused) return { ok: false, error: refused };
+
     // Cancel any prior handle (defensive)
     const prior = freezeHandles.get(cheatId);
     if (prior) { try { await prior.cancel(); } catch { /* ignore */ } }
@@ -176,6 +194,9 @@ export async function setCheatValue(cheatId: string, value: number): Promise<Ipc
   lastValues.set(cheatId, value);
 
   try {
+    const refused = await antiCheatLoaded(session);
+    if (refused) return { ok: false, error: refused };
+
     const address = await resolveAddress(session, cheat.address);
     const valueType = cheat.valueType as Exclude<ValueType, 'string'>;
 

@@ -605,6 +605,18 @@ const reply = (cmd) => {
     expect(progress).toContain('Waiting for the game to finish loading…');
   });
 
+  it('refuses once anti-cheat shows up while the game was loading', async () => {
+    await installFakeCe(join(dir, 'fake-ce.log'));
+    let calls = 0;
+    const detectAntiCheatFn = vi.fn(async () => (++calls === 1 ? null : { name: 'Easy Anti-Cheat', module: 'easyanticheat_x64.dll' }));
+    await expect(startSession({
+      source: await startCtServer(), cacheKey: 'ac-late', runtimeRoot: dir, ctCacheDir, ...native,
+      detectAntiCheatFn, waitForGameFn: async () => {},
+    })).rejects.toThrow(/Easy Anti-Cheat is running in this game/);
+    expect(detectAntiCheatFn).toHaveBeenCalledTimes(2);
+    expect(getActiveSession()).toBeNull();
+  });
+
   it('ends the session by itself when the game exits', async () => {
     await installFakeCe(join(dir, 'fake-ce.log'));
     let alive = true;

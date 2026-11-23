@@ -483,6 +483,14 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     if (active !== session) throw new Error('The game closed while it was loading.');
   }
 
+  // The first check ran while the game may still have been loading, before it
+  // mapped its anti-cheat. Look again now that it has loaded.
+  const lateAntiCheat = await (opts.detectAntiCheatFn ?? detectAntiCheat)(effectivePid);
+  if (lateAntiCheat) {
+    await endSession({ sessionId }).catch(() => {});
+    throw new Error(antiCheatMessage(lateAntiCheat));
+  }
+
   const status = await sendWithTimeout(bridge, { method: 'status' }, 5000).catch(() => ({})) as { attached?: boolean };
   const attached = status.attached !== false;
   let picked: Awaited<ReturnType<typeof pickTable>>;
