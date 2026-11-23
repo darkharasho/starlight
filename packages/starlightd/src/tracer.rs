@@ -847,7 +847,6 @@ pub struct Stopped<'a> {
 
 impl Stopped<'_> {
     /// Stopped threads, ascending.
-    #[allow(dead_code)] // used by patches (Task 8)
     pub fn tids(&self) -> &[i32] {
         &self.tids
     }
@@ -860,7 +859,6 @@ impl Stopped<'_> {
         }
     }
 
-    #[allow(dead_code)] // used by patches (Task 8)
     pub fn regs(&self, tid: i32) -> Result<libc::user_regs_struct, RpcError> {
         self.check(tid)?;
         get_regs(tid).map_err(|e| ptrace_error("PTRACE_GETREGS", tid, e))
@@ -1004,7 +1002,7 @@ impl Stopped<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
@@ -1022,13 +1020,13 @@ mod tests {
     }
 
     /// The C test target, launched by this test (never any other process).
-    struct TestTarget {
+    pub(crate) struct TestTarget {
         child: Child,
-        addrs: HashMap<String, u64>,
+        pub(crate) addrs: HashMap<String, u64>,
     }
 
     impl TestTarget {
-        fn spawn(args: &[&str]) -> TestTarget {
+        pub(crate) fn spawn(args: &[&str]) -> TestTarget {
             let exe = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/test-target/build/target");
             assert!(exe.exists(), "build it with `make -C packages/engine/test-target`");
             let mut child = Command::new(exe).args(args).stdout(Stdio::piped()).spawn().unwrap();
@@ -1047,7 +1045,7 @@ mod tests {
             std::thread::spawn(move || std::io::copy(&mut out, &mut std::io::sink()));
             TestTarget { child, addrs }
         }
-        fn pid(&self) -> i32 {
+        pub(crate) fn pid(&self) -> i32 {
             self.child.id() as i32
         }
     }

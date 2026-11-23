@@ -51,7 +51,7 @@ fn map_errno(e: &io::Error, pid: i32) -> RpcError {
     }
 }
 
-fn open_target(pid: i32) -> Result<Target, RpcError> {
+pub(crate) fn open_target(pid: i32) -> Result<Target, RpcError> {
     if pid <= 0 {
         return Err(RpcError::invalid_params("pid must be positive"));
     }
