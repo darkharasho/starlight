@@ -1,4 +1,5 @@
 mod aob;
+mod asm;
 mod cleanup;
 mod disasm;
 mod freeze;

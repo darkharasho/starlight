@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
 use crate::cleanup::{self, Owner};
 use crate::scan::{FirstReq, NextReq, Scans};
-use crate::{aob, disasm, mem, modules, pointer, process::Handles, signature, symbols};
+use crate::{aob, asm, disasm, mem, modules, pointer, process::Handles, signature, symbols};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -334,6 +334,34 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             }
             let s = signature::build(&t, addr, max_len as usize)?;
             Ok(json!({ "pattern": s.pattern, "offset": 0, "module": s.module, "length": s.length, "unique": s.unique, "matches": s.matches }))
+        }
+        "assemble" => {
+            let addr = param_addr(params, "address")?;
+            let source = param_str(params, "source")?;
+            // Supplied symbols first, then (with a handle) module names.
+            let mut syms = std::collections::HashMap::new();
+            match params.get("symbols") {
+                None | Some(Value::Null) => {}
+                Some(Value::Object(m)) => {
+                    for (name, v) in m {
+                        let a = parse_hex(v.as_str())
+                            .ok_or_else(|| RpcError::invalid_params(format!("symbols.{name} must be a \"0x...\" hex string")))?;
+                        syms.insert(name.to_ascii_lowercase(), a);
+                    }
+                }
+                Some(_) => return Err(RpcError::invalid_params("symbols must be an object")),
+            }
+            let mods = match params.get("handle") {
+                None | Some(Value::Null) => vec![],
+                Some(_) => modules::list(&*handles.get(param_handle(params)?)?)?,
+            };
+            let resolve = |name: &str| {
+                syms.get(&name.to_ascii_lowercase()).copied().or_else(|| modules::find(&mods, name).map(|m| m.base))
+            };
+            let a = asm::assemble(source, addr, &resolve).map_err(|e| RpcError::assemble_failed(e.to_string()))?;
+            let labels: serde_json::Map<String, Value> =
+                a.labels.iter().map(|(k, v)| (k.clone(), Value::String(format!("{v:#x}")))).collect();
+            Ok(json!({ "bytes": to_hex(&a.bytes), "length": a.bytes.len(), "labels": labels }))
         }
         "write" => {
             let t = handles.get(param_handle(params)?)?;

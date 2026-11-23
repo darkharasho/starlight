@@ -121,3 +121,53 @@ fn signature_max_length_out_of_range_is_32602() {
         assert_eq!(err.0, -32602, "max_length {bad}");
     }
 }
+
+#[test]
+fn round_trips_live_bump_counter() {
+    let t = Target::spawn(&["--writer"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = c.call("disassemble", json!({"handle": h, "address": t.addr("bump_counter"), "count": 8})).unwrap();
+    let ins = r["instructions"].as_array().unwrap();
+    assert_eq!(ins.len(), 8);
+    for i in ins {
+        let a = c
+            .call("assemble", json!({"handle": h, "address": i["address"], "source": i["text"]}))
+            .unwrap_or_else(|e| panic!("assemble {}: {e:?}", i["text"]));
+        assert_eq!(a["bytes"], i["bytes"], "{}", i["text"]);
+        assert_eq!(a["length"], i["length"], "{}", i["text"]);
+    }
+}
+
+#[test]
+fn assemble_resolves_module_symbols() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let mods = c.call("modules", json!({"handle": h})).unwrap();
+    let base = mods["modules"].as_array().unwrap().iter().find(|m| m["name"] == "target").expect("target module")["base"].clone();
+    let r = c.call("assemble", json!({"handle": h, "address": base, "source": "jmp target+10"})).unwrap();
+    // Short jump from base to base+0x10.
+    assert_eq!(r["bytes"], "eb0e");
+    assert_eq!(r["length"], 2);
+    // Supplied symbols, labels in the result, and no handle needed.
+    let r = c
+        .call("assemble", json!({"address": "0x1000", "source": "top:\nmov eax,[thing]\njmp top", "symbols": {"thing": "0x1100"}}))
+        .unwrap();
+    assert_eq!(r["bytes"], "8b05fa000000ebf8");
+    assert_eq!(r["labels"], json!({"top": "0x1000"}));
+    // Without a handle, module names don't resolve.
+    let err = c.call("assemble", json!({"address": base, "source": "jmp target+10"})).unwrap_err();
+    assert_eq!(err.0, -32010);
+    assert!(err.1.starts_with("line 1:"), "{}", err.1);
+}
+
+#[test]
+fn hello_lists_assemble_capability() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let r = c.call("hello", json!({})).unwrap();
+    assert!(r["capabilities"].as_array().unwrap().iter().any(|v| v == "assemble"));
+}
