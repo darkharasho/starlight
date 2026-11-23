@@ -7,7 +7,9 @@ mod modules;
 mod peer;
 mod pointer;
 mod process;
+mod regions;
 mod rpc;
+mod scan;
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;

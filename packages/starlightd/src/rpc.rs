@@ -1,5 +1,6 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
 use crate::cleanup::{self, Owner};
+use crate::scan::{FirstReq, NextReq, Scans};
 use crate::{aob, mem, modules, pointer, process::Handles};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -8,7 +9,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -80,6 +81,7 @@ impl Conn {
 pub struct ConnState {
     pub handles: Handles,
     pub owner: Arc<Owner>,
+    pub scans: Scans,
 }
 
 /// Methods that can take long; they run on their own thread and answer out of order,
@@ -113,7 +115,11 @@ impl Session {
     pub fn new(conn: Conn) -> Self {
         let owner = Arc::new(Owner::default());
         cleanup::register(&owner);
-        let state = Arc::new(ConnState { handles: Handles::new(conn.clone(), owner.clone()), owner });
+        let state = Arc::new(ConnState {
+            handles: Handles::new(conn.clone(), owner.clone()),
+            scans: Scans::new(owner.clone()),
+            owner,
+        });
         Session { conn, state }
     }
 
@@ -187,6 +193,73 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             }
             let bytes = mem::read_bytes(&t, addr, len as usize)?;
             Ok(json!({ "bytes": to_hex(&bytes) }))
+        }
+        "read_many" => {
+            let t = handles.get(param_handle(params)?)?;
+            let items = params
+                .get("items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| RpcError::invalid_params("items must be an array"))?;
+            if items.len() > MAX_MANY_ITEMS {
+                return Err(RpcError::invalid_params(format!("at most {MAX_MANY_ITEMS} items")));
+            }
+            let items = items
+                .iter()
+                .map(|it| {
+                    let len = param_u64(it, "length")?;
+                    if len > MAX_MANY_LENGTH {
+                        return Err(RpcError::invalid_params(format!("item length exceeds {MAX_MANY_LENGTH}")));
+                    }
+                    Ok((param_addr(it, "address")?, len as usize))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let values: Vec<Value> = items
+                .into_iter()
+                .map(|(addr, len)| mem::read_bytes(&t, addr, len).map_or(Value::Null, |b| Value::String(to_hex(&b))))
+                .collect();
+            Ok(json!({ "values": values }))
+        }
+        "scan_first" => {
+            let handle = param_handle(params)?;
+            let t = handles.get(handle)?;
+            let req: FirstReq = from_params(params)?;
+            let (scan, count) = state.scans.first(t, handle, req)?;
+            // Detach runs the handle's teardown, then drops it: rechecking after the session's
+            // teardown was registered means no scan outlives its handle.
+            if handles.get(handle).is_err() {
+                let _ = state.scans.end(scan);
+                return Err(RpcError::unknown_handle(format!("unknown handle: {handle}")));
+            }
+            Ok(json!({ "scan": scan, "count": count }))
+        }
+        "scan_next" => {
+            let scan = param_scan(params)?;
+            let req: NextReq = from_params(params)?;
+            Ok(json!({ "count": state.scans.next(scan, req)? }))
+        }
+        "scan_results" => {
+            let scan = param_scan(params)?;
+            let offset = match params.get("offset") {
+                None | Some(Value::Null) => 0,
+                Some(_) => param_u64(params, "offset")?,
+            };
+            let limit = match params.get("limit") {
+                None | Some(Value::Null) => 100,
+                Some(_) => param_u64(params, "limit")?,
+            };
+            if limit > MAX_RESULTS_PAGE {
+                return Err(RpcError::invalid_params(format!("limit exceeds {MAX_RESULTS_PAGE}")));
+            }
+            let (count, results) = state.scans.results(scan, offset, limit as usize)?;
+            let results: Vec<Value> = results
+                .into_iter()
+                .map(|(a, v)| json!({ "address": format!("{a:#x}"), "value": v }))
+                .collect();
+            Ok(json!({ "count": count, "results": results }))
+        }
+        "scan_end" => {
+            state.scans.end(param_scan(params)?)?;
+            Ok(json!({}))
         }
         "modules" => {
             let t = handles.get(param_handle(params)?)?;
@@ -289,6 +362,18 @@ fn error_response(id: Value, e: &RpcError) -> Value {
 }
 
 const MAX_READ: u64 = 64 * 1024 * 1024;
+const MAX_MANY_ITEMS: usize = 4096;
+const MAX_MANY_LENGTH: u64 = 4096;
+const MAX_RESULTS_PAGE: u64 = 1000;
+
+fn param_scan(params: &Value) -> Result<u32, RpcError> {
+    u32::try_from(param_u64(params, "scan")?).map_err(|_| RpcError::invalid_params("scan out of range"))
+}
+
+/// Deserialize a method's params struct; a bad shape is `-32602`.
+fn from_params<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, RpcError> {
+    T::deserialize(params).map_err(|e| RpcError::invalid_params(e.to_string()))
+}
 
 fn param_u64(params: &Value, key: &str) -> Result<u64, RpcError> {
     params

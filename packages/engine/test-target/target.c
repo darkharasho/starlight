@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -33,9 +34,31 @@ static Stats  s_stats  = { .hp = 250, .mp = 75 };
 static Player s_player = { .stats = &s_stats, .level = 12 };
 Player*       g_player = &s_player;
 
+/* --writer: a thread bumps g_counter every 50 ms (value scans, watchpoints, patches). */
+volatile int32_t   g_counter  = 0;
+
+__attribute__((noinline)) void bump_counter(void) {
+    g_counter += 1;
+}
+
+static void* writer_loop(void* arg) {
+    (void)arg;
+    for (;;) {
+        bump_counter();
+        usleep(50 * 1000);
+    }
+    return NULL;
+}
+
 int main(int argc, char** argv) {
     /* --map <file>: mmap the whole file PROT_READ, MAP_PRIVATE (stands in for a Proton-mapped PE). */
     void* mapped = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--writer") == 0) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, writer_loop, NULL) != 0) { perror("--writer"); return 1; }
+        }
+    }
     for (int i = 1; i + 1 < argc; i++) {
         if (strcmp(argv[i], "--map") == 0) {
             int fd = open(argv[i + 1], O_RDONLY);
@@ -59,6 +82,8 @@ int main(int argc, char** argv) {
     printf("addr g_aob_marker=%p\n",  (void*)g_aob_marker);
     printf("addr g_after_aob=%p\n",   (void*)&g_after_aob);
     printf("addr g_player_ptr=%p\n",  (void*)&g_player);
+    printf("addr g_counter=%p\n",     (void*)&g_counter);
+    printf("addr bump_counter=%p\n",  (void*)&bump_counter);
     if (mapped) printf("addr mapped=%p\n", mapped);
     printf("offset stats_in_player=%zu\n", offsetof(Player, stats));
     printf("offset hp_in_stats=%zu\n",     offsetof(Stats, hp));

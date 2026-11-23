@@ -80,6 +80,13 @@ fn poll_exited(pidfd: &OwnedFd, timeout: Duration) -> bool {
     r > 0 && p.revents != 0
 }
 
+impl Target {
+    /// True once the process has exited (its pidfd is readable).
+    pub fn exited(&self) -> bool {
+        poll_exited(&self.pidfd, Duration::ZERO)
+    }
+}
+
 impl Handles {
     pub fn new(conn: Conn, owner: Arc<Owner>) -> Self {
         Handles { conn, owner, map: Arc::new(Mutex::new(HashMap::new())), freezes: Freezes::default(), next: AtomicU32::new(1) }
