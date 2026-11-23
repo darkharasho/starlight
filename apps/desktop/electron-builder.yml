@@ -33,5 +33,8 @@ appImage:
   artifactName: Starlight-${version}.${ext}
 # better-sqlite3 is built for Electron on install (scripts/native-electron.mjs),
 # so electron-builder's own rebuild is off: it would also compile uiohook-napi from
-# source (needs X11 dev headers); it and frida are N-API and work as-is.
+# source (needs X11 dev headers); it is N-API and works as-is.
 npmRebuild: false
+extraResources:
+  - from: ../../packages/starlightd/target/release/starlightd
+    to: starlightd

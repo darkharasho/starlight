@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
 import * as engineHost from './engine-host.js';
+import { configureStarlightdHost, installedDaemonPath, restartEngine, stopEngine } from './starlightd-host.js';
 import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer as registerHotkeysForTrainer, shutdown as shutdownHotkeys, setInitFailureHandler as setHotkeysInitFailureHandler } from './hotkey-host.js';
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
@@ -12,7 +13,7 @@ import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
-import { grantPtraceCap, isPtraceBlocked } from './ce-native.js';
+import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession } from './ce-session.js';
 import { cleanCeError } from './ce-session.js';
 import { launchGame } from './game-launcher.js';
@@ -103,6 +104,12 @@ const CT_CACHE_DIR = join(app.getPath('userData'), 'ct-cache');
 const CE_MANIFEST_URL = 'https://raw.githubusercontent.com/darkharasho/starlight-runtimes/main/manifest.json';
 
 // The trainer engine downloads itself in the background; nobody is asked.
+configureStarlightdHost({
+  runtimeRoot: CE_RUNTIME_ROOT,
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  appPath: app.getAppPath(),
+});
 const runtimeManager = createRuntimeManager({
   runtimeRoot: CE_RUNTIME_ROOT,
   fetchManifest: async () => {
@@ -295,9 +302,16 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(CHANNELS.ceRuntimeStatus, async () => runtimeManager.status());
   ipcMain.handle(CHANNELS.allowMemoryAccess, async () => {
+    if (await readPtraceScope() === 0) return { ok: true as const };
+    const bins: string[] = [];
+    try { bins.push(await installedDaemonPath()); }
+    catch (err) { return { ok: false as const, error: `Couldn't set up the trainer engine: ${err instanceof Error ? err.message : String(err)}` }; }
+    // A failed Cheat Engine download no longer blocks granting starlightd.
     const r = await runtimeManager.ensure();
-    if (!r.ok) return { ok: false as const, error: `Couldn't download the trainer engine: ${r.error}` };
-    return grantPtraceCap({ bin: r.status.ceserver });
+    if (r.ok) bins.push(r.status.ceserver);
+    const g = await grantPtraceCap({ bins });
+    if (g.ok) await restartEngine();
+    return g;
   });
   ipcMain.handle(CHANNELS.ceRuntimeInstall, async () => {
     const r = await runtimeManager.ensure();
@@ -432,6 +446,7 @@ app.on('before-quit', async () => {
   shutdownHotkeys();
   unregisterHotkeys();
   await engineHost.detach();
+  await stopEngine();
   const s = ceGetActiveSession();
   if (s) await ceEndSession({ sessionId: s.sessionId }).catch(() => {});
 });

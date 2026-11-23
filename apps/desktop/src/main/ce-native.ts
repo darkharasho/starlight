@@ -252,8 +252,8 @@ const SETCAP_PATHS = ['/usr/sbin/setcap', '/sbin/setcap', '/usr/bin/setcap'];
 export type GrantResult = { ok: true } | { ok: false; cancelled?: boolean; error: string };
 
 export interface GrantPtraceOpts {
-  /** The ceserver binary to give CAP_SYS_PTRACE. */
-  bin: string;
+  /** The binaries (ceserver, starlightd) to give CAP_SYS_PTRACE. */
+  bins: string[];
   exists?: (p: string) => Promise<boolean>;
   /** Runs a command, resolving with its exit code and stderr. */
   run?: (cmd: string, args: string[]) => Promise<{ code: number | null; stderr: string }>;
@@ -270,18 +270,18 @@ function runCommand(cmd: string, args: string[]): Promise<{ code: number | null;
 }
 
 /**
- * Gives Starlight's ceserver (only that binary) permission to read other
+ * Gives Starlight's own binaries (ceserver and starlightd, nothing else) permission to read other
  * programs' memory, through the desktop's password prompt (pkexec). It lasts
- * until ceserver is reinstalled: rewriting the file drops the permission.
+ * until a binary is reinstalled: rewriting the file drops the permission.
  */
 export async function grantPtraceCap(opts: GrantPtraceOpts): Promise<GrantResult> {
   const has = opts.exists ?? exists;
   const run = opts.run ?? runCommand;
   let setcap: string | undefined;
   for (const p of SETCAP_PATHS) if (await has(p)) { setcap = p; break; }
-  const manual = `sudo setcap cap_sys_ptrace=ep "${opts.bin}"`;
+  const manual = opts.bins.map((b) => `sudo setcap cap_sys_ptrace=ep "${b}"`).join(' && ');
   if (!setcap) return { ok: false, error: `Couldn't find setcap. Run this in a terminal, then try again: ${manual}` };
-  const r = await run('pkexec', [setcap, 'cap_sys_ptrace=ep', opts.bin]);
+  const r = await run('pkexec', [setcap, ...opts.bins.flatMap((b) => ['cap_sys_ptrace=ep', b])]);
   if (r.code === 0) return { ok: true };
   // pkexec: 126 = the password prompt was dismissed, 127 = not authorized.
   if (r.code === 126 || r.code === 127) return { ok: false, cancelled: true, error: 'Permission wasn\'t granted.' };

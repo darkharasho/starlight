@@ -15,6 +15,7 @@ import {
   ReadError,
   WriteError,
 } from '@starlight/engine';
+import { getEngineClient } from './starlightd-host.js';
 import type {
   StarlightTrainer,
   StarlightSupportedCheat,
@@ -53,15 +54,15 @@ export async function cancelAllFreezes(): Promise<void> {
 export async function attach(pid: number): Promise<AttachResult> {
   if (session) await detach();
   try {
-    session = await engineAttach(pid);
-    session.fridaSession.detached.connect(() => {
-      // Frida fired detached — process exited or session was lost.
-      // Clean up our state and notify.
-      const wasManual = session === null;  // detach() sets session=null first
+    const s = await engineAttach(await getEngineClient(), pid);
+    session = s;
+    s.onDetached((reason) => {
+      // A manual detach is finished by detach() itself; only react to the process going away.
+      if (reason === 'manual' || session !== s) return;
       for (const [, h] of freezeHandles) { h.cancel().catch(() => {}); }
       freezeHandles.clear();
       session = null;
-      if (!wasManual && detachedListener) detachedListener('process-exit');
+      detachedListener?.('process-exit');
       attachListener?.(false);
     });
     attachListener?.(true);
@@ -101,7 +102,7 @@ async function resolveAddress(s: Session, addr: StarlightAddress): Promise<strin
     case 'absolute':
       return addr.address;
     case 'module':
-      // module + offset — frida resolves module base at runtime
+      // module + offset — the daemon resolves module base at runtime
       return await resolvePointerChain(s, {
         module: addr.module,
         baseAddress: addr.offset,

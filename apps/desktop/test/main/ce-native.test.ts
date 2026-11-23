@@ -127,22 +127,32 @@ describe('grantPtraceCap', () => {
   it('runs setcap on ceserver through pkexec', async () => {
     const calls: [string, string[]][] = [];
     const r = await grantPtraceCap({
-      bin: '/rt/ceserver-7.5/ceserver', exists: onlyAt('/usr/bin/setcap'),
+      bins: ['/rt/ceserver-7.5/ceserver'], exists: onlyAt('/usr/bin/setcap'),
       run: async (cmd, args) => { calls.push([cmd, args]); return { code: 0, stderr: '' }; },
     });
     expect(r).toEqual({ ok: true });
     expect(calls).toEqual([['pkexec', ['/usr/bin/setcap', 'cap_sys_ptrace=ep', '/rt/ceserver-7.5/ceserver']]]);
   });
 
+  it('grants several binaries in one pkexec call', async () => {
+    const calls: [string, string[]][] = [];
+    const r = await grantPtraceCap({
+      bins: ['/a', '/b'], exists: onlyAt('/usr/sbin/setcap'),
+      run: async (cmd, args) => { calls.push([cmd, args]); return { code: 0, stderr: '' }; },
+    });
+    expect(r).toEqual({ ok: true });
+    expect(calls).toEqual([['pkexec', ['/usr/sbin/setcap', 'cap_sys_ptrace=ep', '/a', 'cap_sys_ptrace=ep', '/b']]]);
+  });
+
   it('reports a dismissed password prompt as cancelled', async () => {
-    const r = await grantPtraceCap({ bin: '/b', exists: onlyAt('/usr/sbin/setcap'), run: async () => ({ code: 126, stderr: '' }) });
+    const r = await grantPtraceCap({ bins: ['/b'], exists: onlyAt('/usr/sbin/setcap'), run: async () => ({ code: 126, stderr: '' }) });
     expect(r).toMatchObject({ ok: false, cancelled: true });
   });
 
   it('gives the terminal command when setcap or pkexec is missing', async () => {
-    expect(await grantPtraceCap({ bin: '/b', exists: async () => false, run: async () => ({ code: 0, stderr: '' }) }))
+    expect(await grantPtraceCap({ bins: ['/b'], exists: async () => false, run: async () => ({ code: 0, stderr: '' }) }))
       .toMatchObject({ ok: false, error: expect.stringContaining('sudo setcap cap_sys_ptrace=ep "/b"') });
-    expect(await grantPtraceCap({ bin: '/b', exists: onlyAt('/sbin/setcap'), run: async () => ({ code: null, stderr: 'spawn pkexec ENOENT' }) }))
+    expect(await grantPtraceCap({ bins: ['/b'], exists: onlyAt('/sbin/setcap'), run: async () => ({ code: null, stderr: 'spawn pkexec ENOENT' }) }))
       .toMatchObject({ ok: false, error: expect.stringContaining('sudo setcap') });
   });
 });

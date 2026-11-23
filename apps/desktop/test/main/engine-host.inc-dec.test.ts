@@ -2,10 +2,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const writeMock = vi.fn(async () => undefined);
 const freezeMock = vi.fn(async () => ({ cancel: vi.fn(async () => undefined) }));
+const detachedCbs: Array<(reason: 'process-exit' | 'manual') => void> = [];
 const attachMock = vi.fn(async () => ({
-  fridaSession: { detached: { connect: vi.fn() } },
-  detach: vi.fn(async () => undefined),
+  pid: 123,
+  handle: 1,
   attached: true,
+  onDetached: vi.fn((cb: (reason: 'process-exit' | 'manual') => void) => { detachedCbs.push(cb); }),
+  detach: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../src/main/starlightd-host.js', () => ({
+  getEngineClient: async () => ({}),
 }));
 
 vi.mock('electron', () => ({
@@ -33,6 +40,17 @@ beforeEach(() => {
 });
 
 describe('engine-host inc/dec', () => {
+  it('notifies detached listener with process-exit when session reports it', async () => {
+    detachedCbs.length = 0;
+    const eh = await import('../../src/main/engine-host.js');
+    const seen: string[] = [];
+    eh.onDetached((r) => seen.push(r));
+    expect((await eh.attach(123)).ok).toBe(true);
+    detachedCbs[0]!('process-exit');
+    expect(seen).toEqual(['process-exit']);
+    expect(eh.isAttached()).toBe(false);
+  });
+
   it('returns error when not attached', async () => {
     const eh = await import('../../src/main/engine-host.js');
     const r = await eh.incCheat('x');
