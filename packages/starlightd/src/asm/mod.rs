@@ -18,8 +18,20 @@
 //!   register, a label in the source, or a symbol `resolve` knows.
 //! - Memory: `[base + index*scale ± disp]` with any subset of the parts, an optional size keyword
 //!   `byte|word|dword|qword|xmmword` with an optional `ptr`, and `fs:`/`gs:` overrides written as
-//!   `gs:[30]` or `[gs:30]`. When no operand fixes the memory size, `dword` is used if it is one of
-//!   the candidates (so `mov [rax],1` is a dword store); otherwise it is an error.
+//!   `gs:[30]` or `[gs:30]`. A displacement from `80000000` to `FFFFFFFF` wraps as signed 32-bit
+//!   (`[rax+FFFFFFFF]` = `[rax-1]`), as in CE.
+//! - Size-less memory operands: when no register or keyword fixes the size and the instruction
+//!   has forms of several sizes:
+//!   - with an immediate operand it is `dword` (D2: `mov [rax],1` is a dword store); if the
+//!     immediate doesn't fit a dword form it is an error;
+//!   - near indirect `jmp`/`call` and `push`/`pop` of memory are `qword` (far `m16:xx` branches
+//!     are never chosen);
+//!   - multi-byte `nop` is `dword` (the disassembler prints `nop [rax+rax]` without a size);
+//!   - anything else (`inc [rax]`, `cvtsi2sd xmm0,[rax]`, `movzx eax,[rdi]`) is an error.
+//! - Operand size: 16-bit (`66`-prefixed) forms are only chosen when a 16-bit register or `word`
+//!   is written, so `push 1234` is the 8-byte `push` (`68 34 12 00 00`).
+//! - Prefixes are rejected on instructions that can't take them (`lock` also needs a memory
+//!   destination).
 //! - Memory addressing rule for an operand with no base or index register:
 //!   - `[label]`, `[symbol]`, `[symbol±disp]` are always RIP-relative (an error if out of rel32 range);
 //!   - a plain number `[1234]` is RIP-relative when the target is within ±2 GiB of `address`,
@@ -121,6 +133,46 @@ mod tests {
         // Size given by a register operand; an unresolvable size is an error.
         assert_eq!(asm("movzx eax,byte ptr [rdi]"), [0x0F, 0xB6, 0x07]);
         assert!(assemble("movzx eax,[rdi]", 0x1000, &no_syms).is_err());
+    }
+
+    #[test]
+    fn size_less_memory_defaults() {
+        // Near indirect branches are qword, never far m16:16.
+        assert_eq!(asm("jmp [rax]"), [0xFF, 0x20]);
+        assert_eq!(asm("call [rax+10]"), [0xFF, 0x50, 0x10]);
+        let a = asm("jmp [v]\nv:\ndq 0");
+        assert_eq!(&a[..6], &[0xFF, 0x25, 0x00, 0, 0, 0]);
+        assert_eq!(asm("push [rax]"), [0xFF, 0x30]);
+        assert_eq!(asm("pop [rax]"), [0x8F, 0x00]);
+        // No immediate and several possible sizes: the size must be written.
+        for src in ["inc [rax]", "cvtsi2sd xmm0,[rax]", "not [rcx]"] {
+            let e = assemble(src, 0x1000, &no_syms).unwrap_err();
+            assert!(e.message.contains("size"), "{src}: {e}");
+        }
+        assert_eq!(asm("inc dword ptr [rax]"), [0xFF, 0x00]);
+        assert_eq!(asm("cvtsi2sd xmm0,qword ptr [rax]"), [0xF2, 0x48, 0x0F, 0x2A, 0x00]);
+        // An immediate that only a qword form could take is an error, not a silent qword.
+        assert!(assemble("mov [rax],FFFFFFFF80000000", 0x1000, &no_syms).is_err());
+        assert_eq!(asm("mov qword ptr [rax],FFFFFFFF80000000"), [0x48, 0xC7, 0x00, 0x00, 0x00, 0x00, 0x80]);
+    }
+
+    #[test]
+    fn push_immediate_is_64_bit() {
+        assert_eq!(asm("push 1234"), [0x68, 0x34, 0x12, 0, 0]);
+        assert_eq!(asm("push 80"), [0x68, 0x80, 0, 0, 0]);
+        assert_eq!(asm("push 10"), [0x6A, 0x10]);
+        assert_eq!(asm("push -1"), [0x6A, 0xFF]);
+        // 16-bit forms when asked for.
+        assert_eq!(asm("push ax"), [0x66, 0x50]);
+        assert_eq!(asm("push word ptr [rax]"), [0x66, 0xFF, 0x30]);
+    }
+
+    #[test]
+    fn prefixes_need_an_instruction_that_takes_them() {
+        assert!(assemble("lock mov eax,ecx", 0x1000, &no_syms).is_err());
+        assert!(assemble("lock add eax,1", 0x1000, &no_syms).is_err());
+        assert!(assemble("rep add eax,ecx", 0x1000, &no_syms).is_err());
+        assert_eq!(asm("lock add dword ptr [rax],1"), [0xF0, 0x83, 0x00, 0x01]);
     }
 
     #[test]

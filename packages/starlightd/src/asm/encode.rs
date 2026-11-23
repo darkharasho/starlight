@@ -8,11 +8,11 @@
 //! `BlockEncoder` relocates them and picks short or near branches. Labels used any other way (as
 //! immediates, data, with an offset, or at the very end) take their address from the previous
 //! pass; passes repeat until every label address is stable.
-use super::parse::{DataItem, Expr, Line, Operand, Prefix, Stmt};
+use super::parse::{DataItem, Expr, Line, MemSize, Operand, Prefix, Stmt};
 use super::{AsmError, Assembled};
 use iced_x86::{
     BlockEncoder, BlockEncoderOptions, Code, Decoder, DecoderOptions, Encoder, Instruction, InstructionBlock,
-    OpCodeOperandKind as K, OpKind, Register,
+    MemorySize, OpCodeOperandKind as K, OpKind, Register,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
@@ -303,16 +303,40 @@ fn instruction(
         _ => None,
     });
 
+    let has_imm = operands.iter().any(|o| matches!(o, Operand::Imm(_)));
+    let has_mem = mem_size.is_some();
+    // 16-bit operand size only when the source asks for it (a 16-bit register or `word`);
+    // otherwise `push 1234` could pick the 2-byte-shorter `66 68` form.
+    let wants_o16 = mem_size == Some(Some(MemSize::Word))
+        || operands.iter().any(|o| matches!(o, Operand::Reg(r) if r.is_gpr16()));
+    let near_branch = matches!(mnemonic, "jmp" | "call");
+
     let mut enc = Encoder::new(64);
     let mut found: Vec<(usize, Instruction)> = vec![];
+    // Memory sizes of every candidate the register and memory operands fit (whatever the immediate).
+    let mut sizes: Vec<usize> = vec![];
     let mut first_err = None;
+    let mut prefix_rejected = false;
     'cand: for &code in cands {
         let oc = code.op_code();
-        if oc.op_count() as usize != operands.len() {
+        if oc.op_count() as usize != operands.len() || (oc.operand_size() == 16 && !wants_o16) {
+            continue;
+        }
+        let prefix_ok = prefixes.iter().all(|p| match p {
+            Prefix::Lock => oc.can_use_lock_prefix() && has_mem,
+            Prefix::Rep | Prefix::Repe => oc.can_use_rep_prefix(),
+            Prefix::Repne => oc.can_use_repne_prefix(),
+        });
+        if !prefix_ok {
+            prefix_rejected = true;
             continue;
         }
         let mut ins = Instruction::default();
         ins.set_code(code);
+        // Far `m16:16`-style branches are never what `jmp [x]` / `call [x]` means.
+        if near_branch && matches!(ins.memory_size(), MemorySize::SegPtr16 | MemorySize::SegPtr32 | MemorySize::SegPtr64) {
+            continue;
+        }
         for p in prefixes {
             match p {
                 Prefix::Lock => ins.set_has_lock_prefix(true),
@@ -321,10 +345,11 @@ fn instruction(
                 Prefix::Repne => ins.set_has_repne_prefix(true),
             }
         }
+        // Registers and memory first, so `sizes` sees every form the operands could mean.
         for (i, op) in operands.iter().enumerate() {
             let ok = match op {
                 Operand::Reg(r) => set_reg(&mut ins, i as u32, oc.op_kind(i as u32), *r),
-                Operand::Imm(_) => set_imm(&mut ins, i as u32, oc.op_kind(i as u32), vals[i].unwrap()),
+                Operand::Imm(_) => true,
                 Operand::Mem { size, seg, .. } => {
                     set_mem(&mut ins, i as u32, oc.op_kind(i as u32), addrs[i].unwrap(), *seg)
                         && size.is_none_or(|s| {
@@ -337,6 +362,24 @@ fn instruction(
                 continue 'cand;
             }
         }
+        if has_mem {
+            // Would this form encode with an immediate that fits anything? Then its size is a
+            // possible meaning of the operands, whether or not the real immediate fits.
+            let mut probe = ins;
+            let fits = operands.iter().enumerate().all(|(i, op)| {
+                let kind = oc.op_kind(i as u32);
+                let v = if is_branch(kind) { ip as i128 } else { 1 };
+                !matches!(op, Operand::Imm(_)) || set_imm(&mut probe, i as u32, kind, Val { value: v, entry: None, symbolic: false })
+            });
+            if fits && enc.encode(&probe, ip).is_ok() {
+                sizes.push(ins.memory_size().size());
+            }
+        }
+        for (i, op) in operands.iter().enumerate() {
+            if matches!(op, Operand::Imm(_)) && !set_imm(&mut ins, i as u32, oc.op_kind(i as u32), vals[i].unwrap()) {
+                continue 'cand;
+            }
+        }
         match enc.encode(&ins, ip) {
             Ok(len) => found.push((len, ins)),
             Err(e) => {
@@ -344,20 +387,26 @@ fn instruction(
             }
         }
     }
-    // A memory operand without a size: if candidates disagree on it, prefer dword (D2).
-    if mem_size == Some(None) {
-        let mut sizes: Vec<usize> = found.iter().map(|(_, i)| i.memory_size().size()).collect();
-        sizes.sort_unstable();
-        sizes.dedup();
-        if sizes.len() > 1 {
-            if !sizes.contains(&4) {
-                return Err("operand size not specified (add byte/word/dword/qword ptr)".into());
-            }
-            found.retain(|(_, i)| i.memory_size().size() == 4);
+    // A memory operand without a size that could mean several sizes (see the module doc).
+    sizes.sort_unstable();
+    sizes.dedup();
+    if mem_size == Some(None) && sizes.len() > 1 {
+        let default = if near_branch || matches!(mnemonic, "push" | "pop") {
+            8
+        } else if has_imm || mnemonic == "nop" {
+            4
+        } else {
+            return Err("operand size required (add byte/word/dword/qword ptr)".into());
+        };
+        found.retain(|(_, i)| i.memory_size().size() == default);
+        if found.is_empty() {
+            let name = if default == 4 { "dword" } else { "qword" };
+            return Err(format!("operands don't fit the default {name} size; add a size keyword"));
         }
     }
     let Some((_, ins)) = found.into_iter().min_by_key(|(len, _)| *len) else {
         return Err(match first_err {
+            _ if prefix_rejected => format!("prefix not allowed on {mnemonic} with these operands"),
             Some(e) if operands.iter().all(|o| !matches!(o, Operand::Reg(_))) => format!("can't encode: {e}"),
             _ => format!("invalid operands for {mnemonic}"),
         });
