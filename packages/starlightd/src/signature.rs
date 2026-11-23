@@ -3,6 +3,7 @@
 use crate::aob::{self, Pattern};
 use crate::disasm::{self, Insn};
 use crate::maps;
+use crate::mem;
 use crate::modules;
 use crate::process::Target;
 use crate::rpc::RpcError;
@@ -18,8 +19,10 @@ pub struct Signature {
     pub matches: usize,
 }
 
-/// Cap on counted matches for a signature that never became unique.
-const MAX_COUNTED: usize = 1000;
+/// Largest match list kept for narrowing; beyond it the pattern is rescanned at the next step.
+const MAX_CANDIDATES: usize = 4096;
+/// Bound on full module scans per signature.
+const MAX_SCANS: usize = 4;
 /// Fewer fixed bytes than this are never worth a module scan.
 const MIN_FIXED_BYTES: usize = 3;
 
@@ -93,7 +96,7 @@ pub fn build(t: &Target, address: u64, max_len: usize) -> Result<Signature, RpcE
     let code = disasm::read_code(t, address, max_len + disasm::MAX_INSN_LEN)?;
     let insns: Vec<Insn> = disasm::decode(&code, address, max_len + disasm::MAX_INSN_LEN);
     let mut parts: Vec<Option<u8>> = vec![];
-    let mut last = (String::new(), 0usize);
+    let mut cands = Candidates::default();
     for insn in &insns {
         if insn.text.starts_with("db ") || (!parts.is_empty() && parts.len() + insn.length > max_len) {
             break;
@@ -102,27 +105,64 @@ pub fn build(t: &Target, address: u64, max_len: usize) -> Result<Signature, RpcE
         let ins = dec.decode();
         let keep = wildcard_mask(&ins, &insn.bytes, &looks_like_address);
         parts.extend(insn.bytes.iter().zip(&keep).map(|(&b, &k)| k.then_some(b)));
-        let text = pattern_text(&parts);
-        let fixed = parts.iter().flatten().count();
-        if fixed < MIN_FIXED_BYTES {
-            last = (text, 0);
+        if parts.iter().flatten().count() < MIN_FIXED_BYTES {
             continue;
         }
-        let found = aob::scan(t, range, &Pattern::parse(&text)?, 2)?;
-        last = (text, found.len());
-        if found.len() == 1 {
-            return Ok(Signature { pattern: last.0, module: m.name.clone(), length: parts.len(), unique: true, matches: 1 });
+        cands.update(t, range, &parts)?;
+        if cands.count == 1 {
+            break;
         }
     }
     if parts.is_empty() {
         return Err(RpcError::read_failed(format!("no decodable instruction at {address:#x}")));
     }
-    let matches = if last.0.is_empty() || parts.iter().flatten().count() == 0 {
-        0
-    } else {
-        aob::scan(t, range, &Pattern::parse(&last.0)?, MAX_COUNTED)?.len()
-    };
-    Ok(Signature { pattern: last.0, module: m.name.clone(), length: parts.len(), unique: matches == 1, matches })
+    // Too few fixed bytes to have been scanned yet: scan once so `matches` is meaningful.
+    if !cands.scanned && parts.iter().flatten().count() > 0 {
+        cands.update(t, range, &parts)?;
+    }
+    Ok(Signature {
+        pattern: pattern_text(&parts),
+        module: m.name.clone(),
+        length: parts.len(),
+        unique: cands.count == 1,
+        matches: cands.count,
+    })
+}
+
+/// Tracks which module addresses still match the growing pattern. Scans the module only when
+/// the list is unknown (first time, or the last scan overflowed `MAX_CANDIDATES`), at most
+/// `MAX_SCANS` times; otherwise narrows the list by reading each candidate's bytes.
+#[derive(Default)]
+struct Candidates {
+    /// Known full match list; `None` until scanned or after an overflow.
+    list: Option<Vec<u64>>,
+    scans: usize,
+    scanned: bool,
+    /// Current match count. Exact when `list` is known; after an overflow it is the capped count
+    /// (a lower bound), and once the scan budget is spent it is the last known (stale) count.
+    count: usize,
+}
+
+impl Candidates {
+    fn update(&mut self, t: &Target, range: (u64, u64), parts: &[Option<u8>]) -> Result<(), RpcError> {
+        let text = pattern_text(parts);
+        let pattern = Pattern::parse(&text)?;
+        if let Some(list) = &mut self.list {
+            list.retain(|&a| mem::read_bytes(t, a, parts.len()).is_ok_and(|b| pattern.matches_window(&b)));
+            self.count = list.len();
+        } else if self.scans < MAX_SCANS {
+            self.scans += 1;
+            self.scanned = true;
+            let found = aob::scan(t, range, &pattern, MAX_CANDIDATES + 1)?;
+            if found.len() > MAX_CANDIDATES {
+                self.count = found.len();
+            } else {
+                self.count = found.len();
+                self.list = Some(found);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

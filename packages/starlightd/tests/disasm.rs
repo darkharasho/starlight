@@ -95,3 +95,29 @@ fn hello_lists_signature_capability() {
     let r = c.call("hello", json!({})).unwrap();
     assert!(r["capabilities"].as_array().unwrap().iter().any(|v| v == "signature"));
 }
+
+#[test]
+fn signature_too_short_to_be_unique_reports_matches() {
+    let t = Target::spawn(&["--writer"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = c.call("make_signature", json!({"handle": h, "address": t.addr("bump_counter"), "max_length": 1})).unwrap();
+    assert_eq!(r["unique"], false);
+    assert!(r["matches"].as_u64().unwrap() > 1, "matches {}", r["matches"]);
+    // The non-unique pattern still matches at the requested address.
+    let s = c.call("aob_scan", json!({"handle": h, "module": r["module"], "pattern": r["pattern"]})).unwrap();
+    assert!(s["matches"].as_array().unwrap().iter().any(|a| *a == t.addr("bump_counter")));
+}
+
+#[test]
+fn signature_max_length_out_of_range_is_32602() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    for bad in [0, 4097] {
+        let err = c.call("make_signature", json!({"handle": h, "address": t.addr("bump_counter"), "max_length": bad})).unwrap_err();
+        assert_eq!(err.0, -32602, "max_length {bad}");
+    }
+}
