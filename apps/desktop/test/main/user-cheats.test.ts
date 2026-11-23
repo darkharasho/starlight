@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadUserTrainer, saveUserCheat, removeUserCheat, userCheatsDir } from '../../src/main/user-cheats.js';
@@ -74,5 +74,21 @@ describe('user cheats', () => {
   it('concurrent saves keep every cheat', async () => {
     await Promise.all([1, 2, 3, 4].map((i) => saveUserCheat(dir, '9kings', game, { ...gold, name: `c${i}` })));
     expect((await loadUserTrainer(dir, '9kings'))!.categories[0]!.cheats).toHaveLength(4);
+  });
+
+  it('a corrupt library file is never overwritten by a save or remove', async () => {
+    await writeFile(join(dir, '9kings.json'), '{ not json', 'utf8');
+    await expect(saveUserCheat(dir, '9kings', game, gold)).rejects.toThrow(/can't be read/);
+    await expect(removeUserCheat(dir, '9kings', 'x')).rejects.toThrow(/can't be read/);
+    expect(await readFile(join(dir, '9kings.json'), 'utf8')).toBe('{ not json');
+    await writeFile(join(dir, '9kings.json'), '{"schemaVersion":2}', 'utf8');
+    await expect(saveUserCheat(dir, '9kings', game, gold)).rejects.toThrow(/can't be read/);
+    expect(await readFile(join(dir, '9kings.json'), 'utf8')).toBe('{"schemaVersion":2}');
+  });
+
+  it('an invalid cheat is not written', async () => {
+    const bad = { ...gold, valueType: 'bogus' } as never;
+    await expect(saveUserCheat(dir, '9kings', game, bad)).rejects.toThrow(/isn't valid/);
+    expect(await loadUserTrainer(dir, '9kings')).toBeNull();
   });
 });

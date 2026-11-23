@@ -18,18 +18,34 @@ function fileFor(dir: string, key: string): string {
   return join(dir, `${key}.json`);
 }
 
-export async function loadUserTrainer(dir: string, key: string): Promise<StarlightTrainer | null> {
+type Loaded = { status: 'missing' } | { status: 'bad'; file: string } | { status: 'ok'; trainer: StarlightTrainer };
+
+async function readTrainer(dir: string, key: string): Promise<Loaded> {
   const file = fileFor(dir, key);
   let text: string;
-  try { text = await readFile(file, 'utf8'); } catch { return null; }
+  try { text = await readFile(file, 'utf8'); } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { status: 'missing' } : { status: 'bad', file };
+  }
   try {
     const parsed = StarlightTrainerSchema.safeParse(JSON.parse(text));
-    return parsed.success ? parsed.data : null;
-  } catch { return null; }
+    return parsed.success ? { status: 'ok', trainer: parsed.data } : { status: 'bad', file };
+  } catch { return { status: 'bad', file }; }
+}
+
+export async function loadUserTrainer(dir: string, key: string): Promise<StarlightTrainer | null> {
+  const r = await readTrainer(dir, key);
+  return r.status === 'ok' ? r.trainer : null;
+}
+
+async function loadForWrite(dir: string, key: string): Promise<StarlightTrainer | null> {
+  const r = await readTrainer(dir, key);
+  if (r.status === 'bad') throw new Error(`your cheat library for this game can't be read (${r.file}); not overwriting it. Fix or move the file and try again`);
+  return r.status === 'ok' ? r.trainer : null;
 }
 
 async function writeTrainer(dir: string, key: string, t: StarlightTrainer): Promise<void> {
   const file = fileFor(dir, key);
+  if (!StarlightTrainerSchema.safeParse(t).success) throw new Error("that cheat isn't valid, so it wasn't saved");
   await mkdir(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -69,7 +85,7 @@ export async function saveUserCheat(
 ): Promise<{ id: string }> {
   fileFor(dir, key); // throws synchronously-in-promise for a bad key, before queueing
   return await serial(dir, key, async () => {
-    const existing = await loadUserTrainer(dir, key);
+    const existing = await loadForWrite(dir, key);
     const trainer: StarlightTrainer = existing ?? {
       schemaVersion: 2,
       id: `user-${key}`,
@@ -114,7 +130,7 @@ export async function saveUserCheat(
 export async function removeUserCheat(dir: string, key: string, id: string): Promise<boolean> {
   fileFor(dir, key);
   return await serial(dir, key, async () => {
-    const t = await loadUserTrainer(dir, key);
+    const t = await loadForWrite(dir, key);
     if (!t) return false;
     let removed = false;
     for (const c of t.categories) {

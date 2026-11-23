@@ -74,6 +74,17 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
     r?.();
   }
 
+  /** Nothing is running for this game any more: give it back and drop the attachment this host made. */
+  async function idle(pid: number, st: PidState): Promise<void> {
+    if (st.entries.size > 0) return;
+    releaseHold(st);
+    const s = st.session;
+    st.unsubscribe?.(); st.unsubscribe = null;
+    st.session = null;
+    if (states.get(pid) === st && !st.attaching) states.delete(pid);
+    await s?.detach().catch(() => undefined);
+  }
+
   /** The game went away (or we are shutting down): everything held for it is stale. */
   function forget(pid: number, st: PidState): void {
     const keys = new Set([...st.entries.values()].map((e) => e.key));
@@ -143,7 +154,7 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
         st.release = deps.owner.hold(pid, 'user-cheats');
       }
     }
-    const giveBack = (): void => { if (st.entries.size === 0) releaseHold(st); };
+    const giveBack = (): Promise<void> => idle(pid, st);
 
     try {
       const session = await sessionFor(pid);
@@ -157,7 +168,7 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
       deps.onChange?.(key);
       return { ok: true };
     } catch (err) {
-      giveBack();
+      await giveBack();
       if (err instanceof NeedsUpdateError) return { ok: false, error: `This cheat needs updating: ${err.reasons.join('; ')}` };
       return { ok: false, error: errMsg(err) };
     }
@@ -171,7 +182,7 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
     } catch (err) {
       return { ok: false, error: errMsg(err) };
     }
-    if (st.entries.size === 0) releaseHold(st);
+    await idle(pid, st);
     return { ok: true };
   }
 
@@ -193,24 +204,40 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
       const t = await loadUserTrainer(deps.dir, key);
       if (!t) return [];
       const cheats = t.categories.flatMap((c) => c.cheats);
-      let session: Session | null = null;
-      if (pid !== null && !ended) {
-        try { session = await sessionFor(pid); } catch { session = null; }
-      }
-      const st = pid !== null ? states.get(pid) : undefined;
-      const views: UserCheatView[] = [];
-      for (const cheat of cheats) {
-        const e = st?.entries.get(entryKey(key, cheat.id));
-        let v: UserCheatView['verify'] = null;
-        if (session?.attached) {
+      const verifyAll = async (session: Session | null): Promise<Map<string, UserCheatView['verify']>> => {
+        const out = new Map<string, UserCheatView['verify']>();
+        if (!session) return out;
+        for (const cheat of cheats) {
+          if (!session.attached) break;
           try {
             const r = await verify(session, cheat);
-            v = { status: r.status, reasons: r.reasons };
-          } catch { v = null; }
+            out.set(cheat.id, { status: r.status, reasons: r.reasons });
+          } catch { /* leave null */ }
         }
-        views.push({ cheat, active: !!e, ...(e?.value !== undefined ? { value: e.value } : {}), verify: v });
+        return out;
+      };
+
+      let results = new Map<string, UserCheatView['verify']>();
+      if (pid !== null && !ended) {
+        results = await exclusive(pid, async () => {
+          const st = stateFor(pid);
+          // Already ours: verify through the live session. Held by Cheat Engine: leave it alone.
+          if (st.session?.attached && st.release) return verifyAll(st.session);
+          if (deps.owner.ownerOf(pid)?.engine === 'ce') { if (!st.session && st.entries.size === 0) states.delete(pid); return new Map(); }
+          const release = st.release ? null : deps.owner.hold(pid, 'user-cheats');
+          if (release) st.release = release;
+          try {
+            return await verifyAll(await sessionFor(pid).catch(() => null));
+          } finally {
+            await idle(pid, st);
+          }
+        });
       }
-      return views;
+      const st = pid !== null ? states.get(pid) : undefined;
+      return cheats.map((cheat) => {
+        const e = st?.entries.get(entryKey(key, cheat.id));
+        return { cheat, active: !!e, ...(e?.value !== undefined ? { value: e.value } : {}), verify: results.get(cheat.id) ?? null };
+      });
     },
 
     setActive(req) {
@@ -244,7 +271,7 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
         const st = states.get(pid);
         if (!st) return;
         for (const ek of [...st.entries.keys()]) await disableEntry(st, ek).catch(() => undefined);
-        if (st.entries.size === 0) releaseHold(st);
+        await idle(pid, st);
       });
     },
 

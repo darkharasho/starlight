@@ -37,12 +37,16 @@ function setup(o: { ce?: boolean; enable?: (...a: unknown[]) => Promise<RunningC
     claim: async (pid: number, h: 'agent' | 'user-cheats') => { order.push('claim'); const r = await base.claim(pid, h); return () => { released.push('x'); r(); }; },
   };
   const detachCbs: Array<(r: 'process-exit' | 'manual') => void> = [];
-  const session = {
-    pid: 42, handle: 1, attached: true, client: {} as EngineClient,
-    detach: vi.fn(async () => { (session as { attached: boolean }).attached = false; }),
-    onDetached: (cb: (r: 'process-exit' | 'manual') => void) => { detachCbs.push(cb); return () => undefined; },
-  } as unknown as Session;
-  const attach = vi.fn(async () => session);
+  const sessions: Session[] = [];
+  const attach = vi.fn(async () => {
+    const session = {
+      pid: 42, handle: 1, attached: true, client: {} as EngineClient,
+      detach: vi.fn(async () => { (session as { attached: boolean }).attached = false; }),
+      onDetached: (cb: (r: 'process-exit' | 'manual') => void) => { detachCbs.push(cb); return () => undefined; },
+    } as unknown as Session;
+    sessions.push(session);
+    return session;
+  });
   const runners: RunningCheat[] = [];
   const enableCheat = vi.fn(o.enable ?? (async () => {
     order.push('enableCheat');
@@ -58,7 +62,7 @@ function setup(o: { ce?: boolean; enable?: (...a: unknown[]) => Promise<RunningC
     detectAntiCheatFn: async () => (o.antiCheat ? { name: 'EAC', module: 'easyanticheat.so' } : null),
     onChange,
   });
-  return { host, base, order, attach, enableCheat, verifyCheat, runners, detachCbs, session, released, onChange };
+  return { host, base, order, attach, enableCheat, verifyCheat, runners, detachCbs, sessions, released, onChange };
 }
 
 describe('user cheats host', () => {
@@ -107,6 +111,30 @@ describe('user cheats host', () => {
     expect(on[0]).toMatchObject({ active: false, verify: { status: 'ok', reasons: [] } });
     await s.host.setActive({ key: KEY, pid: 42, id: 'gems', on: true });
     expect((await s.host.list(KEY, 42)).map((v) => v.active)).toEqual([false, true]);
+  });
+
+  it('a CE-owned pid lists with verify null and never attaches', async () => {
+    const s = setup({ ce: true });
+    const v = await s.host.list(KEY, 42);
+    expect(v.map((x) => x.verify)).toEqual([null, null]);
+    expect(s.attach).not.toHaveBeenCalled();
+    expect(s.base.holders(42)).toEqual([]);
+  });
+
+  it('a list-only verify leaves no attached session and no hold', async () => {
+    const s = setup();
+    const v = await s.host.list(KEY, 42);
+    expect(v[0]!.verify?.status).toBe('ok');
+    expect(s.base.holders(42)).toEqual([]);
+    expect(s.sessions).toHaveLength(1);
+    expect(s.sessions[0]!.attached).toBe(false);
+  });
+
+  it('turning the last cheat off detaches the session it made', async () => {
+    const s = setup();
+    await s.host.setActive({ key: KEY, pid: 42, id: 'gold', on: true });
+    await s.host.setActive({ key: KEY, pid: 42, id: 'gold', on: false });
+    expect(s.sessions[0]!.attached).toBe(false);
   });
 
   it('turning the last cheat off releases the game', async () => {
@@ -170,6 +198,6 @@ describe('user cheats host', () => {
     await s.host.end();
     expect(s.runners[0]!.disable).toHaveBeenCalled();
     expect(s.base.holders(42)).toEqual([]);
-    expect(s.session.detach).toHaveBeenCalled();
+    expect(s.sessions[0]!.detach).toHaveBeenCalled();
   });
 });
