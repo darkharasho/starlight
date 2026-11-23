@@ -208,3 +208,17 @@ impl Drop for Target {
         self.kill();
     }
 }
+
+/// Minimal PE32+ image header: "MZ", e_lfanew=0x40, "PE\0\0", COFF header, optional header with SizeOfImage.
+pub fn minimal_pe(size_of_image: u32) -> Vec<u8> {
+    let mut h = vec![0u8; 0x200];
+    h[0..4].copy_from_slice(&[0x4D, 0x5A, 0x90, 0x00]);
+    h[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+    h[0x40..0x44].copy_from_slice(b"PE\0\0");
+    h[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes()); // Machine
+    h[0x54..0x56].copy_from_slice(&0xF0u16.to_le_bytes()); // SizeOfOptionalHeader
+    let opt = 0x58;
+    h[opt..opt + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+    h[opt + 56..opt + 60].copy_from_slice(&size_of_image.to_le_bytes());
+    h
+}

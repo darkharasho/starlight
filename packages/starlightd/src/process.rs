@@ -36,7 +36,7 @@ fn map_errno(e: &io::Error, pid: i32) -> RpcError {
         Some(libc::EACCES) | Some(libc::EPERM) => {
             RpcError::permission_denied(format!("not permitted to access pid {pid}: {e}"))
         }
-        _ => RpcError::permission_denied(format!("cannot access pid {pid}: {e}")),
+        _ => RpcError::internal_error(format!("cannot access pid {pid}: {e}")),
     }
 }
 

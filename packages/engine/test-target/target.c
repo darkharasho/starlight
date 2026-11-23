@@ -4,6 +4,9 @@
 #include <string.h>
 #include <stddef.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -30,7 +33,20 @@ static Stats  s_stats  = { .hp = 250, .mp = 75 };
 static Player s_player = { .stats = &s_stats, .level = 12 };
 Player*       g_player = &s_player;
 
-int main(void) {
+int main(int argc, char** argv) {
+    /* --map <file>: mmap the whole file PROT_READ, MAP_PRIVATE (stands in for a Proton-mapped PE). */
+    void* mapped = NULL;
+    for (int i = 1; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--map") == 0) {
+            int fd = open(argv[i + 1], O_RDONLY);
+            struct stat st;
+            if (fd < 0 || fstat(fd, &st) != 0 || st.st_size == 0) { perror("--map"); return 1; }
+            mapped = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+            if (mapped == MAP_FAILED) { perror("mmap"); return 1; }
+            close(fd);
+        }
+    }
+
     /* Print addresses on startup so tests can locate them.
      * Format is parsed by the spawn-target test helper. */
     printf("READY\n");
@@ -43,6 +59,7 @@ int main(void) {
     printf("addr g_aob_marker=%p\n",  (void*)g_aob_marker);
     printf("addr g_after_aob=%p\n",   (void*)&g_after_aob);
     printf("addr g_player_ptr=%p\n",  (void*)&g_player);
+    if (mapped) printf("addr mapped=%p\n", mapped);
     printf("offset stats_in_player=%zu\n", offsetof(Player, stats));
     printf("offset hp_in_stats=%zu\n",     offsetof(Stats, hp));
     fflush(stdout);

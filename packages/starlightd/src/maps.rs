@@ -1,5 +1,4 @@
 //! Parser for `/proc/<pid>/maps`.
-#![allow(dead_code)] // consumed by later tasks (attach/modules/etc.)
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

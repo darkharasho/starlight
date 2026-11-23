@@ -1,9 +1,10 @@
 //! JSON-RPC 2.0 plumbing: errors, a shared connection writer, and method dispatch.
 #![allow(dead_code)] // consumed by later tasks (attach/modules/etc.)
-use crate::{mem, process::Handles};
+use crate::{mem, modules, process::Handles};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 1;
@@ -22,6 +23,7 @@ impl RpcError {
     pub fn parse_error(m: impl Into<String>) -> Self { Self::new(-32700, m) }
     pub fn method_not_found(m: impl Into<String>) -> Self { Self::new(-32601, m) }
     pub fn invalid_params(m: impl Into<String>) -> Self { Self::new(-32602, m) }
+    pub fn internal_error(m: impl Into<String>) -> Self { Self::new(-32603, m) }
     pub fn permission_denied(m: impl Into<String>) -> Self { Self::new(-32001, m) }
     pub fn process_not_found(m: impl Into<String>) -> Self { Self::new(-32002, m) }
     pub fn read_failed(m: impl Into<String>) -> Self { Self::new(-32003, m) }
@@ -39,6 +41,8 @@ pub struct Conn {
 
 impl Conn {
     pub fn new(stream: UnixStream) -> Self {
+        // A stalled client must not pin writer threads forever.
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
         Conn { writer: Arc::new(Mutex::new(stream)) }
     }
 
@@ -47,7 +51,10 @@ impl Conn {
         let mut line = value.to_string();
         line.push('\n');
         if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(line.as_bytes());
+            if w.write_all(line.as_bytes()).is_err() {
+                // Timed out or peer gone: drop the connection so the reader loop ends and cleanup runs.
+                let _ = w.shutdown(std::net::Shutdown::Both);
+            }
         }
     }
 
@@ -121,6 +128,11 @@ impl Session {
                 }
                 let bytes = mem::read_bytes(&t, addr, len as usize)?;
                 Ok(json!({ "bytes": to_hex(&bytes) }))
+            }
+            "modules" => {
+                let t = self.handles.get(param_handle(params)?)?;
+                let list = modules::list(&t)?;
+                Ok(json!({ "modules": list }))
             }
             "write" => {
                 let t = self.handles.get(param_handle(params)?)?;

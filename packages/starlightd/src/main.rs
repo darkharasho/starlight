@@ -1,5 +1,6 @@
 mod maps;
 mod mem;
+mod modules;
 mod process;
 mod rpc;
 
