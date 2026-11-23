@@ -5,8 +5,33 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
-/// How long `main` waits for teardown before exiting anyway.
-pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(3);
+// Exit timing. Each stage outlasts the slow-but-correct work inside it, and the client's
+// patience outlasts the daemon's whole exit:
+//
+// - Teardown (`SHUTDOWN_DEADLINE`, 8 s): reverts and watch clears run through tracer jobs, each
+//   stop-the-world allowed 2 s. A watch clear tries 3 times (6 s), then its tracer detaches.
+// - Final detach (`FINAL_DETACH`, 4 s): whatever is still traced (a teardown that ran out of
+//   time, a detach still waiting for a thread) is detached at once, debug registers cleared, no
+//   trap of ours left queued (`tracer::detach_everything`). Tracers stop waiting for threads 1 s
+//   before its end. Without it, `process::exit` would let the kernel detach implicitly: armed
+//   debug registers (the game's next hit kills it) and swallowed traps delivered after all.
+// - The daemon has exited after at most ~12 s. The TS client (`startEngine().stop()`) sends
+//   SIGKILL only after 15 s.
+//
+// A tracer on its own (not exiting) waits up to 30 s at detach (`tracer::DETACH_PATIENCE`); the
+// final detach cuts that short.
+
+/// How long `main` waits for teardown before the final detach.
+pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(8);
+/// How long the final detach may take before the daemon exits anyway.
+pub const FINAL_DETACH: Duration = Duration::from_secs(4);
+
+/// Tear everything down, detach from every game, and exit. Used for stdin EOF and signals.
+pub fn shutdown_and_exit() -> ! {
+    shutdown_all(SHUTDOWN_DEADLINE);
+    crate::tracer::detach_everything(FINAL_DETACH);
+    std::process::exit(0);
+}
 
 /// Teardown order: lower kinds run first. Within a kind, the newest action runs first.
 /// `Watch` and `Scan` are first used by later M2 tasks (and `Scan` by debug builds).
@@ -169,8 +194,7 @@ pub fn spawn_signal_thread() {
     std::thread::spawn(move || loop {
         let mut sig = 0;
         if unsafe { libc::sigwait(&set, &mut sig) } == 0 {
-            shutdown_all(SHUTDOWN_DEADLINE);
-            std::process::exit(0);
+            shutdown_and_exit();
         }
     });
 }

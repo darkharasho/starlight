@@ -73,8 +73,7 @@ fn main() {
                 break;
             }
         }
-        cleanup::shutdown_all(cleanup::SHUTDOWN_DEADLINE);
-        std::process::exit(0);
+        cleanup::shutdown_and_exit();
     });
 
     println!("READY 1");

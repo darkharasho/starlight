@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server, type Socket } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connectEngine, mapRpcError } from '../src/client.js';
+import { connectEngine, mapRpcError, STOP_KILL_MS } from '../src/client.js';
 import { attach } from '../src/session.js';
 import { EngineError, PermissionError, RpcCode } from '../src/errors.js';
 import { startTestEngine } from './helpers/daemon.js';
@@ -125,5 +125,19 @@ describe('EngineClient', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(reasons).toEqual(['manual']);
     expect(session.attached).toBe(false);
+  });
+});
+
+describe('startEngine stop timing', () => {
+  it("waits longer than the daemon's own exit before SIGKILL", () => {
+    // starlightd exits after its teardown deadline plus its final detach; killed earlier, it
+    // would leave debug registers armed in the game.
+    const src = readFileSync(new URL('../../starlightd/src/cleanup.rs', import.meta.url), 'utf8');
+    const secs = (name: string): number => {
+      const m = new RegExp(`const ${name}: Duration = Duration::from_secs\\((\\d+)\\)`).exec(src);
+      expect(m, name).not.toBeNull();
+      return Number(m![1]) * 1000;
+    };
+    expect(STOP_KILL_MS).toBeGreaterThan(secs('SHUTDOWN_DEADLINE') + secs('FINAL_DETACH'));
   });
 });

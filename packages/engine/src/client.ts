@@ -130,6 +130,9 @@ export async function connectEngine(opts: { socketPath: string }): Promise<Engin
   return client;
 }
 
+/** How long `stop()` waits for starlightd to exit before SIGKILL. */
+export const STOP_KILL_MS = 15_000;
+
 export interface StartedEngine {
   client: EngineClient;
   pid: number;
@@ -146,7 +149,10 @@ export async function startEngine(opts: {
   const exited = new Promise<void>((r) => child.once('exit', () => r()));
   const stop = async (): Promise<void> => {
     child.stdin?.end();
-    const killer = setTimeout(() => child.kill('SIGKILL'), 2000);
+    // Longer than the daemon's own exit (teardown 8 s + final detach 4 s, see starlightd's
+    // cleanup.rs): killed mid-teardown, it would leave debug registers armed in the game and
+    // the kernel's implicit detach could deliver a trap of ours to it.
+    const killer = setTimeout(() => child.kill('SIGKILL'), STOP_KILL_MS);
     await exited;
     clearTimeout(killer);
   };

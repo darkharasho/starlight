@@ -16,7 +16,7 @@ use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,10 @@ use std::time::{Duration, Instant};
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// Idle poll interval of the event loop: the longest a game signal or new thread waits for us.
 const POLL: Duration = Duration::from_millis(1);
+
+/// Set when the daemon is about to exit (`detach_everything`): every tracer detaches at once, giving
+/// up on threads it would otherwise wait for at this instant.
+static URGENT: OnceLock<Instant> = OnceLock::new();
 
 /// Hardware watchpoint condition (DR7 R/W bits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +125,9 @@ static REGISTRY: LazyLock<Mutex<HashMap<i32, Entry>>> = LazyLock::new(|| Mutex::
 /// The tracer for `pid`, attaching if nobody holds one. Concurrent callers for the same pid get
 /// the same tracer; different pids never block on each other's events.
 pub fn for_pid(pid: i32) -> Result<Arc<Tracer>, RpcError> {
+    if URGENT.get().is_some() {
+        return Err(RpcError::ptrace_failed("starlightd is shutting down"));
+    }
     let mut reg = REGISTRY.lock().unwrap();
     if let Some(e) = reg.get(&pid) {
         if let Some(t) = e.tracer.upgrade() {
@@ -136,6 +143,28 @@ pub fn for_pid(pid: i32) -> Result<Arc<Tracer>, RpcError> {
     reg.retain(|_, e| e.tracer.strong_count() > 0 || !e.shared.gone.is_set());
     reg.insert(pid, Entry { tracer: Arc::downgrade(&t), shared: t.shared.clone() });
     Ok(t)
+}
+
+/// The daemon's last step before it exits: make every tracer clear its debug registers and
+/// detach every thread now, even if its `Arc` is still held (a teardown that ran out of time).
+/// A thread with a SIGTRAP of ours still queued is waited for until `budget` minus a second, so
+/// it is not detached with it. Returns when every tracer is done, or after `budget`.
+pub fn detach_everything(budget: Duration) {
+    let start = Instant::now();
+    let _ = URGENT.set(start + budget.saturating_sub(Duration::from_secs(1)));
+    // `for_pid` can hold the registry while it waits for a tracer to finish: don't block on it.
+    let shared: Vec<Arc<Shared>> = loop {
+        if let Ok(reg) = REGISTRY.try_lock() {
+            break reg.values().map(|e| e.shared.clone()).collect();
+        }
+        if start.elapsed() >= budget {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    for sh in shared {
+        sh.gone.wait(budget.saturating_sub(start.elapsed()));
+    }
 }
 
 impl Tracer {
@@ -301,8 +330,10 @@ struct Thread {
     /// Our syscall finished but its single-step SIGTRAP is still queued (another stop was
     /// reported first): swallow it when it comes, never deliver or detach with it pending.
     step_trap_pending: bool,
-    /// Released at detach so a watch hit's queued SIGTRAP is reported (and swallowed) first.
-    watch_trap_pending: bool,
+    /// Resumed at detach so a SIGTRAP of ours still queued for it (a watch hit, or our step's
+    /// late trap) is reported and swallowed first. Until it stops it is not interrupted: it stops
+    /// by itself as soon as it runs, and an interrupt would only be reported ahead of the trap.
+    awaiting_trap: bool,
     /// Slots (bit n = DRn) whose queued hit predates the slot's last clear or re-arm: that hit
     /// belongs to the previous watch on the slot, so it is swallowed but never reported.
     stale: u64,
@@ -320,7 +351,7 @@ impl Thread {
             regroup: false,
             restore: None,
             step_trap_pending: false,
-            watch_trap_pending: false,
+            awaiting_trap: false,
             stale: 0,
             fresh,
         }
@@ -339,6 +370,11 @@ struct Core {
     armed: u64,
     /// How long a remote syscall's single-step may take (tests shorten it).
     step_timeout: Duration,
+    /// How long one detach round waits for queued traps without interrupting (tests shorten it).
+    detach_grace: Duration,
+    /// Tests: skip this many resumes of threads with a queued trap at detach, as if those threads
+    /// were not scheduled in time. Always 0 otherwise.
+    detach_stalls: u32,
     shared: Arc<Shared>,
 }
 
@@ -403,6 +439,23 @@ fn ptrace_error(what: &str, tid: i32, e: i32) -> RpcError {
     } else {
         RpcError::ptrace_failed(format!("{what} on thread {tid}: {}", io::Error::from_raw_os_error(e)))
     }
+}
+
+/// True if signal `sig` is pending and not blocked, per the text of a
+/// `/proc/<pid>/task/<tid>/status`. The masks are hex with bit `sig - 1` set for signal `sig`
+/// (SIGTRAP, 5, is `0x10`). `SigPnd` is the thread's own queue, `ShdPnd` the process's.
+fn sig_pending_in(status: &str, sig: i32) -> bool {
+    let mask = |key: &str| {
+        status.lines().find_map(|l| l.strip_prefix(key)).and_then(|v| u64::from_str_radix(v.trim(), 16).ok()).unwrap_or(0)
+    };
+    let bit = 1u64 << (sig - 1);
+    ((mask("SigPnd:") | mask("ShdPnd:")) & !mask("SigBlk:") & bit) != 0
+}
+
+/// True if a SIGTRAP is queued for `tid` (not yet taken: a thread stopped delivering one no
+/// longer has it queued). A gone thread has nothing queued.
+fn sigtrap_queued(pid: i32, tid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/status")).is_ok_and(|s| sig_pending_in(&s, libc::SIGTRAP))
 }
 
 fn status_tracer_pid(path: &str) -> Option<i32> {
@@ -491,11 +544,26 @@ fn tracer_main(pid: i32, rx: Receiver<Cmd>, ready: Sender<Result<(), RpcError>>,
         }
     };
     let _ = ready.send(Ok(()));
-    let mut core = Core { pid, threads, slots: [None; 4], dr_used: false, armed: 0, step_timeout: STOP_TIMEOUT, shared };
+    let mut core = Core {
+        pid,
+        threads,
+        slots: [None; 4],
+        dr_used: false,
+        armed: 0,
+        step_timeout: STOP_TIMEOUT,
+        detach_grace: DETACH_GRACE,
+        detach_stalls: 0,
+        shared,
+    };
     loop {
         core.pump();
         if core.threads.is_empty() {
             return; // process gone: queued jobs are dropped and their callers see ProcessNotFound
+        }
+        if URGENT.get().is_some() {
+            // The daemon is exiting: detach now, whoever still holds this tracer.
+            core.detach_all();
+            return;
         }
         match rx.recv_timeout(POLL) {
             Ok(Cmd::Run(job)) => core.run_job(job),
@@ -537,8 +605,11 @@ fn reportable(dr6: u64, active: u64, stale: u64) -> u64 {
 }
 
 /// Stay attached at most this long at detach waiting for threads that must be cleaned up
-/// (debug registers armed, or registers still to restore) before the kernel lets them go.
+/// (debug registers armed, a trap of ours queued, or registers still to restore) before the
+/// kernel lets them go. The daemon's exit cuts it short (`URGENT`, see `cleanup`).
 const DETACH_PATIENCE: Duration = Duration::from_secs(30);
+/// One detach round's wait for queued traps before threads are checked again.
+const DETACH_GRACE: Duration = Duration::from_millis(200);
 
 impl Core {
     /// Wait for one event of any of our tracees without blocking.
@@ -608,7 +679,7 @@ impl Core {
         let th = self.threads.get_mut(&tid).unwrap();
         th.state = state;
         th.info = info;
-        th.watch_trap_pending = false;
+        th.awaiting_trap = false;
         th.in_signal_stop = event == 0;
         if th.fresh {
             th.fresh = false;
@@ -664,11 +735,15 @@ impl Core {
         }
     }
 
-    /// True if `tid`'s DR6 names a slot we armed: one of our hits whose SIGTRAP has not been
-    /// taken yet (`take_watch_trap` clears DR6). The kernel resets DR6 only at the thread's next
-    /// debug exception, which can't come before that SIGTRAP is reported.
-    fn watch_trap_queued(&self, tid: i32) -> bool {
-        self.armed != 0 && peek_debugreg(tid, 6).is_ok_and(|dr6| dr6 & self.armed != 0)
+    /// True if a SIGTRAP of ours is still queued for `tid`: a SIGTRAP is pending (`SigPnd`,
+    /// `ShdPnd`), and it is either our single-step's late trap or DR6 names a slot we armed (a hit
+    /// not taken yet: `take_watch_trap` clears those bits). DR6 alone is not enough: it goes
+    /// stale (the step-trap swallow path leaves it), and a stale bit with nothing queued would
+    /// have detach wait for a trap that never comes.
+    fn our_trap_queued(&self, tid: i32) -> bool {
+        let Some(th) = self.threads.get(&tid) else { return false };
+        let ours = th.step_trap_pending || (self.armed != 0 && peek_debugreg(tid, 6).is_ok_and(|dr6| dr6 & self.armed != 0));
+        ours && sigtrap_queued(self.pid, tid)
     }
 
     /// If this SIGTRAP is a hit on a slot we armed (DR6 names it, `si_code == TRAP_HWBKPT`), it
@@ -755,8 +830,15 @@ impl Core {
     /// Interrupt every running thread and wait until all are stopped. On timeout, the stopped
     /// threads are resumed if `resume_on_timeout`, else left stopped for the caller.
     fn stop_all(&mut self, resume_on_timeout: bool) -> Result<(), RpcError> {
+        self.stop_threads(resume_on_timeout, false)
+    }
+
+    /// `stop_all`, except that with `spare_awaiting` threads resumed to take a queued trap
+    /// (`awaiting_trap`) are neither interrupted nor waited for.
+    fn stop_threads(&mut self, resume_on_timeout: bool, spare_awaiting: bool) -> Result<(), RpcError> {
+        let spared = |t: &Thread| spare_awaiting && t.awaiting_trap;
         for (&tid, th) in &self.threads {
-            if th.state == State::Running {
+            if th.state == State::Running && !spared(th) {
                 let _ = pt(libc::PTRACE_INTERRUPT, tid, 0, 0);
             }
         }
@@ -769,7 +851,8 @@ impl Core {
             if self.threads.is_empty() {
                 return Err(RpcError::process_not_found(format!("process {} has exited", self.pid)));
             }
-            let waiting: Vec<i32> = self.threads.iter().filter(|(_, t)| !t.state.stopped()).map(|(&t, _)| t).collect();
+            let waiting: Vec<i32> =
+                self.threads.iter().filter(|(_, t)| !t.state.stopped() && !spared(t)).map(|(&t, _)| t).collect();
             if waiting.is_empty() {
                 return Ok(());
             }
@@ -827,24 +910,25 @@ impl Core {
         let _ = poke_debugreg(tid, 7, dr7);
     }
 
-    /// Clear debug registers (if we ever set any) and detach every thread. A thread the kernel
-    /// would release in an unsafe state (debug registers armed, or still running our syscall's
-    /// registers) is waited for and re-interrupted, up to `DETACH_PATIENCE`. Any other thread
-    /// that won't stop is released by the kernel when this thread exits.
+    /// Clear debug registers (if we ever set any) and detach every thread. A thread with a
+    /// SIGTRAP of ours still queued (a watch hit, or our single-step's late trap) is resumed until
+    /// that trap is reported and swallowed, as many times as it takes: detached with it queued,
+    /// the game would get it (and die). A thread still running our syscall's registers is
+    /// waited for too. Both up to `DETACH_PATIENCE`, or the daemon's exit (`URGENT`). Every
+    /// thread that is stopped when this returns has been detached, with no signal of ours: left
+    /// to the kernel's implicit detach, a stop that swallowed our trap would deliver it after
+    /// all. Only a thread that never stops is left to the kernel.
     fn detach_all(&mut self) {
-        let deadline = Instant::now() + DETACH_PATIENCE;
-        // Threads already given one grace period for a queued watch trap: if DR6 still names a
-        // slot afterwards it is stale (no trap is coming), so they are detached regardless.
-        let mut waited = std::collections::HashSet::new();
+        let patience = Instant::now() + DETACH_PATIENCE;
         loop {
-            let _ = self.stop_all(false);
+            let deadline = URGENT.get().map_or(patience, |&u| patience.min(u));
+            let past = Instant::now() >= deadline;
+            // Threads resumed to take a queued trap stop by themselves; an interrupt would be
+            // reported ahead of the trap. Past the deadline, every thread is stopped to detach it.
+            let _ = self.stop_threads(false, !past);
+            let past = past || Instant::now() >= deadline;
             let stopped: Vec<i32> = self.threads.iter().filter(|(_, t)| t.state.stopped()).map(|(&t, _)| t).collect();
             for tid in stopped {
-                if self.threads[&tid].step_trap_pending {
-                    // Detaching now would deliver that SIGTRAP to the game: let it arrive first.
-                    self.release(tid, false);
-                    continue;
-                }
                 if self.dr_used {
                     let _ = poke_debugreg(tid, 7, 0);
                     for i in 0..4 {
@@ -852,37 +936,44 @@ impl Core {
                     }
                 }
                 // A group-stopped thread would not run to report it: detach it as it is.
-                if self.threads[&tid].state != State::Group && !waited.contains(&tid) && self.watch_trap_queued(tid) {
-                    // A watch hit's SIGTRAP is still queued; detached, the game would get it.
-                    // Disarmed now, so it is the last one: let it arrive and be swallowed.
-                    waited.insert(tid);
-                    self.release(tid, false);
+                if !past && self.threads[&tid].state != State::Group && self.our_trap_queued(tid) {
+                    // Disarmed now, so no further hit comes: let the queued trap arrive.
+                    if self.detach_stalls > 0 {
+                        self.detach_stalls -= 1; // tests: it stays stopped, as if never scheduled
+                    } else {
+                        self.release(tid, false);
+                    }
                     if let Some(th) = self.threads.get_mut(&tid) {
-                        th.watch_trap_pending = true;
+                        th.awaiting_trap = true;
                     }
                     continue;
                 }
+                // Detached with signal 0 if the stop is our own (swallowed) trap.
                 self.release(tid, true);
                 self.threads.remove(&tid);
             }
-            // Give threads waiting for a late trap a moment without interrupts (an interrupt
-            // would again be reported before the trap).
-            let grace = Instant::now() + Duration::from_millis(200);
-            while Instant::now() < grace
-                && self
-                    .threads
-                    .values()
-                    .any(|t| (t.step_trap_pending || t.watch_trap_pending) && t.state == State::Running)
-            {
+            if self.threads.is_empty() || past {
+                return;
+            }
+            // A thread waiting for its trap whose SIGTRAP is gone (another thread took a shared
+            // one) would never stop: interrupt it next round instead.
+            let pid = self.pid;
+            for (&tid, th) in self.threads.iter_mut() {
+                if th.awaiting_trap && th.state == State::Running && !sigtrap_queued(pid, tid) {
+                    th.awaiting_trap = false;
+                }
+            }
+            let unsafe_left = self.dr_used
+                || self.threads.values().any(|t| t.restore.is_some() || t.step_trap_pending || t.awaiting_trap);
+            if !unsafe_left {
+                return; // what is left never stopped, and nothing of ours is pending on it
+            }
+            let grace = (Instant::now() + self.detach_grace).min(deadline);
+            while Instant::now() < grace && self.threads.values().any(|t| t.awaiting_trap && t.state == State::Running) {
                 match self.wait_any() {
                     Some((tid, status)) => self.on_event(tid, status),
                     None => std::thread::sleep(Duration::from_micros(100)),
                 }
-            }
-            let unsafe_left =
-                self.dr_used || self.threads.values().any(|t| t.restore.is_some() || t.step_trap_pending);
-            if self.threads.is_empty() || !unsafe_left || Instant::now() >= deadline {
-                return;
             }
         }
     }
@@ -1219,6 +1310,164 @@ pub(crate) mod tests {
             assert!(!thread_finished(pid, pid), "the game died after detach");
             assert!(u64::from_le_bytes(read_mem(pid, calls)) > before, "the spin thread stopped");
         }
+    }
+
+    #[test]
+    fn sig_pending_reads_the_status_masks() {
+        let status = |pnd: &str, shd: &str, blk: &str| {
+            format!("Name:\ttarget\nSigQ:\t1/127000\nSigPnd:\t{pnd}\nShdPnd:\t{shd}\nSigBlk:\t{blk}\nSigIgn:\t0000000000000000\n")
+        };
+        let zero = "0000000000000000";
+        // Signal n is bit n - 1: SIGTRAP (5) is 0x10.
+        assert!(sig_pending_in(&status("0000000000000010", zero, zero), libc::SIGTRAP));
+        assert!(!sig_pending_in(&status("0000000000000020", zero, zero), libc::SIGTRAP), "0x20 is SIGBUS");
+        assert!(!sig_pending_in(&status("0000000000000008", zero, zero), libc::SIGTRAP), "0x08 is SIGQUIT");
+        // The process-wide queue counts too.
+        assert!(sig_pending_in(&status(zero, "0000000000000010", zero), libc::SIGTRAP));
+        // A blocked signal stays queued and is never reported: nothing to wait for.
+        assert!(!sig_pending_in(&status("0000000000000010", zero, "0000000000000010"), libc::SIGTRAP));
+        // Other signals and high bits (real-time signals) don't count.
+        assert!(sig_pending_in(&status("8000000000000210", zero, zero), libc::SIGTRAP));
+        assert!(!sig_pending_in(&status("8000000000000200", zero, zero), libc::SIGTRAP));
+        assert!(!sig_pending_in(&status(zero, zero, zero), libc::SIGTRAP));
+        assert!(!sig_pending_in("", libc::SIGTRAP));
+        // SIGUSR2 (12) is bit 11.
+        assert!(sig_pending_in(&status("0000000000000800", zero, zero), libc::SIGUSR2));
+    }
+
+    /// A real SIGTRAP queued for a stopped thread shows up in its `/proc` status.
+    #[test]
+    fn sigtrap_queued_sees_a_trap_queued_for_a_stopped_thread() {
+        let t = TestTarget::spawn(&["--spin"]);
+        let pid = t.pid();
+        let tr = for_pid(pid).unwrap();
+        let (before, after) = tr
+            .with_stopped(move |s| {
+                let before = sigtrap_queued(pid, pid);
+                tgkill(pid, pid, libc::SIGTRAP);
+                let after = sigtrap_queued(pid, pid);
+                // Don't let it reach the game: take it at its signal-delivery-stop, and swallow it.
+                s.core.threads.get_mut(&pid).unwrap().step_trap_pending = true;
+                (before, after)
+            })
+            .unwrap();
+        assert!(!before && after, "before {before}, after {after}");
+        drop(tr);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!thread_finished(pid, pid), "the test's SIGTRAP reached the game");
+    }
+
+    /// No watch was ever armed (`dr_used` false: right after an alloc or a speed hook install,
+    /// which detach at once) and a thread still has our single-step's SIGTRAP queued. Detach
+    /// resumes it so the trap is swallowed, and must then detach that thread too: left stopped
+    /// for the kernel's implicit detach, the trap would be delivered to the game after all.
+    #[test]
+    fn detach_never_leaves_a_swallowed_step_trap_to_the_kernel() {
+        for _ in 0..5 {
+            let t = TestTarget::spawn(&["--spin"]);
+            let pid = t.pid();
+            let tr = for_pid(pid).unwrap();
+            let (left, traced) = tr
+                .with_stopped(move |s| {
+                    // Our step's late trap, as `note_step_stop` leaves it: queued, flagged.
+                    tgkill(pid, pid, libc::SIGTRAP);
+                    s.core.threads.get_mut(&pid).unwrap().step_trap_pending = true;
+                    assert!(!s.core.dr_used);
+                    s.core.detach_all();
+                    let left: Vec<(i32, State)> = s.core.threads.iter().map(|(&t, th)| (t, th.state)).collect();
+                    let traced: Vec<i32> = list_tids(pid)
+                        .unwrap()
+                        .into_iter()
+                        .filter(|t| status_tracer_pid(&format!("/proc/{pid}/task/{t}/status")).unwrap_or(0) != 0)
+                        .collect();
+                    (left, traced)
+                })
+                .unwrap();
+            assert!(left.is_empty(), "threads still ours after detach: {left:?}");
+            assert!(traced.is_empty(), "threads still traced after detach: {traced:?}");
+            drop(tr);
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!thread_finished(pid, pid), "our step's SIGTRAP reached the game");
+        }
+    }
+
+    /// A watch hit's SIGTRAP still queued at detach is waited for for as long as it stays
+    /// queued, not for one grace period: a thread that isn't scheduled in time (CPU throttling,
+    /// load) must not be detached with it. Stalled resumes simulate exactly that.
+    #[test]
+    fn detach_keeps_waiting_while_a_watch_trap_is_queued() {
+        for _ in 0..5 {
+            let t = TestTarget::spawn(&["--spin"]);
+            let pid = t.pid();
+            let calls = t.addrs["g_spin_calls"];
+            let tr = for_pid(pid).unwrap();
+            let traps = tr.subscribe_traps();
+            tr.set_watch_slot(0, Some(DrConfig { addr: calls, len: 8, rw: DrRw::Write })).unwrap();
+            traps.recv_timeout(Duration::from_secs(1)).expect("no trap within 1 s");
+            let (queued, traced) = tr
+                .with_stopped(move |s| {
+                    let spin = *s.tids().iter().find(|&&t| t != pid).unwrap();
+                    let queued = catch_queued_hit(s, spin);
+                    s.core.detach_grace = Duration::ZERO;
+                    s.core.detach_stalls = 3;
+                    s.core.detach_all();
+                    let traced = list_tids(pid)
+                        .unwrap()
+                        .into_iter()
+                        .filter(|t| status_tracer_pid(&format!("/proc/{pid}/task/{t}/status")).unwrap_or(0) != 0)
+                        .count();
+                    (queued, traced)
+                })
+                .unwrap();
+            assert!(queued, "never caught the spin thread with a watch hit queued");
+            assert_eq!(traced, 0, "threads still traced after detach");
+            drop(tr);
+            let before = u64::from_le_bytes(read_mem(pid, calls));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!thread_finished(pid, pid), "a watch SIGTRAP reached the game");
+            assert!(u64::from_le_bytes(read_mem(pid, calls)) > before, "the spin thread stopped");
+        }
+    }
+
+    /// Resume `tid` (which keeps hitting an armed watch) and interrupt it at once, until it is
+    /// stopped by the interrupt with a hit's SIGTRAP still queued. False if that never happens.
+    fn catch_queued_hit(s: &mut Stopped<'_>, tid: i32) -> bool {
+        for _ in 0..5000 {
+            s.core.release(tid, false);
+            let _ = pt(libc::PTRACE_INTERRUPT, tid, 0, 0);
+            let mut status = 0;
+            unsafe { libc::waitpid(tid, &mut status, libc::__WALL) };
+            s.core.on_event(tid, status);
+            if s.core.threads[&tid].state == State::Interrupted && s.core.our_trap_queued(tid) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The daemon's exit detaches tracers whose `Arc` is still held, with no trap of ours left.
+    /// Runs in its own process: `URGENT` is process-wide and would end every other test's tracer.
+    #[test]
+    #[ignore = "sets the process-wide exit flag; run with --ignored --test-threads=1 on its own"]
+    fn detach_everything_detaches_tracers_still_held() {
+        let t = TestTarget::spawn(&["--spin"]);
+        let pid = t.pid();
+        let tr = for_pid(pid).unwrap();
+        let traps = tr.subscribe_traps();
+        let calls = t.addrs["g_spin_calls"];
+        tr.set_watch_slot(0, Some(DrConfig { addr: calls, len: 8, rw: DrRw::Write })).unwrap();
+        traps.recv_timeout(Duration::from_secs(1)).expect("no trap within 1 s");
+        let start = Instant::now();
+        detach_everything(Duration::from_secs(4));
+        assert!(start.elapsed() < Duration::from_secs(4), "took {:?}", start.elapsed());
+        assert_eq!(tracer_pid_of(pid), 0, "still traced");
+        assert!(for_pid(pid).is_err(), "no new tracer while exiting");
+        assert!(tr.with_stopped(|_| ()).is_err());
+        drop(tr);
+        let before = u64::from_le_bytes(read_mem(pid, calls));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!thread_finished(pid, pid), "the game died");
+        assert!(u64::from_le_bytes(read_mem(pid, calls)) > before, "the spin thread stopped (DRs still armed?)");
     }
 
     #[test]
