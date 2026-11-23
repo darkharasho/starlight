@@ -129,6 +129,8 @@ export function createScannerHost(deps: {
   let attaching: Promise<Session> | null = null;
   let pid: number | null = null;
   let scan = idleScan();
+  /** Bumped by every teardown: work that began in an earlier epoch must clean up after itself. */
+  let epoch = 0;
   /** Keyed by address (bigint as hex). */
   const freezes = new Map<string, { handle: FreezeHandle; type: PanelType }>();
 
@@ -141,6 +143,7 @@ export function createScannerHost(deps: {
   async function teardown(): Promise<void> {
     const s = session;
     const old = scan;
+    epoch++;
     session = null; attaching = null; pid = null; scan = idleScan();
     await cancelFreezes();
     if (s?.attached) {
@@ -152,6 +155,7 @@ export function createScannerHost(deps: {
   async function ensureSession(forPid: number): Promise<Session | { ok: false; error: string }> {
     if (session && !session.attached) await teardown();
     if (session) return session;
+    const ep = epoch;
     attaching ??= (async () => {
       const hit = await antiCheat(forPid);
       if (hit) throw new Error(antiCheatMessage(hit));
@@ -160,10 +164,16 @@ export function createScannerHost(deps: {
     const pending = attaching;
     try {
       const s = await pending;
-      if (attaching === pending) { session = s; attaching = null; }
-      return s;
-    } catch (err) {
+      if (epoch !== ep) {
+        // end() or a pid change came in while attaching: nobody owns this handle any more.
+        await s.detach().catch(() => undefined);
+        return { ok: false, error: 'session ended' };
+      }
       if (attaching === pending) attaching = null;
+      session ??= s;
+      return session;
+    } catch (err) {
+      if (epoch === ep && attaching === pending) attaching = null;
       return { ok: false, error: errMsg(err) };
     }
   }
@@ -177,14 +187,20 @@ export function createScannerHost(deps: {
     const s = await ensureSession(forPid);
     if ('ok' in s) return s;
     if (scan.busy) return { ok: false, error: 'a scan is already running' };
-    if (scan.id !== null) await scanEnd(s, scan.id).catch(() => undefined);
+    // Busy is set before anything yields, so a second scan_first or a scan_reset can't slip in.
+    const old = scan;
     const mine: ScanState = { ...idleScan(), valueType: type, busy: true, started: true };
     scan = mine;
+    const ep = epoch;
     const value = p['value'] === undefined || p['value'] === null ? undefined : String(p['value']);
-    void scanFirst(s, {
-      type: ENGINE_TYPE[type], mode: op as 'exact' | 'bigger' | 'smaller' | 'unknown',
-      ...(op !== 'unknown' && value !== undefined ? { value } : {}),
-    }).then((r) => {
+    void (async () => {
+      if (old.id !== null) await scanEnd(s, old.id).catch(() => undefined);
+      return scanFirst(s, {
+        type: ENGINE_TYPE[type], mode: op as 'exact' | 'bigger' | 'smaller' | 'unknown',
+        ...(op !== 'unknown' && value !== undefined ? { value } : {}),
+      });
+    })().then((r) => {
+      if (epoch !== ep) { void scanEnd(s, r.scan).catch(() => undefined); return; }
       mine.id = r.scan; mine.count = r.count;
     }, (err: unknown) => {
       mine.started = false; mine.pendingError = errMsg(err);
@@ -256,7 +272,12 @@ export function createScannerHost(deps: {
 
   async function startFreeze(s: Session, addr: bigint, t: PanelType, value: number | bigint): Promise<void> {
     const key = addr.toString(16);
+    const ep = epoch;
     const handle = await freeze(s, { address: wireAddress(addr), type: ENGINE_TYPE[t], value, intervalMs: FREEZE_INTERVAL_MS });
+    if (epoch !== ep) {
+      await handle.cancel().catch(() => undefined);
+      throw new Error('session ended');
+    }
     const old = freezes.get(key);
     freezes.set(key, { handle, type: t });
     await old?.handle.cancel().catch(() => undefined);
@@ -272,7 +293,7 @@ export function createScannerHost(deps: {
     if ('ok' in s) return s;
     try {
       // A frozen address keeps the new value: the freeze is replaced, not fought.
-      if (freezes.has(addr.toString(16))) await startFreeze(s, addr, freezes.get(addr.toString(16))!.type, value);
+      if (freezes.has(addr.toString(16))) await startFreeze(s, addr, t, value);
       await write(s, wireAddress(addr), ENGINE_TYPE[t], value);
       return { ok: true };
     } catch {

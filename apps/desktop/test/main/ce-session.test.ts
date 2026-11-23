@@ -689,9 +689,11 @@ const reply = (cmd) => {
     });
     await new Promise((res) => setTimeout(res, 80));
     expect(getActiveSession()?.sessionId).toBe(r.sessionId);
+    scannerHost.end.mockClear();
     alive = false;
     await new Promise((res) => setTimeout(res, 150));
     expect(exited).toBe(1);
+    expect(scannerHost.end).toHaveBeenCalledTimes(1);
     expect(getActiveSession()).toBeNull();
   });
 

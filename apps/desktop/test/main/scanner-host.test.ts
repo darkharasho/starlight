@@ -250,6 +250,94 @@ describe('scanner-host', () => {
     expect(sessions[0]!.detach).toHaveBeenCalled();
   });
 
+  it('concurrent scan_first with a prior scan starts only one scan', async () => {
+    let n = 0;
+    const { host, calls } = setup({ scan_first: () => ({ scan: ++n, count: 1 }) });
+    await host.call(10, 'scan_first', { valueType: 'i32', op: 'exact', value: '1' });
+    await tick(); await tick();
+    const [a, b] = await Promise.all([
+      host.call(10, 'scan_first', { valueType: 'i32', op: 'exact', value: '2' }),
+      host.call(10, 'scan_first', { valueType: 'i32', op: 'exact', value: '3' }),
+    ]);
+    expect([a, b]).toEqual([{ ok: true }, { ok: false, error: 'a scan is already running' }]);
+    await tick(); await tick();
+    expect(of(calls, 'scan_first')).toHaveLength(2);
+    expect(of(calls, 'scan_end')).toEqual([{ method: 'scan_end', params: { scan: 1 } }]);
+  });
+
+  it('scan_reset during a restarting scan is refused', async () => {
+    const { host } = setup({ scan_first: () => ({ scan: 1, count: 1 }) });
+    await host.call(10, 'scan_first', { valueType: 'i32', op: 'exact', value: '1' });
+    await tick(); await tick();
+    await host.call(10, 'scan_first', { valueType: 'i32', op: 'exact', value: '2' });
+    expect(await host.call(10, 'scan_reset', {})).toEqual({ ok: false, error: 'a scan is still running' });
+  });
+
+  it('a pid change cancels a live scan and a live freeze', async () => {
+    const { host, calls } = setup({ scan_first: () => ({ scan: 8, count: 1 }), freeze: () => ({ id: 55 }), read_many: () => ({ values: [null] }) });
+    await host.call(10, 'scan_first', { valueType: 'i32', op: 'exact', value: '1' });
+    await tick(); await tick();
+    await host.call(10, 'freeze_set', { address: '10', valueType: 'i32', value: '1' });
+    await host.call(20, 'mem_read', { items: [{ address: '1', valueType: 'i32' }] });
+    expect(of(calls, 'unfreeze')[0]!.params).toEqual({ id: 55 });
+    expect(of(calls, 'scan_end')[0]!.params).toEqual({ scan: 8 });
+    expect(await host.call(20, 'scan_status', {})).toMatchObject({ started: false });
+  });
+
+  it('a scan that completes after end() is ended on the daemon', async () => {
+    let release!: (v: unknown) => void;
+    const { host, calls } = setup({ scan_first: () => new Promise((r) => { release = r; }) });
+    await host.call(10, 'scan_first', { valueType: 'i32', op: 'exact', value: '1' });
+    await host.end();
+    release({ scan: 12, count: 3 });
+    await tick(); await tick();
+    expect(of(calls, 'scan_end')).toEqual([{ method: 'scan_end', params: { scan: 12 } }]);
+  });
+
+  it('a freeze that starts after end() is dropped, not tracked on the new session', async () => {
+    let release!: (v: unknown) => void;
+    const { host, calls } = setup({ freeze: () => new Promise((r) => { release = r; }) });
+    const pending = host.call(10, 'freeze_set', { address: '10', valueType: 'i32', value: '1' });
+    await tick();
+    await host.end();
+    release({ id: 31 });
+    expect(await pending).toMatchObject({ ok: false });
+    // Not tracked: a write to that address is a plain write, not a freeze restart.
+    await host.call(10, 'mem_write', { address: '10', valueType: 'i32', value: '2' });
+    expect(of(calls, 'freeze')).toHaveLength(1);
+    expect(of(calls, 'write')).toHaveLength(1);
+  });
+
+  it('an attach that resolves after end() is detached and the call fails', async () => {
+    const { client, sessions } = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const detach = vi.fn(async () => undefined);
+    const host = createScannerHost({
+      getClient: async () => client,
+      attach: (async (_c: EngineClient, pid: number) => {
+        await gate;
+        return { pid, handle: 1, client, attached: true, detach, onDetached: () => () => undefined } as unknown as Session;
+      }) as never,
+      detectAntiCheatFn: async () => null,
+    });
+    const pending = host.call(10, 'mem_read', { items: [{ address: '1', valueType: 'i32' }] });
+    await tick(); await tick();
+    await host.end();
+    release();
+    expect(await pending).toEqual({ ok: false, error: 'session ended' });
+    expect(detach).toHaveBeenCalled();
+    expect(sessions).toHaveLength(0);
+  });
+
+  it('mem_write on a frozen address restarts the freeze with the request type', async () => {
+    let id = 1;
+    const { host, calls } = setup({ freeze: () => ({ id: id++ }) });
+    await host.call(10, 'freeze_set', { address: '10', valueType: 'i32', value: '1' });
+    await host.call(10, 'mem_write', { address: '10', valueType: 'i16', value: '2' });
+    expect(of(calls, 'freeze')[1]!.params).toMatchObject({ bytes: '0200' });
+  });
+
   it('rejects unknown methods', async () => {
     const { host } = setup();
     expect(await host.call(10, 'nope', {})).toEqual({ ok: false, error: 'unsupported command: nope' });
