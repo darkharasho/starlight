@@ -77,6 +77,9 @@ impl<'a> Img<'a> {
         while out.len() < MAX_NAME {
             let room = (PAGE - (at & (PAGE - 1))).min(256) as usize;
             let room = room.min(self.end.checked_sub(at)? as usize);
+            if room == 0 {
+                return None; // ran off the end of the module without a NUL
+            }
             let chunk = self.get(at, room)?;
             if let Some(n) = chunk.iter().position(|&b| b == 0) {
                 out.extend_from_slice(&chunk[..n]);
@@ -533,6 +536,27 @@ mod tests {
         let m = module("bad.dll", base, 0x1000, Kind::Pe);
         assert!(exports_with(&reader(vec![(base, bad)]), &m).is_empty());
         assert!(got_slots_with(&reader(vec![(base, zero)]), &module("z", base, 0x1000, Kind::Elf), "x").is_empty());
+    }
+
+    #[test]
+    fn unterminated_string_at_module_end_terminates() {
+        let base = 0x10_0000;
+        // Export name and forwarder strings that run to the module's last byte with no NUL.
+        let mut img = pe(&[("A", 0x1000), ("B", 0x300)], &[]);
+        put(&mut img, 0x700, &0xff8u32.to_le_bytes());
+        put(&mut img, 0x704, &0x900u32.to_le_bytes());
+        put(&mut img, 0xff8, b"ABCDEFGH");
+        put(&mut img, 0x300, b"NTDLL.Unterminated"); // forwarder text ...
+        img[0x312..0x400].fill(b'x'); // ... padded, still inside the dir and NUL-free
+        let m = module("a.dll", base, 0x1000, Kind::Pe);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let r = reader(vec![(base, img)]);
+            let _ = tx.send((exports_with(&r, &m), resolve_with(&r, &[m.clone()], "a.dll", "B")));
+        });
+        let (list, res) = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("parsing hung on an unterminated string");
+        assert!(list.iter().all(|e| e.name != "ABCDEFGH"), "{list:?}");
+        assert!(res.is_err());
     }
 
     const SYMS: &[(&str, u8, u16)] = &[
