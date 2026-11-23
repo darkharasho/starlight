@@ -27,8 +27,10 @@ export function askPlayerTool(
       'Asks the player a question and waits for the answer. Use it when you need something only they can see in the game ' +
       '(a value on screen, whether something changed). The player gets a desktop notification; for "confirm" they answer ' +
       'with a hotkey. Returns { answered: true, answer } or { answered: false, reason: "timeout" | "stopped" }. ' +
-      'Ask one question at a time.',
-    tier: 'open',
+      'Ask one question at a time. Needs an attach the player approved.',
+    // Spec §9 / D5: only list_games and attach run before the player approves an attach,
+    // and only the attached agent may ask (one agent session, owned by one MCP session).
+    tier: 'attached',
     readOnly: true,
     input,
     async run(args, ctx) {

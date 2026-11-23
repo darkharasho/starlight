@@ -2,7 +2,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { askPlayerTool } from '../../../src/main/agent/tools-ask.js';
 import { DEFAULT_AGENT_PREFS } from '../../../src/shared/ipc.js';
-import type { ToolContext } from '../../../src/main/agent/tools.js';
+import { NOT_ATTACHED, ToolError, type ToolContext } from '../../../src/main/agent/tools.js';
+import { connectTools } from './harness.js';
 
 const ctx = (signal?: AbortSignal): ToolContext => ({
   mcpSessionId: 's', client: { mcpSessionId: 's', name: 'claude-code', version: '1', label: 'Claude' }, attached: null,
@@ -32,7 +33,22 @@ describe('ask_player tool', () => {
     const args = { question: 'Gold?', answer: 'number' as const };
     expect(tool.summarize(args, { answered: true, answer: 120 })).toBe('ask_player "Gold?" → 120');
     expect(tool.summarize(args, { answered: false, reason: 'timeout' })).toBe('ask_player "Gold?" → no answer (timeout)');
-    expect(tool.tier).toBe('open');
     expect(tool.readOnly).toBe(true);
+  });
+
+  it('needs an approved attach (spec §9: before approval only list_games and attach run)', async () => {
+    const ask = vi.fn(async () => ({ answered: true as const, answer: true }));
+    const tool = askPlayerTool({ ask }, async () => ({ ...DEFAULT_AGENT_PREFS }));
+    expect(tool.tier).toBe('attached');
+    const tiers: string[] = [];
+    const client = await connectTools([tool], {
+      access: { async require(_id, tier) { tiers.push(tier); if (tier !== 'open') throw new ToolError(NOT_ATTACHED); return null; } },
+      activity: { start: () => 1, finish: () => undefined },
+    });
+    const r = await client.callTool({ name: 'ask_player', arguments: { question: 'q', answer: 'confirm' } });
+    expect(r.isError).toBe(true);
+    expect((r.content as Array<{ text: string }>)[0]!.text).toBe(NOT_ATTACHED);
+    expect(tiers).toEqual(['attached']);
+    expect(ask).not.toHaveBeenCalled();
   });
 });
