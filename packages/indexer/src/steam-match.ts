@@ -55,6 +55,8 @@ export interface ResolveOpts {
   /** Most titles to search this run (the rest wait for the next one). */
   limit?: number;
   onProgress?: (done: number, total: number, title: string) => void;
+  /** Called when Steam rate-limits a search, with the wait before retrying and the new pace. */
+  onRateLimit?: (waitMs: number, paceMs: number) => void;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -67,7 +69,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export async function resolveSteamIds(titles: string[], opts: ResolveOpts): Promise<Map<string, SteamHit>> {
   const fetchFn = opts.fetch ?? globalThis.fetch;
   const now = opts.now ?? Date.now;
-  const sleepMs = opts.sleepMs ?? 1500;
+  // The pace slows each time Steam says too many requests, and stays slower for the run.
+  let sleepMs = opts.sleepMs ?? 1500;
   const cache = await readMatchCache(opts.cachePath);
   const unique = [...new Set(titles.filter((t) => t.trim() !== ''))];
   const keyOf = (t: string): string => t.toLowerCase();
@@ -88,6 +91,8 @@ export async function resolveSteamIds(titles: string[], opts: ResolveOpts): Prom
       if (res.status === 429 || res.status >= 500) {
         // Rate limited: wait it out and try this title again.
         backoff = Math.min(backoff ? backoff * 2 : 60_000, 600_000);
+        if (sleepMs > 0) sleepMs = Math.min(Math.round(sleepMs * 1.5), 10_000);
+        opts.onRateLimit?.(backoff, sleepMs);
         if (sleepMs > 0) await sleep(backoff);
         i--;
         continue;

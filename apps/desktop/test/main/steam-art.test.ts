@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdir, rm, writeFile, utimes, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createSteamArt, findLibraryCover, parseArtUrl, parseStoreCovers, storeItemsUrl, steamArtUrl } from '../../src/main/steam-art.js';
+import { createSteamArt, findLibraryCover, parseArtUrl, parseStoreArt, storeItemsUrl, steamArtUrl, steamHeroArtUrl, findLibraryHero } from '../../src/main/steam-art.js';
 
 let dir: string;
 let root: string;
@@ -17,7 +17,8 @@ const lib = (...p: string[]): string => join(root, 'appcache', 'librarycache', .
 
 describe('parseArtUrl', () => {
   it('accepts a numeric steam id and rejects anything else', () => {
-    expect(parseArtUrl(steamArtUrl(570))).toEqual({ kind: 'steam', appId: 570 });
+    expect(parseArtUrl(steamArtUrl(570))).toEqual({ kind: 'cover', appId: 570 });
+    expect(parseArtUrl(steamHeroArtUrl(570))).toEqual({ kind: 'hero', appId: 570 });
     expect(parseArtUrl('starlight-art://steam/abc')).toBeNull();
     expect(parseArtUrl('starlight-art://steam/../etc')).toBeNull();
     expect(parseArtUrl('starlight-art://other/570')).toBeNull();
@@ -44,24 +45,36 @@ describe('findLibraryCover', () => {
   });
 });
 
+describe('findLibraryHero', () => {
+  it('finds the hashed banner', async () => {
+    await mkdir(lib('11', 'h1'), { recursive: true });
+    await writeFile(lib('11', 'h1', 'library_hero.jpg'), 'HERO');
+    expect(await findLibraryHero(root, 11)).toBe(lib('11', 'h1', 'library_hero.jpg'));
+    expect(await findLibraryCover(root, 11)).toBeNull();
+  });
+});
+
 describe('store covers', () => {
   it('builds one GetItems request and parses capsules', () => {
     const url = decodeURIComponent(storeItemsUrl([1, 2]));
     expect(url).toContain('IStoreBrowseService/GetItems');
     expect(url).toContain('"ids":[{"appid":1},{"appid":2}]');
-    const m = parseStoreCovers({ response: { store_items: [
-      { appid: 1, assets: { asset_url_format: 'steam/apps/1/abc/${FILENAME}', library_capsule: 'cap.jpg' } },
+    const m = parseStoreArt({ response: { store_items: [
+      { appid: 1, assets: { asset_url_format: 'steam/apps/1/abc/${FILENAME}', library_capsule: 'cap.jpg', library_hero: 'hero.jpg' } },
       { appid: 2, assets: {} },
       { appid: 'x' },
     ] } });
-    expect(m.get(1)).toBe('https://shared.steamstatic.com/store_item_assets/steam/apps/1/abc/cap.jpg');
-    expect(m.get(2)).toBeNull();
+    expect(m.get(1)).toEqual({
+      cover: 'https://shared.steamstatic.com/store_item_assets/steam/apps/1/abc/cap.jpg',
+      hero: 'https://shared.steamstatic.com/store_item_assets/steam/apps/1/abc/hero.jpg',
+    });
+    expect(m.get(2)).toEqual({ cover: null, hero: null });
     expect(m.size).toBe(2);
   });
 });
 
 function storeBody(ids: number[]): unknown {
-  return { response: { store_items: ids.map((appid) => ({ appid, assets: { asset_url_format: `steam/apps/${appid}/h/\${FILENAME}`, library_capsule: 'c.jpg' } })) } };
+  return { response: { store_items: ids.map((appid) => ({ appid, assets: { asset_url_format: `steam/apps/${appid}/h/\${FILENAME}`, library_capsule: 'c.jpg', library_hero: 'hero.jpg' } })) } };
 }
 
 describe('createSteamArt', () => {
@@ -102,6 +115,8 @@ describe('createSteamArt', () => {
     const res = await art.serve(steamArtUrl(31));
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('IMG');
+    expect(await art.remoteHero(31)).toBe('https://shared.steamstatic.com/store_item_assets/steam/apps/31/h/hero.jpg');
+    expect(calls.filter((u) => u.includes('GetItems'))).toHaveLength(1);
 
     // A fresh instance reads the saved lookup instead of asking the store again.
     const again: string[] = [];

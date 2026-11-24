@@ -65,8 +65,9 @@ async function main(): Promise<number> {
     cachePath: STEAM_IDS_PATH,
     ...(offline ? { limit: 0 } : limitEnv ? { limit: Number(limitEnv) } : {}),
     onProgress: (done, total, title) => {
-      if (done % 50 === 0) console.log(`[steam] ${done}/${total} ${title}`);
+      if (done % 50 === 0) console.log(`[steam] ${new Date().toISOString().slice(11, 19)} ${done}/${total} ${title}`);
     },
+    onRateLimit: (wait, pace) => console.log(`[steam] rate limited: waiting ${wait / 1000}s, then one search every ${pace / 1000}s`),
   });
 
   const generatedAt = new Date().toISOString();

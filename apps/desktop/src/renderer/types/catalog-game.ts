@@ -14,3 +14,8 @@ export function steamCoverUrl(steamAppId: number | null): string | null {
   // Main answers this from Steam's local cache, the store's capsule or the CDN.
   return `starlight-art://steam/${steamAppId}`;
 }
+
+/** The game's wide banner art (main answers from Steam's cache, the store or the CDN). */
+export function steamHeroUrl(steamAppId: number | null | undefined): string | null {
+  return steamAppId == null ? null : `starlight-art://steam-hero/${steamAppId}`;
+}

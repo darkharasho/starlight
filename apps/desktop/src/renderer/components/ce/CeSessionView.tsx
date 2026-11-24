@@ -15,6 +15,7 @@ import { ScannerPanel } from './ScannerPanel.js';
 import { ConnectStage, TableChecks, type ConnectPhase } from './ConnectStage.js';
 import { GameCover } from './GameCover.js';
 import { useCover } from '../../lib/use-cover.js';
+import { steamHeroUrl } from '../../types/catalog-game.js';
 
 /**
  * Narrows the process list to likely game targets for the attach menu.
@@ -50,6 +51,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
   const [tab, setTab] = useState<Tab>('cheats');
   const [query, setQuery] = useState('');
   const cover = useCover(s.lastReq?.game ?? (s.title ? { name: s.title } : undefined));
+  const hero = steamHeroUrl(s.lastReq?.game?.steamAppId);
 
   const hasTable = s.tableId !== null || s.records.length > 0;
   const paused = s.mode === 'paused';
@@ -186,7 +188,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
   if (connecting) {
     return (
       <div className="relative h-full overflow-y-auto">
-        <CoverWash src={cover.src} />
+        <Backdrop hero={hero} cover={cover.src} />
         <div className="relative mx-auto flex min-h-full w-full max-w-[700px] flex-col justify-center px-2 pb-[6vh]">
           <ConnectStage title={title} cover={cover} phase={phase} launched={everLaunched.current} hasTable={hasTable}
                         progress={s.progress} steps={s.pickSteps}
@@ -198,6 +200,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
 
   return (
     <div className="relative flex h-full min-h-0 gap-6">
+      <Backdrop hero={hero} cover={cover.src} />
       {/* The game and everything that applies to the whole session. Stays put while the list scrolls. */}
       <aside className="relative flex w-[248px] shrink-0 flex-col items-center gap-3 overflow-y-auto pb-1 pt-11 text-center">
         <div className="relative shrink-0">
@@ -403,6 +406,33 @@ function PausedNotice({ holders, confirming, setConfirming }: {
 const ROW_COLUMNS = 'gap-0 min-[1180px]:columns-2 min-[1800px]:columns-3 [column-rule:1px_solid_rgba(54,61,82,0.6)]';
 
 /** The game's own colours, washed across the top of the connecting screen. */
+/**
+ * The game's banner art across the top of the page, fading into the
+ * background behind its name and cheats. Without a banner (or until one
+ * loads), a soft wash of the cover's colours instead.
+ */
+function Backdrop({ hero, cover }: { hero: string | null; cover: string | null }): JSX.Element {
+  const [failed, setFailed] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const show = hero !== null && failed !== hero;
+  return (
+    <>
+      {!(show && loaded === hero) && <CoverWash src={cover} />}
+      {show && (
+        <div aria-hidden="true"
+             className="pointer-events-none absolute -inset-x-6 -top-1 h-[400px] overflow-hidden"
+             style={{ WebkitMaskImage: 'linear-gradient(180deg, #000 0%, rgba(0,0,0,0.75) 45%, transparent 100%)' }}>
+          <img key={hero} src={hero} alt="" draggable={false}
+               onLoad={() => setLoaded(hero)} onError={() => setFailed(hero)}
+               className={`absolute inset-0 size-full object-cover object-[center_30%] transition-opacity duration-700 ${loaded === hero ? 'opacity-45' : 'opacity-0'}`} />
+          {/* Darken toward the edges so text over the art stays readable. */}
+          <div className="absolute inset-0 bg-[radial-gradient(120%_90%_at_50%_0%,transparent_30%,rgba(27,30,42,0.85)_100%)]" />
+        </div>
+      )}
+    </>
+  );
+}
+
 function CoverWash({ src }: { src: string | null }): JSX.Element {
   return (
     <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-[360px] overflow-hidden"
