@@ -93,6 +93,8 @@ static void on_usr2(int sig, siginfo_t* si, void* uc) {
 volatile int64_t   g_mono_ns    = 0;
 volatile int64_t   g_tod_us     = 0;
 volatile int64_t   g_wrapped_ns = 0;
+/* CLOCK_MONOTONIC by raw syscall right after g_mono_ns (never hooked): real time to compare with. */
+volatile int64_t   g_mono_raw_ns = 0;
 
 /* A game-side function that calls clock_gettime: hooking both must scale the time once. */
 __attribute__((noinline)) int clock_wrapper(clockid_t id, struct timespec* ts) {
@@ -105,6 +107,7 @@ static void* clocks_loop(void* arg) {
         struct timespec ts;
         struct timeval tv;
         if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) g_mono_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &ts) == 0) g_mono_raw_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
         if (gettimeofday(&tv, NULL) == 0) g_tod_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
         if (clock_wrapper(CLOCK_MONOTONIC, &ts) == 0) g_wrapped_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
         usleep(20 * 1000);
@@ -564,6 +567,7 @@ int main(int argc, char** argv) {
     printf("addr g_sig=%p\n",         (void*)g_sig);
     printf("addr libc_clock_gettime=%p\n", dlsym(RTLD_DEFAULT, "clock_gettime"));
     printf("addr g_mono_ns=%p\n",    (void*)&g_mono_ns);
+    printf("addr g_mono_raw_ns=%p\n", (void*)&g_mono_raw_ns);
     printf("addr g_tod_us=%p\n",     (void*)&g_tod_us);
     printf("addr g_wrapped_ns=%p\n", (void*)&g_wrapped_ns);
     printf("addr clock_wrapper=%p\n", (void*)&clock_wrapper);

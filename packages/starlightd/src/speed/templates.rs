@@ -55,6 +55,9 @@ pub const OFF_LOCK: u64 = 0x08;
 pub const OFF_SPEED: u64 = 0x10;
 /// Generation (`u32`), bumped on every speed change; never 0 once set.
 pub const OFF_GEN: u64 = 0x18;
+/// Landed slots (`u32`, bit per slot, set with `lock or`): the slot's landing clamp engaged
+/// (M4 D3). Only meaningful while the speed is `LANDING`.
+pub const OFF_LAND_MASK: u64 = 0x20;
 /// Per-clock-domain slots: `{real0 i64, fake0 i64, speed f64, gen u32, pad}`.
 pub const OFF_SLOTS: u64 = 0x40;
 pub const SLOT_SIZE: u64 = 32;
@@ -87,7 +90,43 @@ pub const OFF_SCALE32: u64 = OFF_CODE + 3 * ROUTINE_MAX;
 /// `unscale`, the inverse of `scale`: a game-time deadline to real time (M4 D2).
 pub const OFF_UNSCALE: u64 = OFF_CODE + 4 * ROUTINE_MAX;
 /// Room for each shared routine.
-pub const ROUTINE_MAX: u64 = 0x200;
+pub const ROUTINE_MAX: u64 = 0x300;
+
+/// The global speed sentinel for the session-end glide (M4 D3), never a speed the RPC accepts:
+/// each slot rebases toward real time at `LAND_SLOW` (ahead) or `LAND_FAST` (behind), and from
+/// then on is clamped so it never passes real time.
+pub const LANDING: f64 = 0.0;
+pub const LAND_SLOW: f64 = 0.5;
+pub const LAND_FAST: f64 = 2.0;
+
+/// After a rebase of the slot at `slot` (its `fake0`/`real0` written), with the global speed in
+/// `val`: when that is `LANDING`, `val` becomes the slot's landing speed instead, `LAND_SLOW` if
+/// its game time is ahead of real time, else `LAND_FAST`. Clobbers `tmp` and flags. `wrap32`
+/// compares the 32-bit difference (`scale32`'s wrapping counts).
+fn pick_speed(label: &str, slot: &str, val: &str, tmp: &str, wrap32: bool) -> String {
+    let compare = if wrap32 {
+        let t32 = match tmp {
+            "rax" => "eax",
+            other => panic!("pick_speed wrap32 needs rax, got {other}"),
+        };
+        format!("mov {t32}, dword ptr [{slot}+{SLOT_FAKE0:#x}]\nsub {t32}, dword ptr [{slot}+{SLOT_REAL0:#x}]\ntest {t32}, {t32}")
+    } else {
+        format!("mov {tmp}, qword ptr [{slot}+{SLOT_FAKE0:#x}]\ncmp {tmp}, qword ptr [{slot}+{SLOT_REAL0:#x}]")
+    };
+    format!(
+        "test {val}, {val}
+jne {label}
+{compare}
+// mov keeps the flags.
+mov {val}, {fast:#x}
+jle {label}
+mov {val}, {slow:#x}
+{label}:
+",
+        fast = LAND_FAST.to_bits(),
+        slow = LAND_SLOW.to_bits(),
+    )
+}
 
 /// Where glibc keeps a condvar's flags: `__wrefs` of `struct __pthread_cond_s`, whose bit 1 is
 /// its clock (set by `pthread_condattr_setclock(CLOCK_MONOTONIC)`, else REALTIME). 0x1c since
@@ -242,6 +281,48 @@ mov qword ptr [r11+{SLOT_REAL0:#x}], rax
             tod_gen = tod + SLOT_GEN,
         )
     };
+    // The landing clamp (D3): while the speed is LANDING and the slot is at its generation, the
+    // game time never passes real time (max for LAND_SLOW, min for LAND_FAST); the first time it
+    // would, the slot sets its bit in the land mask.
+    // game − real: as a signed 32-bit value for the wrapping counts.
+    let (diff, d) = if wrap32 { ("mov ecx, eax\nsub ecx, r8d", "ecx") } else { ("mov rcx, rax\nsub rcx, r8", "rcx") };
+    let land = format!(
+        "// rax = the clamped game time for slot r11 and real r8. Clobbers rcx, rdx and flags.
+s_land:
+mov ecx, dword ptr [r10+{OFF_GEN:#x}]
+cmp ecx, dword ptr [r11+{SLOT_GEN:#x}]
+jne s_land_done
+cmp qword ptr [r10+{OFF_SPEED:#x}], 0
+jne s_land_done
+{diff}
+mov rdx, {slow:#x}
+cmp rdx, qword ptr [r11+{SLOT_SPEED:#x}]
+jne s_land_fast
+// Ahead: max(game, real).
+test {d}, {d}
+jg s_land_done
+jmp s_land_hit
+s_land_fast:
+// Behind: min(game, real).
+test {d}, {d}
+jl s_land_done
+s_land_hit:
+mov rax, r8
+mov rcx, r11
+sub rcx, r10
+sub rcx, {OFF_SLOTS:#x}
+shr rcx, {slot_shift}
+mov edx, 1
+shl edx, cl
+test dword ptr [r10+{OFF_LAND_MASK:#x}], edx
+jne s_land_done
+lock or dword ptr [r10+{OFF_LAND_MASK:#x}], edx
+s_land_done:
+ret
+",
+        slow = LAND_SLOW.to_bits(),
+        slot_shift = SLOT_SIZE.trailing_zeros(),
+    );
     let (rebase_pair, pair_sub) = if wrap32 {
         (String::new(), String::new())
     } else {
@@ -262,7 +343,7 @@ je s_real
 call s_fake
 cmp r9d, dword ptr [r11+{SLOT_SEQ:#x}]
 jne s_real
-ret
+jmp s_land
 s_real:
 mov rax, r8
 ret
@@ -288,11 +369,12 @@ mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
 mov qword ptr [r11+{SLOT_REAL0:#x}], r8
 {rebase_pair}s_newgen:
 mov rcx, qword ptr [r10+{OFF_SPEED:#x}]
-mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
+{pick}mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
 mov dword ptr [r11+{SLOT_GEN:#x}], r9d
 inc dword ptr [r11+{SLOT_SEQ:#x}]
 s_ready:
 {keep_in_range}call s_fake
+call s_land
 mov dword ptr [r10+{OFF_LOCK:#x}], 0
 ret
 // rax = fake0 + (i64)((f64)max(real - real0, 0) * speed) for slot r11 and real r8.
@@ -307,9 +389,10 @@ mulsd xmm0, qword ptr [r11+{SLOT_SPEED:#x}]
 cvttsd2si rax, xmm0
 add rax, qword ptr [r11+{SLOT_FAKE0:#x}]
 ret
-{pair_sub}",
+{land}{pair_sub}",
         acquire = acquire("s"),
         slot_shift = SLOT_SIZE.trailing_zeros(),
+        pick = pick_speed("s_picked", "r11", "rcx", "rax", wrap32),
     )
 }
 
@@ -334,7 +417,7 @@ test r9d, 1
 jne u_game
 cmp dword ptr [r11+{SLOT_GEN:#x}], 0
 je u_game
-call u_real
+call u_land
 cmp r9d, dword ptr [r11+{SLOT_SEQ:#x}]
 jne u_game
 add rsp, 8
@@ -362,11 +445,11 @@ mov qword ptr [r11+{SLOT_REAL0:#x}], rdx
 mov rax, rdx
 call u_pair
 mov rcx, qword ptr [r10+{OFF_SPEED:#x}]
-mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
+{pick}mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
 mov dword ptr [r11+{SLOT_GEN:#x}], r9d
 inc dword ptr [r11+{SLOT_SEQ:#x}]
 u_ready:
-call u_real
+call u_land
 jmp u_unlock
 u_unused:
 mov rax, r8
@@ -391,7 +474,6 @@ ret
 // of s_fake (a deadline before fake0 maps before real0). Below 0 it is 0 (already past); past
 // i64 range it saturates to i64::MAX, so a far-future wait-forever deadline stays far away at low
 // speeds. Clobbers only rax, rdx and xmm0.
-// (The session-end glide's landing inverse goes here, Task 4.)
 u_real:
 mov rax, r8
 sub rax, qword ptr [r11+{SLOT_FAKE0:#x}]
@@ -417,7 +499,32 @@ cmp rax, qword ptr [r11+{SLOT_FAKE0:#x}]
 jl u_zero
 mov rax, 7fffffffffffffff
 ret
+// u_real, then the inverse of scale's landing clamp (D3) while the speed is LANDING and the slot
+// at its generation: a game clock max(F, real) reaches game time g at min(F⁻¹(g), g), and
+// min(F, real) at max(F⁻¹(g), g). Clobbers rax, rcx, rdx, xmm0 and flags.
+u_land:
+call u_real
+mov ecx, dword ptr [r10+{OFF_GEN:#x}]
+cmp ecx, dword ptr [r11+{SLOT_GEN:#x}]
+jne u_land_done
+cmp qword ptr [r10+{OFF_SPEED:#x}], 0
+jne u_land_done
+mov rdx, {slow:#x}
+cmp rdx, qword ptr [r11+{SLOT_SPEED:#x}]
+jne u_land_behind
+cmp rax, r8
+jle u_land_done
+mov rax, r8
+ret
+u_land_behind:
+cmp rax, r8
+jge u_land_done
+mov rax, r8
+u_land_done:
+ret
 {pair_sub}",
+        pick = pick_speed("u_picked", "r11", "rcx", "rax", false),
+        slow = LAND_SLOW.to_bits(),
         pair_sub = pair_rebase("u"),
         acquire = acquire("u"),
         slot_shift = SLOT_SIZE.trailing_zeros(),
@@ -472,12 +579,14 @@ mov qword ptr [rcx+{SLOT_FAKE0:#x}], rax
 pop rax
 mov qword ptr [rcx+{SLOT_REAL0:#x}], rax
 mov rdx, qword ptr [r10+{OFF_SPEED:#x}]
-mov qword ptr [rcx+{SLOT_SPEED:#x}], rdx
+// Landing: the partner's own direction, from its own game time vs real.
+{pick}mov qword ptr [rcx+{SLOT_SPEED:#x}], rdx
 mov dword ptr [rcx+{SLOT_GEN:#x}], r9d
 inc dword ptr [rcx+{SLOT_SEQ:#x}]
 {p}_pair_done:
 ret
-"
+",
+        pick = pick_speed(&format!("{p}_pair_picked"), "rcx", "rdx", "rax", false),
     )
 }
 
@@ -927,7 +1036,7 @@ mod tests {
         assert_eq!(OFF_NEST + NEST_ENTRY * NEST_COUNT, OFF_RECOVERY);
         assert!(OFF_RECOVERY_ENTRIES + RECOVERY_ENTRY * RECOVERY_MAX as u64 <= OFF_CODE);
         assert!(OFF_UNSCALE + ROUTINE_MAX <= super::super::STATE_PAGE_SIZE);
-        assert_eq!(OFF_UNSCALE, 0x1800);
+        assert_eq!(OFF_UNSCALE, 0x1c00);
         assert!(SLOT_SEQ + 4 <= SLOT_SIZE);
         // The speed (f64) and gen (u32) are one contiguous 12-byte write.
         assert_eq!(OFF_SPEED + 8, OFF_GEN);
@@ -1413,6 +1522,108 @@ mod tests {
         let w = LocalWait::new(&st, Kind::SemTimedwait);
         let (_, (sec, _)) = w.call((1010, 0), [0x1111, forever.as_ptr() as u64, 0, 0]);
         assert_eq!(sec, i64::MAX as u64 / S, "saturated, not 0");
+    }
+
+    /// Start landing: the sentinel speed with a new generation, as `speed::land` writes it.
+    fn start_landing(st: &LocalState, gen: u32) {
+        st.put(OFF_SPEED, LANDING.to_bits());
+        st.put32(OFF_GEN, gen);
+    }
+
+    #[test]
+    fn landing_glides_each_slot_onto_real_time() {
+        const S: u64 = 1_000_000_000;
+        let slot = |n: u64| OFF_SLOTS + n * SLOT_SIZE;
+        let mask = |st: &LocalState| st.get32(OFF_LAND_MASK);
+        let st = LocalState::new(2.0);
+        // Slot 1 ahead: 2.0 since real 1000 s. Slot 3 behind: 0.5 (set by hand) since 1000 s.
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1000 * S), 1000 * S);
+        assert_eq!(st.call(OFF_SCALE, KEY, 3, 1000 * S), 1000 * S);
+        st.put(slot(3) + SLOT_SPEED, 0.5f64.to_bits());
+        start_landing(&st, 2);
+        // Ahead (1024 s at real 1012 s): continues from its game time at LAND_SLOW, never below real.
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1012 * S), 1024 * S);
+        assert_eq!(st.get(slot(1) + SLOT_SPEED), LAND_SLOW.to_bits());
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1020 * S), 1028 * S);
+        assert_eq!(mask(&st), 0, "not landed yet");
+        // A wait while ahead: the deadline is reached at the earlier of F⁻¹ and real = game.
+        assert_eq!(st.unscale(KEY, 1, 1029 * S, 1020 * S), 1022 * S);
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1036 * S), 1036 * S, "lands on real time");
+        assert_eq!(mask(&st), 1 << 1);
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1040 * S), 1040 * S, "and stays on it");
+        assert_eq!(st.unscale(KEY, 1, 1040 * S + 20_000_000, 1040 * S), 1040 * S + 20_000_000, "not 1044.04 s");
+        // Behind (1006 s at real 1012 s): LAND_FAST, never past real time.
+        assert_eq!(st.call(OFF_SCALE, KEY, 3, 1012 * S), 1006 * S);
+        assert_eq!(st.get(slot(3) + SLOT_SPEED), LAND_FAST.to_bits());
+        assert_eq!(st.unscale(KEY, 3, 1010 * S, 1014 * S), 1014 * S, "max(F⁻¹ = 1014 s, 1010 s)");
+        assert_eq!(st.unscale(KEY, 3, 1007 * S, 1012 * S), 1012 * S + 500_000_000, "max(F⁻¹ = 1012.5 s, 1007 s)");
+        assert_eq!(st.call(OFF_SCALE, KEY, 3, 1015 * S), 1012 * S);
+        assert_eq!(mask(&st), 1 << 1);
+        assert_eq!(st.call(OFF_SCALE, KEY, 3, 1020 * S), 1020 * S, "min(1022 s, real)");
+        assert_eq!(mask(&st), (1 << 1) | (1 << 3));
+        assert_eq!(st.unscale(KEY, 3, 1020 * S + 20_000_000, 1020 * S), 1020 * S + 20_000_000, "not F⁻¹ = 1019.01 s");
+        // A slot first used while landing is on real time at once.
+        assert_eq!(st.call(OFF_SCALE, KEY, 5, 1020 * S), 1020 * S);
+        assert_eq!(mask(&st) & (1 << 5), 1 << 5);
+        // The lock is stuck: the lock-free read is clamped too.
+        st.put32(OFF_LOCK, 0x1234_5679);
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1050 * S), 1050 * S);
+        st.put32(OFF_LOCK, 0);
+        // A normal speed of 0.5 or 2.0 (not landing) is never clamped.
+        let st = LocalState::new(0.5);
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1000 * S), 1000 * S);
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1010 * S), 1005 * S);
+        assert_eq!(st.unscale(KEY, 1, 1006 * S, 1010 * S), 1012 * S);
+        assert_eq!(st.get32(OFF_LAND_MASK), 0);
+    }
+
+    #[test]
+    fn landing_picks_each_paired_clocks_own_direction() {
+        const S: u64 = 1_000_000_000;
+        const US: u64 = 1_000_000;
+        let (rt, tod) = (SLOT_REALTIME as u64, SLOT_GETTIMEOFDAY as u64);
+        let slot = |n: u64| OFF_SLOTS + n * SLOT_SIZE;
+        let st = LocalState::new(2.0);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1000 * US), 1000 * US);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1000 * S), 1000 * S);
+        // Make REALTIME behind real time by hand (gettimeofday stays ahead).
+        st.put(slot(rt) + SLOT_FAKE0, 990 * S);
+        start_landing(&st, 2);
+        // gettimeofday's read rebases REALTIME too, each from its own game time vs real.
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1001 * US), 1002 * US);
+        assert_eq!(st.get(slot(tod) + SLOT_SPEED), LAND_SLOW.to_bits());
+        assert_eq!(st.get32(slot(rt) + SLOT_GEN), 2);
+        assert_eq!(st.get(slot(rt) + SLOT_SPEED), LAND_FAST.to_bits(), "REALTIME is at 992 s at real 1001 s");
+        // The other way round, through unscale's rebase (a REALTIME wait first).
+        let st = LocalState::new(2.0);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1000 * US), 1000 * US);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1000 * S), 1000 * S);
+        st.put(slot(tod) + SLOT_FAKE0, 990 * US);
+        start_landing(&st, 2);
+        st.unscale(KEY, rt, 1003 * S, 1001 * S);
+        assert_eq!(st.get(slot(rt) + SLOT_SPEED), LAND_SLOW.to_bits());
+        assert_eq!(st.get(slot(tod) + SLOT_SPEED), LAND_FAST.to_bits());
+        // The partner's clamp sets its own bit on its own read.
+        assert_eq!(st.get32(OFF_LAND_MASK), 0);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1010 * US), 1010 * US);
+        assert_eq!(st.get32(OFF_LAND_MASK), 1 << tod);
+    }
+
+    #[test]
+    fn tick32_lands_across_the_32_bit_wrap() {
+        let st = LocalState::new(2.0);
+        let tick = |real: u64| st.call(OFF_SCALE32, KEY, 10, real) as u32;
+        assert_eq!(tick(0xffff_ff00), 0xffff_ff00);
+        // 0x200 ms ahead after the wrap.
+        assert_eq!(tick(0x100), 0x300);
+        start_landing(&st, 2);
+        assert_eq!(tick(0x100), 0x300);
+        assert_eq!(st.get(OFF_SLOTS + 10 * SLOT_SIZE + SLOT_SPEED), LAND_SLOW.to_bits());
+        assert_eq!(tick(0x300), 0x400);
+        assert_eq!(st.get32(OFF_LAND_MASK), 0);
+        assert_eq!(tick(0x500), 0x500);
+        assert_eq!(st.get32(OFF_LAND_MASK), 1 << 10);
+        assert_eq!(tick(0x600), 0x600);
     }
 
     #[test]

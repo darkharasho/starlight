@@ -15,6 +15,7 @@ use crate::tracer::Tracer;
 use crate::{asm, maps, mem, modules, remote};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use targets::HookTarget;
 use templates as tpl;
 
@@ -23,6 +24,10 @@ pub const MAGIC: [u8; 8] = *b"STLSPD01";
 /// Accepted speeds (D17). 1.0 keeps the hooks (a speed like any other).
 pub const MIN_SPEED: f64 = 0.1;
 pub const MAX_SPEED: f64 = 10.0;
+/// Session-end glide (M4 D3): the longest the daemon waits for every used clock to land on real
+/// time before reverting the hooks anyway, and how often it checks.
+pub const LAND_MAX_MS: u64 = 2000;
+pub const LAND_POLL_MS: u64 = 10;
 const PAGE: u64 = 0x1000;
 const RWX: i32 = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
 /// Orphan search: page starts are checked in rwx anonymous mappings up to this size, so a state
@@ -310,9 +315,10 @@ impl Speeds {
             e
         };
         let (map, patches, en) = (self.map.clone(), self.patches.clone(), entry.clone());
-        // Kind `Patch`, registered before any hook: the hooks' own patch teardowns are newer, so
-        // they run first, and this one then keeps in the record whatever they couldn't restore.
-        let token = self.owner.add(Some(handle), Teardown::Patch, Box::new(move || teardown(&map, &patches, handle, &en)));
+        // Kind `Speed`, which runs before every `Patch` teardown: the clock lands while the hooks
+        // are still in, then this reverts them itself (their own teardowns find them gone) and
+        // keeps in the record whatever it couldn't restore.
+        let token = self.owner.add(Some(handle), Teardown::Speed, Box::new(move || teardown(&map, &patches, handle, &en)));
         let mut e = entry.lock().unwrap();
         if !e.dead {
             e.token = Some(token);
@@ -423,18 +429,32 @@ impl Speeds {
     }
 }
 
-/// Session end for `handle`: revert its hooks (newest first; one that fails doesn't stop the
-/// rest), keep in the recovery record only what is still not restored, and let orphan recovery
-/// see the page again.
+/// Session end for `handle`: land the game's clocks on real time (D3; skipped once the game has
+/// exited), revert its hooks (newest first; one that fails doesn't stop the rest), keep in the
+/// recovery record only what is still not restored, and let orphan recovery see the page again.
 fn teardown(map: &Map, patches: &Patches, handle: u32, entry: &Arc<Mutex<Entry>>) {
     let mut e = entry.lock().unwrap();
     if !e.dead {
         e.dead = true;
+        if e.state.is_some() && !e.installed.is_empty() && !e.target.exited() {
+            match land(&mut e) {
+                Ok(Landed::All) => {}
+                Ok(Landed::TimedOut(n)) => eprintln!("starlightd: speed landing timed out with {n} clock(s) not back on real time"),
+                Err(err) => {
+                    if !e.target.exited() {
+                        eprintln!("starlightd: speed landing failed: {}", err.message);
+                    }
+                }
+            }
+        }
+        let gone = e.target.exited();
         for i in std::mem::take(&mut e.installed).iter().rev() {
             match patches.revert(i.patch_id, false) {
                 // -32009: the patch's own session teardown already restored it.
                 Ok(()) => {}
                 Err(err) if err.code == -32009 => {}
+                // The game exited: there is nothing left to restore.
+                Err(_) if gone => {}
                 // E.g. -32014: the game changed those bytes since. Left for orphan recovery.
                 Err(err) => eprintln!("starlightd: speed hook at {:#x} not restored: {}", i.addr, err.message),
             }
@@ -456,6 +476,54 @@ fn teardown(map: &Map, patches: &Patches, handle: u32, entry: &Arc<Mutex<Entry>>
     if m.get(&handle).is_some_and(|x| Arc::ptr_eq(x, entry)) {
         m.remove(&handle);
     }
+}
+
+/// How a session-end landing ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landed {
+    /// Every used clock is on real time.
+    All,
+    /// `LAND_MAX_MS` passed (or the game exited) with this many used clocks still off real time.
+    TimedOut(u32),
+}
+
+/// The session-end glide (D3): write the `LANDING` sentinel (a new generation, the land mask
+/// cleared first), then wait until every used slot (gen ≠ 0, read from the page each time, as
+/// slots may start being used meanwhile) has set its bit, polling every `LAND_POLL_MS` for at most
+/// `LAND_MAX_MS`. A used slot no clock reads again never lands: it counts as not landed.
+fn land(e: &mut Entry) -> Result<Landed, RpcError> {
+    let (t, state) = (e.target.clone(), e.state.expect("land needs a state page"));
+    mem::write_bytes(&t, state + tpl::OFF_LAND_MASK, &0u32.to_le_bytes())?;
+    e.gen = write_speed(&t, &*t.tracer()?, state, tpl::LANDING, e.gen)?;
+    let deadline = Instant::now() + Duration::from_millis(LAND_MAX_MS);
+    loop {
+        let missing = unlanded(&t, state)?;
+        if missing == 0 {
+            return Ok(Landed::All);
+        }
+        if Instant::now() >= deadline || t.exited() {
+            return Ok(Landed::TimedOut(missing));
+        }
+        std::thread::sleep(Duration::from_millis(LAND_POLL_MS));
+    }
+}
+
+/// How many used slots (gen ≠ 0) of the state page at `state` have no bit in the land mask.
+fn unlanded(t: &Target, state: u64) -> Result<u32, RpcError> {
+    let mask = u32::from_le_bytes(mem::read_bytes(t, state + tpl::OFF_LAND_MASK, 4)?.try_into().unwrap());
+    let slots = mem::read_bytes(t, state + tpl::OFF_SLOTS, (tpl::SLOT_SIZE * tpl::SLOT_COUNT as u64) as usize)?;
+    Ok(count_unlanded(&slots, mask))
+}
+
+/// `unlanded` on the slots' bytes: used slots whose bit is clear.
+fn count_unlanded(slots: &[u8], mask: u32) -> u32 {
+    (0..tpl::SLOT_COUNT)
+        .filter(|&n| {
+            let at = (n as u64 * tpl::SLOT_SIZE + tpl::SLOT_GEN) as usize;
+            let gen = u32::from_le_bytes(slots[at..at + 4].try_into().unwrap());
+            gen != 0 && mask & (1 << n) == 0
+        })
+        .count() as u32
 }
 
 /// Write `speed`, then the next generation, in one write with the game stopped (so no thread
@@ -627,6 +695,24 @@ pub fn recover_orphans(t: &Target) -> Result<(), RpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_used_slots_need_to_land() {
+        let mut slots = vec![0u8; (tpl::SLOT_SIZE * tpl::SLOT_COUNT as u64) as usize];
+        let use_slot = |slots: &mut Vec<u8>, n: u64| {
+            let at = (n * tpl::SLOT_SIZE + tpl::SLOT_GEN) as usize;
+            slots[at..at + 4].copy_from_slice(&7u32.to_le_bytes());
+        };
+        assert_eq!(count_unlanded(&slots, 0), 0, "nothing used: landed");
+        use_slot(&mut slots, 1);
+        use_slot(&mut slots, 8);
+        use_slot(&mut slots, 31);
+        assert_eq!(count_unlanded(&slots, 0), 3);
+        assert_eq!(count_unlanded(&slots, 1 << 1 | 1 << 2), 2, "an unused slot's bit doesn't count");
+        assert_eq!(count_unlanded(&slots, 1 << 1 | 1 << 8 | 1 << 31), 0);
+        // The sentinel is no speed the RPC accepts.
+        assert!(!(MIN_SPEED..=MAX_SPEED).contains(&tpl::LANDING));
+    }
 
     #[test]
     fn kind_and_abi_names() {

@@ -38,16 +38,19 @@ pub fn shutdown_and_exit() -> ! {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Teardown {
-    Patch = 0,
-    Watch = 1,
-    Freeze = 2,
-    Scan = 3,
+    /// Game speed (M4 D3): its session end glides the clock back onto real time with the speed
+    /// hooks still in, then reverts them itself, so it runs before their own `Patch` teardowns.
+    Speed = 0,
+    Patch = 1,
+    Watch = 2,
+    Freeze = 3,
+    Scan = 4,
 }
 
 /// What a target's exit tears down (ruling R4): code changes and freezes. Scan sessions stay
 /// registered (later calls report the process is gone), and watches end through their own
 /// exit handling so they can report `process_exited`.
-pub const ON_TARGET_EXIT: &[Teardown] = &[Teardown::Patch, Teardown::Freeze];
+pub const ON_TARGET_EXIT: &[Teardown] = &[Teardown::Speed, Teardown::Patch, Teardown::Freeze];
 
 type Action = Box<dyn FnOnce() + Send>;
 
@@ -220,8 +223,10 @@ mod tests {
         o.add(Some(1), Teardown::Freeze, act("freeze"));
         o.add(Some(1), Teardown::Patch, act("patch"));
         o.add(None, Teardown::Watch, act("watch"));
+        // Older than the patch, but speed's landing must run while its hooks are still in.
+        o.add(Some(1), Teardown::Speed, act("speed"));
         o.run_all();
-        assert_eq!(*log.lock().unwrap(), ["patch", "watch", "freeze", "scan"]);
+        assert_eq!(*log.lock().unwrap(), ["speed", "patch", "watch", "freeze", "scan"]);
     }
 
     #[test]
