@@ -333,12 +333,14 @@ fn patch_waits_until_no_thread_is_inside_the_site() {
     let d = Daemon::start();
     let mut c = d.client();
     let h = attach(&mut c, &t);
-    let ins = disasm(&mut c, &h, &t.addr("spin_target"), 10);
-    // push rbp; mov rbp,rsp | mov [rbp-4],edi; mov edx,[rbp-4]; mov eax,edx; add eax,eax; add eax,edx; add eax,1 | pop rbp
-    let site = ins[2].0;
-    let body: String = ins[2..8].iter().map(|i| i.1.as_str()).collect();
+    let ins = disasm(&mut c, &h, &t.addr("spin_target"), 11);
+    // [endbr64 under -fcf-protection, Ubuntu's default] push rbp; mov rbp,rsp |
+    // mov [rbp-4],edi; mov edx,[rbp-4]; mov eax,edx; add eax,eax; add eax,edx; add eax,1 | pop rbp
+    let s = if ins[0].1 == "f30f1efa" { 3 } else { 2 };
+    let site = ins[s].0;
+    let body: String = ins[s..s + 6].iter().map(|i| i.1.as_str()).collect();
     assert_eq!(body, "897dfc8b55fc89d001c001d083c001", "spin_target compiled differently; update this test");
-    assert_eq!(ins[8].1, "5d");
+    assert_eq!(ins[s + 6].1, "5d");
     // lea eax,[rdi+rdi*2+1]; nop dword [rax+rax+0]; nop word [rax+rax+0]: the same result, x*3+1.
     let alt = "8d447f01" .to_string() + "0f1f440000" + "660f1f440000";
     assert_eq!(alt.len(), body.len());
