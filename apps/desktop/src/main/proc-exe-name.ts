@@ -31,11 +31,14 @@ function basename(p: string): string {
  * argv). Returns the basename of the `.exe` token that corresponds to this
  * process, or null if none is present.
  *
- * When `comm` (the possibly-truncated process name) is given, we prefer the
- * `.exe` token whose 15-char-truncated basename equals it — that pins the exact
+ * When `comm` (the possibly-truncated process name) is given, only the `.exe`
+ * token whose 15-char-truncated basename equals it counts — that pins the exact
  * argument belonging to this process even when argv contains several exes (e.g.
- * a launcher exe followed by the game exe). Otherwise we fall back to the last
- * `.exe` token, which for a game process is normally argv[0].
+ * a launcher exe followed by the game exe). A process whose comm matches no
+ * token is not that exe: Proton's wrappers (`_v2-entry-point`,
+ * `pressure-vessel-wrap`, …) carry the game exe as an argument while the game
+ * starts, and naming them after it latches the wrong process. Without a comm we
+ * fall back to the last `.exe` token, which for a game process is normally argv[0].
  */
 export function exeNameFromCmdline(cmdline: string, comm?: string): string | null {
   const tokens = cmdline.split('\0').filter(Boolean);
@@ -43,8 +46,7 @@ export function exeNameFromCmdline(cmdline: string, comm?: string): string | nul
   if (exes.length === 0) return null;
   if (comm) {
     const c = comm.toLowerCase();
-    const match = exes.find((b) => b.slice(0, COMM_MAX).toLowerCase() === c);
-    if (match) return match;
+    return exes.find((b) => b.slice(0, COMM_MAX).toLowerCase() === c) ?? null;
   }
   return exes[exes.length - 1]!;
 }
