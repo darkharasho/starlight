@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { startSession, releaseToStarlightd, ceSessionFor, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
 import { PTRACE_MESSAGE } from '../../src/main/ce-native.js';
+import type { CeBackend } from '../../src/main/ce-backend.js';
 
 const scannerHost = vi.hoisted(() => ({
   call: vi.fn(async () => ({ ok: true, from: 'scanner' }) as Record<string, unknown>),
@@ -351,7 +352,7 @@ describe('ce-session', () => {
   //   records: what list_records returns;  enable: { "<id>": true | "error text" };
   //   check: { "<id>": true | false | "unknown" }.
   // An `enable` value of "flag" succeeds only once the file `<dir>/flag` exists.
-  async function installFakeCe(log: string, opts: { readyAfterMs?: number } = {}): Promise<void> {
+  async function installFakeCe(log: string, opts: { readyAfterMs?: number; rawPaths?: boolean } = {}): Promise<void> {
     const src = `#!/usr/bin/env node
 const fs = require('fs');
 const lua = fs.readFileSync('autorun/zzz-starlight.lua', 'utf8');
@@ -391,7 +392,9 @@ const reply = (cmd) => {
       if (how === 'unknown' || how === undefined) return { unknown: true };
       return how ? { ok: true, found: 1 } : { ok: false, found: 0, missing: 1, error: "signature 'x' is not in the game" };
     }
-    case 'load_table': path = fromWine(cmd.params.path); on = new Set(); return { ok: true };
+    case 'load_table':
+      if (${opts.rawPaths ? 'true' : 'false'}) fs.appendFileSync(${JSON.stringify(log)}, 'raw ' + cmd.params.path + '\\n');
+      path = fromWine(cmd.params.path); on = new Set(); return { ok: true };
     case 'set_hotkeys': return { ok: true, count: cmd.params.bindings.length };
     case 'set_speed': return { ok: true, speed: cmd.params.speed };
     case 'shutdown': return { ok: true };
@@ -653,6 +656,23 @@ const reply = (cmd) => {
     } finally { await t.close(); }
   });
 
+  it('retryTables hands the backend the Linux path, and Cheat Engine gets the Wine path once', async () => {
+    const log = join(dir, 'fake-ce.log');
+    await installFakeCe(log, { rawPaths: true });
+    const t = await serveTables({ 'game.CT': { records: MASTER, enable: { 1: true } } });
+    try {
+      const r = await startSession({ sources: ['https://f.example/viewtopic.php?t=1'], cacheKey: 'retry2', runtimeRoot: dir, ctCacheDir, listTablesFn: async () => t.tables, ...native });
+      const s = getActiveSession()!;
+      const send = vi.spyOn(s.backend!, 'send');
+      expect(await retryTables({ sessionId: r.sessionId })).toMatchObject({ ok: true, verdict: 'works' });
+      const loads = send.mock.calls.map(([cmd]) => cmd).filter((cmd) => cmd.method === 'load_table');
+      expect(s.ctPath!.startsWith('/')).toBe(true);
+      expect(loads).toEqual([{ method: 'load_table', params: { path: s.ctPath } }]);
+      const raw = (await readFile(log, 'utf8')).split('\n').filter((l) => l.startsWith('raw '));
+      expect(raw).toEqual([`raw ${toWinePath(s.ctPath!)}`]);
+    } finally { await t.close(); }
+  });
+
   it('lets a game that just started finish loading before matching its table', async () => {
     await installFakeCe(join(dir, 'fake-ce.log'));
     const calls: [number, string[]][] = [];
@@ -749,13 +769,13 @@ const reply = (cmd) => {
       const r = await startSession({ source: await startCtServer(), cacheKey: 'rel1', runtimeRoot: dir, ctCacheDir, ...native });
       expect(ceSessionFor(4242)).toEqual({ sessionId: r.sessionId });
       expect(ceSessionFor(1)).toBeNull();
-      const ceProcess = getActiveSession()!.ceProcess!;
-      const kill = vi.spyOn(ceProcess, 'kill');
+      const backend = getActiveSession()!.backend!;
+      const kill = vi.spyOn(backend, 'close');
       expect(await releaseToStarlightd(r.sessionId)).toBe(true);
       expect((await readFile(log, 'utf8')).trim().split('\n').pop()).toBe('shutdown');
       expect(kill).toHaveBeenCalled();
       const s = getActiveSession()!;
-      expect(s).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd', bridge: null, pid: 4242 });
+      expect(s).toMatchObject({ sessionId: r.sessionId, mode: 'paused', backend: null, pid: 4242 });
       expect(s.records).toEqual(r.records.map((x) => ({ ...x, isActive: false })));
       expect(ceSessionFor(4242)).toBeNull();
       expect(await releaseToStarlightd(r.sessionId)).toBe(false);
@@ -772,7 +792,7 @@ const reply = (cmd) => {
       });
       expect(r).toMatchObject({ engine: 'starlightd', holders: ['agent'], attached: true });
       expect(await readFile(log, 'utf8')).toMatch(/shutdown/);
-      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd', bridge: null, pid: 4242 });
+      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, mode: 'paused', backend: null, pid: 4242 });
     });
 
     it('a release that lands mid-startup does not tear down the starlightd-owned session', async () => {
@@ -787,18 +807,19 @@ const reply = (cmd) => {
         },
       });
       expect(r).toMatchObject({ engine: 'starlightd', holders: ['agent'] });
-      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd' });
+      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, mode: 'paused' });
     });
 
     it('CE exiting after releaseToStarlightd keeps the session', async () => {
       await installFakeCe(join(dir, 'fake-ce.log'));
       let alive = true;
       const r = await startSession({ source: await startCtServer(), cacheKey: 'rel2', runtimeRoot: dir, ctCacheDir, ...native, isGameAlive: () => alive, gameWatchMs: 20 });
-      const exited = getActiveSession()!.ceProcess!.waitForExit();
+      const backend = getActiveSession()!.backend as CeBackend;
+      const exited = vi.waitFor(() => { if (!backend.launcherExited()) throw new Error('CE still running'); }, { timeout: 5000, interval: 10 });
       await releaseToStarlightd(r.sessionId);
       await exited;                                       // CE's exit (and its onExit callback) has happened
       await new Promise((res) => setTimeout(res, 20));
-      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, engine: 'starlightd', pid: 4242 });
+      expect(getActiveSession()).toMatchObject({ sessionId: r.sessionId, mode: 'paused', pid: 4242 });
       // ...and the game-exit watch still runs.
       scannerHost.end.mockClear();
       alive = false;
@@ -822,7 +843,7 @@ const reply = (cmd) => {
         expect(ensureRuntime).not.toHaveBeenCalled();
         expect(r).toMatchObject({ engine: 'starlightd', holders: ['user-cheats'], attached: true, verdict: 'unknown', process: { pid: 4242 } });
         expect(r.records.map((x) => x.name)).toEqual(['Infinite HP']);
-        expect(getActiveSession()).toMatchObject({ engine: 'starlightd', bridge: null, ceProcess: null });
+        expect(getActiveSession()).toMatchObject({ mode: 'paused', backend: null });
       } finally { await ct.close(); }
     });
 

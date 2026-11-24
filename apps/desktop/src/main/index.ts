@@ -15,7 +15,7 @@ import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
 import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
-import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd } from './ce-session.js';
+import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd, engineOf } from './ce-session.js';
 import { createUserCheatsHost } from './user-cheats-host.js';
 import { userCheatsDir } from './user-cheats.js';
 import { createGameOwner } from './game-owner.js';
@@ -60,7 +60,7 @@ function broadcast(e: import('../shared/ipc.js').StarlightEvent): void {
 
 function broadcastEngine(): void {
   const s = ceGetActiveSession();
-  if (s && s.pid !== null) broadcast({ type: 'session:engine', sessionId: s.sessionId, engine: s.engine, holders: gameOwner.holders(s.pid) });
+  if (s && s.pid !== null) broadcast({ type: 'session:engine', sessionId: s.sessionId, engine: engineOf(s.mode), holders: gameOwner.holders(s.pid) });
 }
 
 /** One engine per game: Cheat Engine and starlightd never both hold it. */
