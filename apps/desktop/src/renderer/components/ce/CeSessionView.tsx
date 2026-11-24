@@ -17,6 +17,8 @@ import { GameCover } from './GameCover.js';
 import { useCover } from '../../lib/use-cover.js';
 import { steamHeroUrl } from '../../types/catalog-game.js';
 import { useGameAccent } from '../../lib/accent.js';
+import { FadeScroll } from '../FadeScroll.js';
+import { ChevronDown, Play, Search } from 'lucide-react';
 
 /**
  * Narrows the process list to likely game targets for the attach menu.
@@ -204,27 +206,19 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
     <div className="relative flex h-full min-h-0 gap-6">
       <Backdrop hero={hero} cover={cover.src} />
       {/* The game and everything that applies to the whole session. Stays put while the list scrolls. */}
-      <aside className="relative flex w-[248px] shrink-0 flex-col items-center gap-3 overflow-y-auto pb-1 pt-11 text-center">
-        <div className="relative shrink-0">
-          {/* The game's own colours, as a glow behind its cover. */}
-          {cover.src && (
-            <img src={cover.src} alt="" aria-hidden="true"
-                 className="pointer-events-none absolute left-1/2 top-1/2 h-[125%] w-[230%] max-w-none -translate-x-1/2 -translate-y-1/2 rounded-full object-cover opacity-40 blur-xl saturate-150" />
-          )}
-          <GameCover title={title} cover={cover} size={s.attached ? 'md' : 'lg'} />
-        </div>
+      {/* Padded out past its 248px so the cover's shadow and the Play glow aren't clipped by the scroll edge. */}
+      <FadeScroll as="aside" className="relative -mx-4 flex w-[280px] shrink-0 flex-col items-center gap-3 px-4 pb-1 pt-12 text-center">
+        <GameCover title={title} cover={cover} size={s.attached ? 'md' : 'lg'} />
         <div className="relative w-full">
-          <div className="flex items-center justify-center gap-2">
-            <h1 className="line-clamp-2 text-[20px] font-semibold leading-tight tracking-tight">{title}</h1>
+          <h1 className="line-clamp-2 text-balance text-[20px] font-semibold leading-tight tracking-tight">{title}</h1>
+          <div className="mt-2 flex flex-col items-center gap-1 text-[12.5px] leading-snug text-muted">
             {pill === 'native' && (
-              <span className="shrink-0 rounded-full border border-neon-cyan/40 bg-neon-cyan/[0.1] px-2.5 py-0.5 text-[11.5px] text-neon-cyan animate-rise">Starlight engine</span>
+              <span className="rounded-full border border-neon-cyan/40 bg-neon-cyan/[0.1] px-2.5 py-0.5 text-[11.5px] text-neon-cyan animate-rise">Starlight engine</span>
             )}
             {pill === 'ce' && (
               <span tabIndex={0} title={pillWhy}
-                    className="shrink-0 rounded-full border border-line bg-panel px-2.5 py-0.5 text-[11.5px] text-soft animate-rise focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan">Cheat Engine</span>
+                    className="rounded-full border border-line bg-panel/80 px-2.5 py-0.5 text-[11.5px] text-soft animate-rise focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan">Cheat Engine</span>
             )}
-          </div>
-          <div className="mt-1.5 flex flex-col items-center gap-0.5 text-[12.5px] leading-snug text-muted">
             {s.attached && (
               <span className="inline-flex max-w-full items-center gap-1.5 text-soft"
                     title={s.attachedTo ? `pid ${s.attachedTo.pid}${s.proton ? ' · running under Proton' : ''}` : undefined}>
@@ -295,7 +289,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
             )}
           </RailCard>
         )}
-      </aside>
+      </FadeScroll>
 
       <div className="relative flex min-w-0 flex-1 flex-col">
         {hasCheatsTab ? (
@@ -305,8 +299,11 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
               <TabButton active={activeTab === 'scanner'} onClick={() => setTab('scanner')}>Memory scanner</TabButton>
             </div>
             {activeTab === 'cheats' && !paused && list.total > SEARCH_THRESHOLD && (
-              <input type="search" aria-label="Filter cheats" placeholder="Filter cheats…" value={query} onChange={(e) => setQuery(e.target.value)}
-                     className="ml-auto w-52 rounded-full border border-line bg-panel px-3.5 py-1.5 text-[13px] text-ink placeholder:text-muted/60 transition-colors focus:border-neon-cyan focus:outline-none" />
+              <label className="relative ml-auto">
+                <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted" />
+                <input type="search" aria-label="Filter cheats" placeholder="Filter cheats…" value={query} onChange={(e) => setQuery(e.target.value)}
+                       className="w-52 rounded-full border border-line bg-panel py-1.5 pl-8 pr-3.5 text-[13px] text-ink placeholder:text-muted/60 transition-colors focus:border-neon-cyan focus:outline-none" />
+              </label>
             )}
           </div>
         ) : (
@@ -322,7 +319,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
               : <div className="py-8 text-center text-[13px] text-muted">Start the game to use the memory scanner.</div>}
           </div>
         ) : (
-          <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pb-2 pr-2">
+          <FadeScroll fadeTop={false} roundTop={12} className="-mr-2 min-h-0 flex-1 snap-y snap-proximity pb-2 pr-2">
             {cacheKey !== null && <MyCheatsSection cacheKey={cacheKey} pid={myPid} attached={s.attached} />}
             {paused && (
               <PausedNotice holders={s.holders} confirming={confirmTable} setConfirming={setConfirmTable} />
@@ -336,16 +333,17 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
             {!paused && sections.map((sec, i) => {
               const on = s.attached ? sec.items.filter((x) => !x.note && x.rec.isActive).length : 0;
               return (
-                <section key={`${sec.title ?? ''}:${i}`} className="mb-3 overflow-hidden rounded-xl border border-line bg-panel animate-rise"
+                <section key={`${sec.title ?? ''}:${i}`} className="mb-3 snap-start overflow-clip rounded-xl border border-line bg-panel animate-rise"
                          style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}>
                   {sec.title && (
-                    <header className="flex items-center justify-between gap-3 border-b border-line/60 px-3.5 py-2">
+                    // Stays pinned while its rows scroll under it, so a half-scrolled group still says what it is.
+                    <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-line/70 bg-[#2a3044] px-3.5 py-2 shadow-[0_6px_12px_-8px_rgba(0,0,0,0.6)]">
                       <h2 className="truncate text-[12.5px] font-medium text-soft">{sec.title}</h2>
                       {on > 0 && <span className="shrink-0 text-xs text-neon-cyan">{on} on</span>}
                     </header>
                   )}
                   {/* Rows run down one column, then the next, so the list uses the width instead of the scrollbar. */}
-                  <div className={`-mb-px ${sec.items.length > 1 ? ROW_COLUMNS : ''}`}>
+                  <div className={`-mb-px ${sec.title ? ROW_SNAP_UNDER_HEADER : ROW_SNAP} ${sec.items.length > 1 ? ROW_COLUMNS : ''}`}>
                     {sec.items.map((item) => (
                       <RecordRow key={item.rec.id} item={item} attached={s.attached} pending={s.pending.has(item.rec.id)}
                                  error={s.recordErrors[item.rec.id]} hotkey={hotkeys.get(item.rec.id)} hotkeysOn={hotkeysOn && s.attached} />
@@ -362,7 +360,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
                 </ul>
               </details>
             )}
-          </div>
+          </FadeScroll>
         )}
       </div>
     </div>
@@ -405,9 +403,20 @@ function PausedNotice({ holders, confirming, setConfirming }: {
 }
 
 /** Two columns of rows once the window is wide enough, three on a very wide one. */
+/** Rows are snap points, so the list never rests on a half-cut row; under a pinned header it lands just below the header instead of behind it. */
+const ROW_SNAP = '[&>*]:snap-start';
+const ROW_SNAP_UNDER_HEADER = '[&>*]:snap-start [&>*]:scroll-mt-[36px]';
 const ROW_COLUMNS = 'gap-0 min-[1180px]:columns-2 min-[1800px]:columns-3 [column-rule:1px_solid_rgba(54,61,82,0.6)]';
 
-/** The game's own colours, washed across the top of the connecting screen. */
+/**
+ * Fades the banner out on every side — down into the page, and softly at the
+ * top and sides — so the page's own edges never cut it with a hard line.
+ */
+const BACKDROP_MASK = [
+  'linear-gradient(180deg, transparent 0, #000 56px, rgba(0,0,0,0.75) 45%, transparent 100%)',
+  'linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%)',
+].join(', ');
+
 /**
  * The game's banner art across the top of the page, fading into the
  * background behind its name and cheats. Without a banner (or until one
@@ -423,7 +432,7 @@ function Backdrop({ hero, cover }: { hero: string | null; cover: string | null }
       {show && (
         <div aria-hidden="true"
              className="pointer-events-none absolute -inset-x-6 -top-1 h-[400px] overflow-hidden"
-             style={{ WebkitMaskImage: 'linear-gradient(180deg, #000 0%, rgba(0,0,0,0.75) 45%, transparent 100%)' }}>
+             style={{ WebkitMaskImage: BACKDROP_MASK, maskImage: BACKDROP_MASK, WebkitMaskComposite: 'source-in', maskComposite: 'intersect' }}>
           <img key={hero} src={hero} alt="" draggable={false}
                onLoad={() => setLoaded(hero)} onError={() => setFailed(hero)}
                className={`absolute inset-0 size-full object-cover object-[center_30%] transition-opacity duration-700 ${loaded === hero ? 'opacity-45' : 'opacity-0'}`} />
@@ -493,16 +502,20 @@ function PlayBar({ processes }: { processes: DetectedProcess[] }): JSX.Element {
       <div ref={wrap} className="relative flex w-full rounded-full shadow-[0_0_28px_rgb(var(--accent)/0.3)]">
         {canLaunch ? (
           <>
-            <button type="button" onClick={() => void s.play()} className={`${primary} flex-1 rounded-l-full py-2.5 pl-7 pr-4 text-[15px]`}>▶ Play</button>
+            <button type="button" onClick={() => void s.play()} className={`${primary} flex flex-1 items-center justify-center gap-2 rounded-l-full py-2.5 pl-6 pr-3 text-[15px]`}>
+              <Play aria-hidden="true" className="size-4 fill-current" strokeWidth={2.5} /> Play
+            </button>
             <button type="button" aria-label="Other ways to connect" aria-haspopup="menu" aria-expanded={menuOpen}
                     onClick={() => setMenuOpen((o) => !o)}
                     className={`${primary} ml-px rounded-r-full pl-3 pr-4 text-xs`}>
-              <span className={`inline-block transition-transform duration-200 ${menuOpen ? 'rotate-180' : ''}`}>▾</span>
+              <ChevronDown aria-hidden="true" strokeWidth={2.5} className={`size-4 transition-transform duration-200 ${menuOpen ? 'rotate-180' : ''}`} />
             </button>
           </>
         ) : (
           <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((o) => !o)}
-                  className={`${primary} flex-1 rounded-full px-4 py-2.5 text-sm`}>Attach to running game ▾</button>
+                  className={`${primary} flex flex-1 items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-sm`}>
+            Attach to running game <ChevronDown aria-hidden="true" strokeWidth={2.5} className={`size-4 transition-transform duration-200 ${menuOpen ? 'rotate-180' : ''}`} />
+          </button>
         )}
         {menuOpen && (
           <div role="menu" aria-label="Attach to a running game"

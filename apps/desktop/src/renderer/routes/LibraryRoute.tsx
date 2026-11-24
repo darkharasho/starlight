@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
@@ -97,7 +98,7 @@ function GameTile({
               }}
               className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center text-[10px] rounded-sm border border-line bg-bg/80 text-muted opacity-0 group-hover:opacity-100 hover:border-neon-pink hover:text-neon-pink"
             >
-              ×
+              <X aria-hidden="true" className="size-3" />
             </span>
           )}
         </button>
@@ -113,7 +114,7 @@ function GameTile({
               }}
               className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center text-[10px] rounded-sm border border-line bg-bg/80 text-muted opacity-0 group-hover:opacity-100 hover:border-neon-pink hover:text-neon-pink"
             >
-              ×
+              <X aria-hidden="true" className="size-3" />
             </button>
           )}
         </div>

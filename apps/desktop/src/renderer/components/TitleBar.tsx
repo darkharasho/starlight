@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Copy, Minus, Square, X } from 'lucide-react';
 import { StarlightLogo } from './StarlightLogo.js';
 import { useUpdateStore } from '../stores/update-store.js';
 import { updatePill } from '../lib/update-view.js';
@@ -35,9 +36,7 @@ export function TitleBar(): JSX.Element {
           onClick={() => window.starlight?.windowMinimize()}
           hoverClass="hover:bg-line"
         >
-          <svg viewBox="0 0 12 12" className="size-3">
-            <path d="M2 6h8" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
-          </svg>
+          <Minus aria-hidden="true" className="size-3.5" strokeWidth={1.5} />
         </WindowButton>
         <WindowButton
           aria-label={maximized ? 'Restore' : 'Maximize'}
@@ -45,27 +44,9 @@ export function TitleBar(): JSX.Element {
           hoverClass="hover:bg-line"
         >
           {maximized ? (
-            <svg viewBox="0 0 12 12" className="size-3">
-              <path
-                d="M3.5 3.5h5v5h-5z M5 2h5v5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <Copy aria-hidden="true" className="size-3 -scale-x-100" strokeWidth={1.5} />
           ) : (
-            <svg viewBox="0 0 12 12" className="size-3">
-              <rect
-                x="2.5"
-                y="2.5"
-                width="7"
-                height="7"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1"
-              />
-            </svg>
+            <Square aria-hidden="true" className="size-3" strokeWidth={1.5} />
           )}
         </WindowButton>
         <WindowButton
@@ -73,14 +54,7 @@ export function TitleBar(): JSX.Element {
           onClick={() => window.starlight?.windowClose()}
           hoverClass="hover:bg-neon-pink/80 hover:text-bg"
         >
-          <svg viewBox="0 0 12 12" className="size-3">
-            <path
-              d="M3 3l6 6M9 3l-6 6"
-              stroke="currentColor"
-              strokeWidth="1"
-              strokeLinecap="round"
-            />
-          </svg>
+          <X aria-hidden="true" className="size-3.5" strokeWidth={1.5} />
         </WindowButton>
       </div>
     </div>

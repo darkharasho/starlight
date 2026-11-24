@@ -95,6 +95,9 @@ importers:
       luaparse:
         specifier: ^0.3.1
         version: 0.3.1
+      lucide-react:
+        specifier: ^1.79.0
+        version: 1.79.0(@types/react@18.3.28)(react@18.3.1)
       postcss:
         specifier: ^8.4.40
         version: 8.5.14
@@ -2321,6 +2324,15 @@ packages:
   luaparse@0.3.1:
     resolution: {integrity: sha512-b21h2bFEbtGXmVqguHogbyrMAA0wOHyp9u/rx+w6Yc9pW1t9YjhGUsp87lYcp7pFRqSWN/PhFkrdIqKEUzRjjQ==}
     hasBin: true
+
+  lucide-react@1.79.0:
+    resolution: {integrity: sha512-MDHKxzUobPRyQgt4hHO1z+pUQJKYMvenh8qw+ndWQE0Wg+Hbjli/ZrkZXBGmRBrMvvqDRjkmQj0Z5RbeL/ogNw==}
+    peerDependencies:
+      '@types/react': '*'
+      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
 
   lz-string@1.5.0:
     resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
@@ -6116,6 +6128,12 @@ snapshots:
       yallist: 4.0.0
 
   luaparse@0.3.1: {}
+
+  lucide-react@1.79.0(@types/react@18.3.28)(react@18.3.1):
+    dependencies:
+      react: 18.3.1
+    optionalDependencies:
+      '@types/react': 18.3.28
 
   lz-string@1.5.0: {}
 

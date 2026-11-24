@@ -1,4 +1,5 @@
 import type { CePickStep } from '../../../shared/ipc.js';
+import { Check, X } from 'lucide-react';
 import { GameCover } from './GameCover.js';
 
 export type ConnectPhase = 'launching' | 'waiting' | 'connecting' | 'matching' | 'matched';
@@ -117,8 +118,8 @@ export function TableChecks({ steps, className = '' }: { steps: CePickStep[]; cl
                 : 'border-line bg-panel text-muted'
             }`}>
           <span className="w-4 text-center text-xs" aria-hidden="true">
-            {t.state === 'works' && <span className="inline-block text-neon-cyan animate-pop">✓</span>}
-            {t.state === 'broken' && <span className="inline-block text-neon-pink/80 animate-pop">✕</span>}
+            {t.state === 'works' && <Check className="inline-block size-3.5 text-neon-cyan animate-pop" strokeWidth={3} />}
+            {t.state === 'broken' && <X className="inline-block size-3.5 text-neon-pink/80 animate-pop" strokeWidth={3} />}
             {t.state === 'unknown' && <span className="inline-block animate-pop">?</span>}
             {t.state === 'checking' && <span className="inline-block size-1.5 rounded-full bg-neon-cyan align-middle animate-pulse-slow" />}
           </span>

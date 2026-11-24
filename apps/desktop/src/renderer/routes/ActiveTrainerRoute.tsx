@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ChevronLeft, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useLatchState } from '../stores/latch-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
@@ -263,11 +264,11 @@ export function ActiveTrainerRoute(): JSX.Element {
           const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
           if (idx > 0) navigate(-1); else navigate('/');
         }}
-        className={`flex items-center gap-1.5 rounded-full border border-line bg-bg/60 px-3.5 py-1.5 text-xs text-muted backdrop-blur transition-colors hover:border-neon-cyan hover:text-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan ${
+        className={`group flex h-8 items-center gap-1 rounded-full pl-1.5 pr-3 text-[13px] text-soft transition-colors hover:bg-white/[0.07] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan ${
           floating ? 'absolute left-0 top-0 z-20' : 'shrink-0 self-start mb-3'
         }`}
       >
-        <span aria-hidden="true">←</span> Back
+        <ChevronLeft aria-hidden="true" className="size-4 transition-transform group-hover:-translate-x-0.5" /> Back
       </button>
       <div className="flex-1 min-h-0">{content}</div>
     </div>
@@ -365,7 +366,8 @@ function TrainerView({
                 onClick={() => void useProcessStore.getState().refresh()}
                 title="Refresh process list"
                 className="px-2 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan"
-              >↻</button>
+                aria-label="Refresh list"
+              ><RefreshCw aria-hidden="true" className="size-3.5" /></button>
               <button
                 type="button"
                 onClick={() => void latch()}

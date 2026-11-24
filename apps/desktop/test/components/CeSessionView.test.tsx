@@ -206,7 +206,7 @@ describe('CeSessionView', () => {
     it('offers Play first, shows every cheat, and keeps them disabled', () => {
       seed(notAttached);
       render(<CeSessionView processes={[]} />);
-      expect(screen.getByRole('button', { name: '▶ Play' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument();
       expect(screen.getByText(/Starts the game and attaches/)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Infinite Money: Off' })).toBeDisabled();
       expect(screen.getByRole('button', { name: 'Gold: Freeze' })).toBeDisabled();   // options shown in the preview
@@ -222,7 +222,7 @@ describe('CeSessionView', () => {
       start.mockResolvedValue({ ok: true, sessionId: 's2', records: [], proton: true, attached: true, running: true, tables: TABLES, tableId: 30, hiddenIds: [], prereqErrors: {}, verdict: 'works', attempts: [], process: { pid: 77, name: '9Kings.exe' } });
       seed(notAttached);
       render(<CeSessionView processes={[]} />);
-      await userEvent.click(screen.getByRole('button', { name: '▶ Play' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Play' }));
       expect(await screen.findByText(/Connected to 9Kings\.exe/)).toBeInTheDocument();
       expect(launchGame).toHaveBeenCalledWith({ source: 'steam', appId: '2784470' });
       expect(start).toHaveBeenCalledWith(expect.objectContaining({ pid: 77, cacheKey: '9kings' }));
@@ -234,7 +234,7 @@ describe('CeSessionView', () => {
       render(<CeSessionView processes={[]} />);
       expect(screen.getByText('Waiting for 9 Kings to start…')).toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-      expect(screen.getByRole('button', { name: '▶ Play' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument();
     });
 
     it('the arrow next to Play attaches to a game that is already running', async () => {
@@ -252,9 +252,9 @@ describe('CeSessionView', () => {
     it('a game that isn\'t in the library can only be attached to', async () => {
       seed({ ...notAttached, lastReq: { sources: ['t'], cacheKey: 'x', title: 'Mystery', game: { id: 'm', name: 'Mystery' } } });
       render(<CeSessionView processes={[{ pid: 7, name: 'Mystery.exe' }]} />);
-      expect(screen.queryByRole('button', { name: '▶ Play' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Play' })).not.toBeInTheDocument();
       expect(screen.getByText(/isn’t in your library/)).toBeInTheDocument();
-      await userEvent.click(screen.getByRole('button', { name: 'Attach to running game ▾' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Attach to running game' }));
       expect(screen.getByRole('menuitem', { name: /Mystery\.exe/ })).toBeInTheDocument();
     });
   });

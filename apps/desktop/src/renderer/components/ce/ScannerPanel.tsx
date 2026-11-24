@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import { useScannerStore, type FirstScanOp, type NextScanOp } from '../../stores/scanner-store.js';
 import type { ScanValueType } from '../../../shared/ipc.js';
 
@@ -171,7 +172,7 @@ function SavedRow({ address }: { address: string }): JSX.Element | null {
         {entry.frozen ? 'Frozen' : 'Freeze'}
       </button>
       <button type="button" aria-label={`Remove ${entry.label || address}`} onClick={() => void st.remove(address)}
-              className="px-1.5 py-0.5 rounded-sm border border-line text-muted hover:border-neon-pink hover:text-neon-pink">×</button>
+              className="px-1.5 py-0.5 rounded-sm border border-line text-muted hover:border-neon-pink hover:text-neon-pink"><X aria-hidden="true" className="size-3" /></button>
     </div>
   );
 }
