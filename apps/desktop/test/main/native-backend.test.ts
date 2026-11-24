@@ -126,7 +126,7 @@ describe('native table backend', () => {
         options: [{ value: '0', label: 'Off' }, { value: '1', label: 'On' }] },
       { id: 2, name: 'Enemy god mode', isActive: false, isGroupHeader: false, kind: 'value', depth: 0, value: '??',
         options: [{ value: '0', label: 'Off' }, { value: '1', label: 'On' }] },
-      { id: 3, name: 'Money', isActive: false, isGroupHeader: false, kind: 'value', depth: 0, value: '1234', hotkey: 'Alt+F1' },
+      { id: 3, name: 'Money', isActive: false, isGroupHeader: false, kind: 'value', depth: 0, value: '1234' },
     ]);
 
     const tree = await backendFor(fixture('native-ok.CT')).b.send({ method: 'list_records' }) as { records: Array<Record<string, unknown>> };
@@ -283,14 +283,40 @@ describe('native table backend', () => {
     const dd = backendFor(fixture('dropdown-hotkeys.CT'));
     await dd.b.send({ method: 'set_hotkeys', params: { bindings: [], replace: [3] } });
     const ddb = dd.g.hotkeys.set.mock.calls[0]![0] as Array<{ id: number; accelerator: string }>;
-    // Replacing a record's toggle keeps its value hotkeys (like CE, which only drops on/off hotkeys).
-    expect(ddb.map((x) => x.accelerator)).toEqual(['F3', 'Shift+PageUp', 'Num0']);
+    // Replace drops only toggle hotkeys (CE's action <= 2): value, Activate and Deactivate hotkeys stay.
+    expect(ddb.map((x) => x.accelerator)).toEqual(['F3', 'Shift+PageUp', 'Num0', 'Alt+F1', 'Alt+F2']);
 
     const all = backendFor(fixture('native-ok.CT'));
     await all.b.send({ method: 'set_hotkeys', params: { bindings: [{ id: 6, keys: [0x70] }] } });
     const ab = all.g.hotkeys.set.mock.calls[0]![0] as Array<{ id: number; accelerator: string }>;
     expect(ab.map((x) => x.accelerator)).toEqual(['Ctrl+A', 'F1']);
     expect(new Set(ab.map((x) => x.id)).size).toBe(2);
+  });
+
+  it('an Activate-only record has no toggle hotkey, and its Activate key survives replace', async () => {
+    const t = compileTable(`<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45"><CheatEntries>
+  <CheatEntry><ID>4</ID><Description>"Turbo"</Description><VariableType>Auto Assembler Script</VariableType>
+    <AssemblerScript>[ENABLE]
+"target"+10:
+  db 90
+[DISABLE]
+"target"+10:
+  db 00
+</AssemblerScript>
+    <Hotkeys><Hotkey><Action>Activate</Action><Keys><Key>18</Key><Key>112</Key></Keys><ID>0</ID></Hotkey></Hotkeys>
+  </CheatEntry>
+</CheatEntries></CheatTable>`);
+    const { b, g } = backendFor(t);
+    const { records } = await b.send({ method: 'list_records' }) as { records: Array<Record<string, unknown>> };
+    expect(records).toHaveLength(1);
+    expect(records[0]).not.toHaveProperty('hotkey');
+    expect(await b.send({ method: 'set_hotkeys', params: { bindings: [], replace: [4] } })).toEqual({ ok: true, count: 0 });
+    const [bindings, onPress] = g.hotkeys.set.mock.calls[0]! as [Array<{ id: number; accelerator: string }>, (id: number) => void];
+    expect(bindings.map((x) => x.accelerator)).toEqual(['Alt+F1']);
+    onPress(bindings[0]!.id);
+    await vi.waitFor(() => expect(g.events).toHaveLength(1));
+    expect(g.events[0]).toEqual({ type: 'hotkey', id: 4, ok: true, active: true });
   });
 
   it('a hotkey press toggles the record and posts the hotkey event', async () => {

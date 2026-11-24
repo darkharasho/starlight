@@ -44,8 +44,12 @@ interface HotkeyTarget { recordId: number; action: CompiledHotkey['action']; val
 const FREEZE_INTERVAL_MS = 50;
 const READ_MANY_MAX = 4096;
 const NOT_ATTACHED = 'not attached to a game process';
-/** The on/off actions; CE's `set_hotkeys` `replace` drops only these (`action <= 2`). */
-const ON_OFF = new Set<CompiledHotkey['action']>(['toggle', 'activate', 'deactivate']);
+/**
+ * The toggle actions: CE's `action <= 2` (Toggle Activation and its Allow Increase/Decrease
+ * variants, which compile to `toggle`). `list_records.hotkey` reports one; `set_hotkeys`
+ * `replace` drops only these. Activate and Deactivate hotkeys are kept, as in CE.
+ */
+const ON_OFF = new Set<CompiledHotkey['action']>(['toggle']);
 
 const SIZES: Record<string, number> = {
   int8: 1, uint8: 1, int16: 2, uint16: 2, int32: 4, uint32: 4, int64: 8, uint64: 8, float: 4, double: 8,
