@@ -52,8 +52,15 @@
 //! - Encoding: the candidates are every 64-bit-mode `Code` whose mnemonic matches and whose
 //!   operands accept the parsed ones; each is encoded and the shortest wins (ties: first in iced's
 //!   table order, which prefers the `op rm, reg` forms compilers emit).
-//! - Not supported yet: string instructions (`movsb`, `rep stosd`, …), x87, AVX registers,
-//!   labels inside data items.
+//! - String instructions: `movs`, `stos`, `lods`, `cmps`, `scas` with `b`/`w`/`d`/`q`, written with no
+//!   operands (`rep movsb`, `repne scasd`) or as the disassembler prints them (`movsb [rdi],[rsi]`,
+//!   `stosq [rdi]`, `cmpsb [rsi],[rdi]`). `movsd`/`cmpsd` with any other operands stay SSE. `rep ret` /
+//!   `repz ret` (no immediate) is `F3 C3`.
+//! - `cbw`, `cwde`, `cdqe`, `cwd`, `cdq`, `cqo`; `nop N` (N hex by default, `1`–`40`) is N single-byte
+//!   `90`s.
+//! - A displacement may be written from `-80000000` to `FFFFFFFF`; anything else is an error
+//!   (`displacement out of range`).
+//! - Not supported yet: x87, AVX registers, labels inside data items.
 pub mod encode;
 pub mod parse;
 
@@ -310,6 +317,100 @@ mod tests {
         assert_eq!(asm_at("jmp 7FFF00000000", 0x7FFEF0000000), [0xE9, 0xFB, 0xFF, 0xFF, 0x0F]);
     }
 
+    fn asm_err(src: &str) -> String {
+        match assemble(src, 0x1000, &no_syms) {
+            Ok(a) => panic!("{src:?} assembled to {:02X?}", a.bytes),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn string_instructions() {
+        let cases: &[(&str, &[u8])] = &[
+            ("movsb", &[0xA4]), ("movsw", &[0x66, 0xA5]), ("movsd", &[0xA5]), ("movsq", &[0x48, 0xA5]),
+            ("stosb", &[0xAA]), ("stosw", &[0x66, 0xAB]), ("stosd", &[0xAB]), ("stosq", &[0x48, 0xAB]),
+            ("lodsb", &[0xAC]), ("lodsw", &[0x66, 0xAD]), ("lodsd", &[0xAD]), ("lodsq", &[0x48, 0xAD]),
+            ("cmpsb", &[0xA6]), ("cmpsw", &[0x66, 0xA7]), ("cmpsd", &[0xA7]), ("cmpsq", &[0x48, 0xA7]),
+            ("scasb", &[0xAE]), ("scasw", &[0x66, 0xAF]), ("scasd", &[0xAF]), ("scasq", &[0x48, 0xAF]),
+        ];
+        for (src, want) in cases {
+            assert_eq!(asm(src), *want, "{src}");
+        }
+    }
+
+    #[test]
+    fn rep_prefixed_string_instructions() {
+        assert_eq!(asm("rep movsb"), [0xF3, 0xA4]);
+        assert_eq!(asm("rep stosq"), [0xF3, 0x48, 0xAB]);
+        assert_eq!(asm("repe cmpsb"), [0xF3, 0xA6]);
+        assert_eq!(asm("repz cmpsq"), [0xF3, 0x48, 0xA7]);
+        assert_eq!(asm("repne scasb"), [0xF2, 0xAE]);
+        assert_eq!(asm("repnz scasd"), [0xF2, 0xAF]);
+    }
+
+    #[test]
+    fn string_mnemonics_do_not_shadow_sse() {
+        assert_eq!(asm("movsd xmm0,xmm1"), [0xF2, 0x0F, 0x10, 0xC1]);
+        assert_eq!(asm("cmpsd xmm0,xmm1,1"), [0xF2, 0x0F, 0xC2, 0xC1, 0x01]);
+    }
+
+    #[test]
+    fn rep_ret() {
+        assert_eq!(asm("rep ret"), [0xF3, 0xC3]);
+        assert_eq!(asm("repz ret"), [0xF3, 0xC3]);
+        assert_eq!(asm("rep retn"), [0xF3, 0xC3]);
+        assert!(assemble("rep ret 8", 0x1000, &no_syms).is_err());
+    }
+
+    #[test]
+    fn sign_extension_conversions() {
+        assert_eq!(asm("cbw"), [0x66, 0x98]);
+        assert_eq!(asm("cwde"), [0x98]);
+        assert_eq!(asm("cdqe"), [0x48, 0x98]);
+        assert_eq!(asm("cwd"), [0x66, 0x99]);
+        assert_eq!(asm("cdq"), [0x99]);
+        assert_eq!(asm("cqo"), [0x48, 0x99]);
+    }
+
+    #[test]
+    fn displacement_wrap_and_sign() {
+        assert_eq!(asm("mov eax,[rax+7FFFFFFF]"), [0x8B, 0x80, 0xFF, 0xFF, 0xFF, 0x7F]);
+        assert_eq!(asm("mov eax,[rax+80000000]"), [0x8B, 0x80, 0x00, 0x00, 0x00, 0x80]);
+        assert_eq!(asm("mov eax,[rax-80000000]"), [0x8B, 0x80, 0x00, 0x00, 0x00, 0x80]);
+        assert_eq!(asm("mov eax,[rax+FFFFFFFF]"), [0x8B, 0x40, 0xFF]);
+        assert_eq!(asm("mov eax,[rax-1]"), [0x8B, 0x40, 0xFF]);
+        assert_eq!(asm("mov rax,[rsp+FFFFFFF8]"), [0x48, 0x8B, 0x44, 0x24, 0xF8]);
+        assert_eq!(asm("mov eax,[rax+1-2]"), [0x8B, 0x40, 0xFF]);
+    }
+
+    #[test]
+    fn displacement_out_of_range_is_an_error() {
+        assert_eq!(asm_err("mov eax,[rax+100000000]"), "line 1: displacement out of range");
+        assert_eq!(asm_err("mov eax,[rax-80000001]"), "line 1: displacement out of range");
+    }
+
+    #[test]
+    fn lock_forms_and_refusals() {
+        assert_eq!(asm("lock add [rax],1"), [0xF0, 0x83, 0x00, 0x01]);
+        assert_eq!(asm("lock xadd [rcx],eax"), [0xF0, 0x0F, 0xC1, 0x01]);
+        assert_eq!(asm("lock cmpxchg [rcx],edx"), [0xF0, 0x0F, 0xB1, 0x11]);
+        assert_eq!(asm("lock inc dword ptr [rax]"), [0xF0, 0xFF, 0x00]);
+        assert_eq!(asm("lock or byte ptr [rdx],1"), [0xF0, 0x80, 0x0A, 0x01]);
+        assert_eq!(asm("xchg [rax],eax"), [0x87, 0x00]);
+        assert_eq!(asm_err("lock add eax,1"), "line 1: prefix not allowed on add with these operands");
+        assert_eq!(asm_err("lock mov [rax],eax"), "line 1: prefix not allowed on mov with these operands");
+    }
+
+    #[test]
+    fn nop_with_count() {
+        assert_eq!(asm("nop 3"), [0x90, 0x90, 0x90]);
+        assert_eq!(asm("nop"), [0x90]);
+        assert_eq!(asm("nop #10"), vec![0x90; 10]);
+        assert_eq!(asm("nop 40"), vec![0x90; 0x40]);
+        assert_eq!(asm_err("nop 0"), "line 1: nop count must be 1–40");
+        assert_eq!(asm_err("nop 41"), "line 1: nop count must be 1–40");
+    }
+
     /// (bytes, whether bytes must round-trip exactly; false only for absolute memory operands, R3).
     const CORPUS: &[(&[u8], bool)] = &[
         (&[0x55], true),                                     // push rbp
@@ -377,6 +478,9 @@ mod tests {
         (&[0xC2, 0x08, 0x00], true),                         // ret 8
         (&[0x64, 0x48, 0x8B, 0x04, 0x25, 0x28, 0, 0, 0], true), // mov rax,fs:[28]
         (&[0x48, 0x98], true),                               // cdqe
+        (&[0x48, 0x99], true),                               // cqo
+        (&[0xF3, 0xA4], true),                               // rep movsb
+        (&[0xF3, 0x48, 0xAB], true),                         // rep stosq
         (&[0x0F, 0x0B], true),                               // ud2
         (&[0xCC], true),                                     // int3
         (&[0xF3, 0x90], true),                               // pause
