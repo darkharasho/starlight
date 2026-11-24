@@ -4,7 +4,7 @@ import { useConfigStore } from '../../stores/config-store.js';
 import { useUserCheatsStore } from '../../stores/user-cheats-store.js';
 import { userCheatsKey } from '../../../shared/game-key.js';
 import { MyCheatsSection } from './MyCheatsSection.js';
-import type { CeSessionRecord, DetectedProcess } from '../../../shared/ipc.js';
+import type { CeSessionRecord, DetectedProcess, SessionHolder } from '../../../shared/ipc.js';
 import { buildCheatList, type CheatItem } from '../../../shared/cheat-list.js';
 import { acceleratorLabel, acceleratorToVk } from '../../../shared/vk.js';
 import { effectiveHotkeys, type EffectiveHotkey } from '../../lib/hotkeys.js';
@@ -351,7 +351,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
 
 /** The Cheat Engine table is off while starlightd runs the game's cheats. */
 function PausedNotice({ holders, confirming, setConfirming }: {
-  holders: ('agent' | 'user-cheats')[]; confirming: boolean; setConfirming: (b: boolean) => void;
+  holders: SessionHolder[]; confirming: boolean; setConfirming: (b: boolean) => void;
 }): JSX.Element {
   const loadTable = useCeSessionStore((x) => x.loadTable);
   const useTableInstead = useCeSessionStore((x) => x.useTableInstead);

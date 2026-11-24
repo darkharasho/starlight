@@ -17,12 +17,14 @@ const AppPreferencesSchema = z.object({
   catalogRefreshOnLaunch: z.boolean().default(true),
   autoAttachOnDetect: z.boolean().default(false),
   cheatHotkeys: z.boolean().default(true),
+  nativeTables: z.boolean().default(true),
 }).default({
   theme: 'dark',
   pollIntervalMs: 2000,
   catalogRefreshOnLaunch: true,
   autoAttachOnDetect: false,
   cheatHotkeys: true,
+  nativeTables: true,
 });
 
 const ManualGameSchema = z.object({
@@ -65,7 +67,7 @@ export const UserConfigSchema = z.object({
   schemaVersion: 1,
   processNameOverrides: {},
   recents: [],
-  preferences: { theme: 'dark', pollIntervalMs: 2000, catalogRefreshOnLaunch: true, autoAttachOnDetect: false, cheatHotkeys: true },
+  preferences: { theme: 'dark', pollIntervalMs: 2000, catalogRefreshOnLaunch: true, autoAttachOnDetect: false, cheatHotkeys: true, nativeTables: true },
   manualGames: [],
   hotkeyOverrides: {},
   tableChoices: {},

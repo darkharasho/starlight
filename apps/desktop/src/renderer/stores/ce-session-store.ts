@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
-import type { CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget } from '../../shared/ipc.js';
+import type { CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget, SessionHolder } from '../../shared/ipc.js';
 import { buildCheatList } from '../../shared/cheat-list.js';
 import { hotkeyPayload } from '../lib/hotkeys.js';
 import { playToggleTone } from '../lib/tone.js';
@@ -81,7 +81,7 @@ interface CeSessionState {
   /** Who runs the game's cheats; starlightd means the Cheat Engine table is paused. */
   engine: 'ce' | 'starlightd';
   /** What holds the game when the engine is starlightd. */
-  holders: ('agent' | 'user-cheats')[];
+  holders: SessionHolder[];
 
   start: (req: StartReq) => Promise<boolean>;
   /** Re-launch the current session targeting a running process (boots Windows CE if Proton). */
@@ -112,7 +112,7 @@ interface CeSessionState {
   /** Push the current hotkey set to Cheat Engine. */
   syncHotkeys: () => Promise<void>;
   /** `session:engine` arrived. */
-  setEngine: (sessionId: string, engine: 'ce' | 'starlightd', holders: ('agent' | 'user-cheats')[]) => void;
+  setEngine: (sessionId: string, engine: 'ce' | 'starlightd', holders: SessionHolder[]) => void;
   /** Turn the player's cheats (and any agent session) off and bring the Cheat Engine table back. */
   useTableInstead: () => Promise<void>;
   /** Start the session again so the Cheat Engine table loads (nothing holds the game). */
@@ -166,7 +166,7 @@ const CLEARED = {
   retrying: false,
   retries: 0,
   engine: 'ce' as 'ce' | 'starlightd',
-  holders: [] as ('agent' | 'user-cheats')[],
+  holders: [] as SessionHolder[],
 };
 
 export const useCeSessionStore = create<CeSessionState>((set, get) => ({

@@ -15,6 +15,7 @@ import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart } from './boxart-host.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
 import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
+import { routeTable, recordRoute } from './ct-runner.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd, engineOf } from './ce-session.js';
 import { createUserCheatsHost } from './user-cheats-host.js';
 import { userCheatsDir } from './user-cheats.js';
@@ -60,7 +61,7 @@ function broadcast(e: import('../shared/ipc.js').StarlightEvent): void {
 
 function broadcastEngine(): void {
   const s = ceGetActiveSession();
-  if (s && s.pid !== null) broadcast({ type: 'session:engine', sessionId: s.sessionId, engine: engineOf(s.mode), holders: gameOwner.holders(s.pid) });
+  if (s && s.pid !== null) broadcast({ type: 'session:engine', sessionId: s.sessionId, engine: engineOf(s.mode), mode: s.mode, holders: gameOwner.holders(s.pid) });
 }
 
 /** One engine per game: Cheat Engine and starlightd never both hold it. */
@@ -281,6 +282,8 @@ function createWindow(): void {
 
 const CE_RUNTIME_ROOT = join(app.getPath('userData'), 'runtime');
 const CT_CACHE_DIR = join(app.getPath('userData'), 'ct-cache');
+/** Local counts of where tables were routed (D20). */
+const CT_ROUTING_FILE = join(app.getPath('userData'), 'ct-routing.json');
 const CE_MANIFEST_URL = 'https://raw.githubusercontent.com/darkharasho/starlight-runtimes/main/manifest.json';
 
 // The trainer engine downloads itself in the background; nobody is asked.
@@ -530,6 +533,13 @@ app.whenReady().then(async () => {
         detectedGames: lastDetectedGames,
         engineNeedsPtraceGrantFn: () => engineNeedsPtraceGrant(),
         starlightdHolders: (pid) => gameOwner.holders(pid),
+        holdTable: (pid) => gameOwner.hold(pid, 'table'),
+        nativeTables: cfg.preferences.nativeTables !== false,
+        routeTableFn: async (ctPath, label) => {
+          const d = await routeTable(ctPath, { getClient: getEngineClient, enabled: cfg.preferences.nativeTables !== false, label });
+          void recordRoute(CT_ROUTING_FILE, d).catch(() => {});
+          return d;
+        },
         onProgress: (message) => broadcast({ type: 'session:progress', message }),
         onSteps: (tables) => broadcast({ type: 'session:tables', tables }),
         onGameExit: (sessionId) => broadcast({ type: 'session:game-exited', sessionId }),
@@ -549,7 +559,7 @@ app.whenReady().then(async () => {
         attached: r.attached, needsPicker: r.needsPicker, running: r.running,
         tables: r.tables, tableId: r.tableId, tableError: r.tableError, process: r.process,
         hiddenIds: r.hiddenIds, prereqErrors: r.prereqErrors, verdict: r.verdict, attempts: r.attempts,
-        engine: r.engine, holders: r.holders,
+        engine: r.engine, mode: r.mode, route: r.route, holders: r.holders,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

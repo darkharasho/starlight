@@ -1,9 +1,10 @@
 /**
  * One engine per game. Cheat Engine and starlightd must never both hold a
- * game, so every starlightd user (the agent, the user's cheats) registers a
- * hold here, and claiming a game that Cheat Engine has releases CE first.
+ * game, so every starlightd user (the agent, the user's cheats, a table running
+ * natively) registers a hold here, and claiming a game that Cheat Engine has
+ * releases CE first.
  */
-export type Holder = 'agent' | 'user-cheats';
+export type Holder = 'agent' | 'user-cheats' | 'table';
 
 export type Owner =
   | { engine: 'ce'; sessionId: string }

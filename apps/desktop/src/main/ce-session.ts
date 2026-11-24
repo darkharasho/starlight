@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { detectCeRuntime, type DetectResult } from './ce-runtime-detect.js';
-import type { CeServerHandle, WineRunner } from './ce-native.js';
+import { readPtraceScope, PTRACE_MESSAGE, PTRACE_LOCKED_MESSAGE, type CeServerHandle, type WineRunner } from './ce-native.js';
 import { launchCeBackend } from './ce-backend.js';
+import { createNativeBackend } from './native-backend.js';
+import { routeTable, routeSummary, outsideRoute, ceRunningLine, ROUTE_CE_RUNNING, type RouteDecision } from './ct-runner.js';
 import type { TableBackend } from './table-backend.js';
 import { downloadCtToDisk } from './ct-cache.js';
 import { referencedModules, waitForGameReady } from './game-ready.js';
@@ -13,15 +15,15 @@ import { matchGameToProcess, type MatchableGame } from './game-matcher.js';
 import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
 import { createScannerHost, SCANNER_METHODS } from './scanner-host.js';
 import { getEngineClient } from './starlightd-host.js';
-import { listCtRecords } from '@starlight/ct-importer';
-import type { DetectedGame, DetectedProcess } from '../shared/ipc.js';
+import { listCtRecords, compileTable, type CompiledTable } from '@starlight/ct-importer';
+import { attach, type Session } from '@starlight/engine';
+import type { DetectedGame, DetectedProcess, RouteSummary, SessionMode } from '../shared/ipc.js';
 import { findPrerequisites, isJunk } from '../shared/cheat-list.js';
 import type { Holder } from './game-owner.js';
 
 export { toWinePath, ensureWinCeJson } from './ce-backend.js';
 
-/** Who runs a session's table: Cheat Engine, Starlight's own engine, or nobody (paused). */
-export type SessionMode = 'ce' | 'native' | 'paused';
+export type { SessionMode } from '../shared/ipc.js';
 
 /** The engine name the renderer sees for a session mode. */
 export function engineOf(mode: SessionMode): 'ce' | 'starlightd' {
@@ -103,6 +105,10 @@ export interface SessionState {
   pick?: PickContext | undefined;
   /** Stops watching for the game to exit. */
   stopWatch?: (() => void) | undefined;
+  /** Where the loaded table was routed (null without a table). */
+  route?: RouteSummary | null | undefined;
+  /** Native sessions: detaches starlightd's session and releases the table hold (once). */
+  endNative?: (() => Promise<void>) | undefined;
 }
 
 interface PickContext {
@@ -114,7 +120,20 @@ interface PickContext {
   tableReadyTimeoutMs: number;
   onProgress?: ((message: string) => void) | undefined;
   onSteps?: ((steps: PickStep[]) => void) | undefined;
+  /** How each table tried was routed, by attachment id. */
+  routes: Map<number | null, RouteSummary | null>;
+  /** Routes a downloaded candidate (native sessions; cached per path). */
+  route?: ((ctPath: string, tableId: number) => Promise<RouteDecision | null>) | undefined;
+  /**
+   * Native sessions: puts the native backend away and starts Cheat Engine on
+   * `ctPath` (D17). False when it can't now (starlightd is held), and the
+   * candidate is skipped.
+   */
+  switchToCe?: ((ctPath: string) => Promise<boolean>) | undefined;
 }
+
+/** Cheat Engine couldn't start in the middle of a pick: the session has no backend left. */
+class CeSwitchError extends Error {}
 
 /** One table in the queue being checked against the game, for the connecting screen. */
 export interface PickStep { id: number; filename: string; state: 'waiting' | 'checking' | TableVerdict }
@@ -195,6 +214,15 @@ export interface StartSessionOpts {
    * (default: only checks). Only an attach needs it; a preview doesn't.
    */
   ensureRuntime?: (() => Promise<{ ok: true; status: Extract<DetectResult, { status: 'ready' }> } | { ok: false; error: string }>) | undefined;
+  /** Decides whether a table runs natively or in Cheat Engine (default: ct-runner on starlightd). */
+  routeTableFn?: ((ctPath: string, label: string) => Promise<RouteDecision>) | undefined;
+  createNativeBackendFn?: typeof createNativeBackend | undefined;
+  /** Opens starlightd's session on the game for a native table. */
+  attachEngineFn?: ((pid: number) => Promise<Session>) | undefined;
+  /** Registers the native table as a starlightd holder of the game. Returns the release. */
+  holdTable?: ((pid: number) => () => void) | undefined;
+  /** `preferences.nativeTables` (default true): off sends every table to Cheat Engine. */
+  nativeTables?: boolean | undefined;
 }
 
 function defaultIsGameAlive(pid: number): boolean {
@@ -250,6 +278,8 @@ export interface StartSessionResult {
   engine: 'ce' | 'starlightd';
   /** Who runs the game's table (`engine` is derived from it). */
   mode: SessionMode;
+  /** Where the loaded table was routed; null without a table. */
+  route: RouteSummary | null;
   /** Who holds the game on starlightd (empty while Cheat Engine runs it). */
   holders: Holder[];
 }
@@ -291,6 +321,24 @@ async function ensureRuntime(opts: StartSessionOpts): Promise<Extract<DetectResu
   return r.status;
 }
 
+/** Turns hotkeys a native table registered off (lazily: the hook isn't loaded until used). */
+async function clearTableHotkeys(): Promise<void> {
+  try { (await import('./hotkey-host.js')).clearSessionHotkeys(); } catch { /* no hook */ }
+}
+
+/** A native session's teardown: detach starlightd's session, release the hold, drop the hotkeys. */
+async function endNativeOf(s: SessionState): Promise<void> {
+  const end = s.endNative;
+  if (!end) return;
+  s.endNative = undefined;
+  await end();
+  await clearTableHotkeys();
+}
+
+function defaultRouteFn(opts: StartSessionOpts): (ctPath: string, label: string) => Promise<RouteDecision> {
+  return (ctPath, label) => routeTable(ctPath, { getClient: getEngineClient, enabled: opts.nativeTables !== false, label });
+}
+
 export async function startSession(opts: StartSessionOpts): Promise<StartSessionResult> {
   // One game at a time: a game Cheat Engine is connected to is only replaced by
   // reconnecting to that same game; it ends when the game quits.
@@ -315,26 +363,49 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     else { effectivePid = match.pid; }
   }
 
+  // Native or Cheat Engine (D13/D14). A table that can't be routed keeps
+  // today's path.
+  const routeFn = opts.routeTableFn ?? defaultRouteFn(opts);
+  const routeOf = async (path: string | null, id: number | null): Promise<RouteDecision | null> => {
+    if (!path) return null;
+    return routeFn(path, `${opts.cacheKey}#${id ?? 0}`).catch((err) => {
+      console.warn(`[ct-runner] ${opts.cacheKey}#${id ?? 0}: couldn't route (${err instanceof Error ? err.message : String(err)}); using Cheat Engine`);
+      return null;
+    });
+  };
+
   // No attach target (ambiguous match, or a plain load with no process): show
   // the cheat list parsed straight from the .CT and DON'T launch Cheat Engine
   // (booting it just to preview is slow). The user attaches (which re-runs
   // this with a pid) when they pick a process.
   if (effectivePid === undefined) {
+    const route = routeSummary(await routeOf(ctPath, tableId));
     const sessionId = randomUUID();
     const records = ctPath ? await recordsFromCt(ctPath) : [];
-    active = { sessionId, mode: 'ce', ctPath, backend: null, records, pid: null };
+    active = { sessionId, mode: 'ce', ctPath, backend: null, records, pid: null, route };
     return {
       sessionId, records, proton: false, needsPicker: true, attached: false, tables, tableId, running,
       // Nothing can be switched on yet, so show the list as it will look once
       // the prerequisites are on.
       hiddenIds: findPrerequisites(records).map((p) => p.id),
-      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: engineOf('ce'), mode: 'ce', holders: [],
+      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: engineOf('ce'), mode: 'ce', route, holders: [],
     };
   }
 
-  // Refuse before anything is launched when anti-cheat is loaded in the game.
+  // Refuse before anything is launched (or routed) when anti-cheat is loaded in the game.
   const antiCheat = await (opts.detectAntiCheatFn ?? detectAntiCheat)(effectivePid);
   if (antiCheat) throw new Error(antiCheatMessage(antiCheat));
+
+  const decision = await routeOf(ctPath, tableId);
+  const route = routeSummary(decision);
+
+  // A table that compiles runs on starlightd, whoever else holds the game (D16).
+  if (decision?.engine === 'native' && decision.compiled && ctPath) {
+    return startNativeSession(opts, {
+      pid: effectivePid, ctPath, tables, tableId, needsPicker, decision, route,
+      routeOf: (path, id) => routeOf(path, id),
+    });
+  }
 
   // starlightd already holds this game: Cheat Engine stays out, the table is
   // paused and its cheats are shown from the .CT.
@@ -342,7 +413,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   if (holders.length > 0) {
     const sessionId = randomUUID();
     const records = ctPath ? await recordsFromCt(ctPath) : [];
-    const session: SessionState = { sessionId, mode: 'paused', ctPath, backend: null, records, pid: effectivePid };
+    const session: SessionState = { sessionId, mode: 'paused', ctPath, backend: null, records, pid: effectivePid, route };
     active = session;
     session.stopWatch = watchGame(effectivePid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, () => {
       if (active !== session) return;
@@ -354,7 +425,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
       sessionId, records, proton: false, needsPicker: false, attached: true, running: true,
       tables, tableId, process: { pid: effectivePid, name: opts.processName },
       hiddenIds: findPrerequisites(records).map((p) => p.id),
-      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: engineOf('paused'), mode: 'paused', holders,
+      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: engineOf('paused'), mode: 'paused', route, holders,
     };
   }
 
@@ -396,8 +467,9 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     tableReadyTimeoutMs: opts.tableReadyTimeoutMs ?? 20_000,
     onProgress: opts.onProgress,
     onSteps: opts.onSteps,
+    routes: new Map([[tableId, route]]),
   };
-  const session: SessionState = { sessionId, mode: 'ce', ctPath, backend, records: [], pid: effectivePid, pick };
+  const session: SessionState = { sessionId, mode: 'ce', ctPath, backend, records: [], pid: effectivePid, pick, route };
   active = session;
   session.stopWatch = watchGame(effectivePid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, () => {
     if (active !== session) return;
@@ -423,7 +495,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
       sessionId, records, proton: proton !== null, needsPicker, attached: true, running: true,
       tables, tableId, process: { pid: effectivePid, name: processName },
       hiddenIds: findPrerequisites(records).map((p) => p.id),
-      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: engineOf('paused'), mode: 'paused',
+      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: engineOf('paused'), mode: 'paused', route,
       holders: opts.starlightdHolders?.(effectivePid) ?? [],
     };
   };
@@ -433,11 +505,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   // Cheat Engine booted while the game was loading. Before matching a table,
   // let the game finish loading the modules the table points at.
   if (ctPath) {
-    const modules = referencedModules(await readFile(ctPath, 'utf8').catch(() => ''));
-    const waitFn = opts.waitForGameFn ?? ((pid: number, mods: string[]) => waitForGameReady({ pid, modules: mods }));
-    // Only say so when it's noticeable (an already-loaded game returns at once).
-    const slow = setTimeout(() => opts.onProgress?.('Waiting for the game to finish loading…'), 800);
-    try { await waitFn(effectivePid, modules); } finally { clearTimeout(slow); }
+    await waitForModules(opts, effectivePid, ctPath);
     if (active !== session) throw new Error('The game closed while it was loading.');
     const handed = await handOver();
     if (handed) return handed;
@@ -468,6 +536,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   const afterPick = await handOver();
   if (afterPick) return afterPick;
 
+  session.route = pick.routes.get(pick.tableId) ?? route;
   return {
     sessionId, records: picked.records, proton: proton !== null, needsPicker,
     attached, running: true,
@@ -475,7 +544,183 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
     process: { pid: effectivePid, name: processName },
     tableError: picked.tableError,
     hiddenIds: picked.hiddenIds, prereqErrors: picked.prereqErrors,
-    verdict: picked.verdict, attempts: picked.attempts, engine: engineOf('ce'), mode: 'ce', holders: [],
+    verdict: picked.verdict, attempts: picked.attempts, engine: engineOf('ce'), mode: 'ce', route: session.route, holders: [],
+  };
+}
+
+/** Lets a just-started game finish loading the modules the table points at. */
+async function waitForModules(opts: StartSessionOpts, pid: number, ctPath: string): Promise<void> {
+  const modules = referencedModules(await readFile(ctPath, 'utf8').catch(() => ''));
+  const waitFn = opts.waitForGameFn ?? ((p: number, mods: string[]) => waitForGameReady({ pid: p, modules: mods }));
+  // Only say so when it's noticeable (an already-loaded game returns at once).
+  const slow = setTimeout(() => opts.onProgress?.('Waiting for the game to finish loading…'), 800);
+  try { await waitFn(pid, modules); } finally { clearTimeout(slow); }
+}
+
+/**
+ * A table that compiles runs on starlightd: no Cheat Engine, and the session
+ * holds the game as `table` (D16). Anti-cheat was checked before routing; it is
+ * checked again once the game has loaded its modules, as for Cheat Engine.
+ */
+async function startNativeSession(opts: StartSessionOpts, a: {
+  pid: number; ctPath: string; tables: CtTable[]; tableId: number | null; needsPicker: boolean;
+  decision: RouteDecision; route: RouteSummary | null;
+  routeOf: (path: string, id: number) => Promise<RouteDecision | null>;
+}): Promise<StartSessionResult> {
+  const { pid, ctPath, tables, tableId, needsPicker } = a;
+
+  // starlightd reads the game through ptrace access: refuse when it can't.
+  const ptraceScope = await (opts.readPtraceScopeFn ?? readPtraceScope)();
+  if (ptraceScope >= 3) throw new Error(PTRACE_LOCKED_MESSAGE);
+  if (ptraceScope > 0 && await (opts.engineNeedsPtraceGrantFn?.() ?? false)) throw new Error(PTRACE_MESSAGE);
+
+  let processName = opts.processName;
+  if (!processName) processName = await (opts.readComm ?? defaultReadComm)(pid).catch(() => undefined);
+  const proton = await (opts.detectProtonFn ?? detectProton)({ pid });
+
+  const sessionId = randomUUID();
+  const engineSession = await (opts.attachEngineFn ?? (async (p: number) => attach(await getEngineClient(), p)))(pid);
+  const release = (opts.holdTable ?? (() => () => {}))(pid);
+  const endNative = async (): Promise<void> => {
+    release();
+    await engineSession.detach().catch(() => {});
+  };
+
+  // Routes per path, so a table is compiled and assembled once per pick.
+  const decisions = new Map<string, RouteDecision>([[ctPath, a.decision]]);
+  let backend: TableBackend;
+  try {
+    backend = (opts.createNativeBackendFn ?? createNativeBackend)({
+      session: engineSession,
+      compiled: a.decision.compiled!,
+      mainModule: processName ?? '',
+      ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
+      loadCompiled: async (path): Promise<CompiledTable> =>
+        decisions.get(path)?.compiled ?? compileTable(await readFile(path, 'utf8')),
+    });
+  } catch (err) {
+    await endNative();
+    throw err;
+  }
+
+  const pick: PickContext = {
+    tables, tableId, cacheKey: opts.cacheKey, ctCacheDir: opts.ctCacheDir,
+    autoPick: opts.autoPick !== false,
+    tableReadyTimeoutMs: opts.tableReadyTimeoutMs ?? 20_000,
+    onProgress: opts.onProgress,
+    onSteps: opts.onSteps,
+    routes: new Map([[tableId, a.route]]),
+    route: async (path, id) => {
+      const known = decisions.get(path);
+      if (known) return known;
+      const d = await a.routeOf(path, id);
+      if (d) decisions.set(path, d);
+      return d;
+    },
+  };
+  const session: SessionState = {
+    sessionId, mode: 'native', ctPath, backend, records: [], pid, pick, route: a.route, endNative,
+  };
+  active = session;
+
+  // D17: a later candidate that needs Cheat Engine moves the session to it, once.
+  pick.switchToCe = async (path: string): Promise<boolean> => {
+    // The native table's own hold doesn't count; anyone else's keeps CE out.
+    if ((opts.starlightdHolders?.(pid) ?? []).some((h) => h !== 'table')) return false;
+    const old = session.backend;
+    session.backend = null;
+    if (old) {
+      await sendWithTimeout(old, { method: 'shutdown' }, 5000).catch(() => {});
+      try { await old.close(); } catch { /* ignore */ }
+    }
+    await endNativeOf(session);
+    session.mode = 'ce';
+    try {
+      const detect = await ensureRuntime(opts);
+      const proton2 = await (opts.detectProtonFn ?? detectProton)({ pid });
+      session.backend = await launchCeBackend({
+        runtimeRoot: opts.runtimeRoot,
+        pingTimeoutMs: opts.pingTimeoutMs,
+        onEvent: opts.onEvent,
+        findWineRunnerFn: opts.findWineRunnerFn,
+        startCeServerFn: opts.startCeServerFn,
+        readPtraceScopeFn: opts.readPtraceScopeFn,
+        hasPtraceCapFn: opts.hasPtraceCapFn,
+        engineNeedsPtraceGrantFn: opts.engineNeedsPtraceGrantFn,
+        detect, effectivePid: pid, processName, proton: proton2, ctPath: path, sessionId,
+        onLauncherExit: () => {
+          if (active?.sessionId === sessionId && active.mode === 'ce') { active.stopWatch?.(); active = null; }
+        },
+      });
+    } catch (err) {
+      throw new CeSwitchError(err instanceof Error ? err.message : String(err));
+    }
+    return true;
+  };
+
+  session.stopWatch = watchGame(pid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, () => {
+    if (active !== session) return;
+    active = null;
+    void scannerHost.end().catch(() => {});
+    // The game is gone: close whichever backend runs the table now.
+    void (async () => {
+      try { await session.backend?.close(); } catch { /* ignore */ }
+      await endNativeOf(session);
+    })();
+    opts.onGameExit?.(sessionId);
+  });
+
+  const pausedResult = async (): Promise<StartSessionResult> => {
+    const records = await recordsFromCt(session.ctPath ?? ctPath);
+    session.records = records;
+    return {
+      sessionId, records, proton: proton !== null, needsPicker, attached: true, running: true,
+      tables, tableId: pick.tableId, process: { pid, name: processName },
+      hiddenIds: findPrerequisites(records).map((p) => p.id),
+      prereqErrors: {}, verdict: 'unknown', attempts: [], engine: engineOf('paused'), mode: 'paused',
+      route: pick.routes.get(pick.tableId) ?? a.route,
+      holders: opts.starlightdHolders?.(pid) ?? [],
+    };
+  };
+
+  let picked: Awaited<ReturnType<typeof pickTable>>;
+  let attached: boolean;
+  try {
+    await waitForModules(opts, pid, ctPath);
+    if (active !== session) throw new Error('The game closed while it was loading.');
+
+    // The first check ran while the game may still have been loading.
+    const lateAntiCheat = await (opts.detectAntiCheatFn ?? detectAntiCheat)(pid);
+    if (lateAntiCheat) throw new Error(antiCheatMessage(lateAntiCheat));
+
+    const status = await sendWithTimeout(backend, { method: 'status' }, 5000).catch(() => ({})) as { attached?: boolean };
+    attached = status.attached !== false;
+    picked = await pickTable(session, { loaded: tableId, ready: true, attached });
+  } catch (err) {
+    // Switched to Cheat Engine and then released to starlightd mid-pick.
+    if (session.mode === 'paused' && active === session) return pausedResult();
+    await endSession({ sessionId }).catch(() => {});
+    throw err;
+  }
+  if (active !== session) throw new Error('The game closed while it was loading.');
+
+  // On Cheat Engine now: a hold that landed while it started hands the game over.
+  if (session.mode === 'ce' && (opts.starlightdHolders?.(pid) ?? []).length > 0) {
+    await releaseToStarlightd(sessionId);
+  }
+  if (session.mode === 'paused') return pausedResult();
+
+  const mode = session.mode;
+  session.route = pick.routes.get(pick.tableId) ?? a.route;
+  return {
+    sessionId, records: picked.records, proton: proton !== null, needsPicker,
+    attached, running: true,
+    tables, tableId: pick.tableId,
+    process: { pid, name: processName },
+    tableError: picked.tableError,
+    hiddenIds: picked.hiddenIds, prereqErrors: picked.prereqErrors,
+    verdict: picked.verdict, attempts: picked.attempts, engine: engineOf(mode), mode, route: session.route,
+    holders: mode === 'native' ? opts.starlightdHolders?.(pid) ?? [] : [],
   };
 }
 
@@ -579,7 +824,8 @@ const PICK_BUDGET_MS = 90_000;
  * the best of what was tried.
  */
 async function pickTable(s: SessionState, first: { loaded: number | null; ready?: boolean; attached?: boolean }): Promise<PreparedTable & { attempts: TableAttempt[] }> {
-  const backend = s.backend!;
+  // Replaced once if a candidate moves the session from starlightd to Cheat Engine (D17).
+  let backend = s.backend!;
   const ctx = s.pick!;
   const hasTable = s.ctPath !== null;
   const attempts: TableAttempt[] = [];
@@ -610,6 +856,23 @@ async function pickTable(s: SessionState, first: { loaded: number | null; ready?
   const load = async (t: CtTable): Promise<boolean> => {
     const cacheKey = t.id === 0 ? ctx.cacheKey : `${ctx.cacheKey}-a${t.id}`;
     const { ctPath } = await downloadCtToDisk({ source: t.url, cacheDir: ctx.ctCacheDir, cacheKey });
+    if (ctx.route && s.mode === 'native') {
+      // Each candidate is routed once it's downloaded. One that needs Cheat
+      // Engine starts it with the table loaded; the session stays on CE.
+      const d = await ctx.route(ctPath, t.id);
+      ctx.routes.set(t.id, routeSummary(d));
+      if (d?.engine !== 'native') {
+        if (!ctx.switchToCe || !(await ctx.switchToCe(ctPath))) return false;
+        backend = s.backend!;
+        s.ctPath = ctPath;
+        return true;
+      }
+    } else if (ctx.route && s.mode === 'ce') {
+      // Cheat Engine is up: it runs every later table, whatever its route.
+      const label = `${ctx.cacheKey}#${t.id}`;
+      console.log(ceRunningLine(label));
+      ctx.routes.set(t.id, routeSummary(outsideRoute(ROUTE_CE_RUNNING, 'cheat engine already running', { compiled: null, records: 0, sha256: '' })));
+    }
     // The backend translates the path for its engine (Wine's Z: drive for CE).
     const r = await sendWithTimeout(backend, { method: 'load_table', params: { path: ctPath } }, 30_000) as { ok?: boolean };
     if (!r.ok) return false;
@@ -633,7 +896,11 @@ async function pickTable(s: SessionState, first: { loaded: number | null; ready?
         step(t.id, current.verdict);
         tried.push({ id: t.id, prepared: current });
         if (current.verdict === 'works') break;
-      } catch { step(t.id, 'unknown'); /* unreachable or unloadable table: move on */ }
+      } catch (err) {
+        // Cheat Engine didn't start after the native backend was put away: nothing is left to try with.
+        if (err instanceof CeSwitchError) throw err;
+        step(t.id, 'unknown'); /* unreachable or unloadable table: move on */
+      }
     }
     if (current.verdict !== 'works') {
       // Nothing verified. Prefer one we couldn't judge over one known not to
@@ -733,6 +1000,11 @@ export async function callSession(req: { sessionId: string; method: string; para
   if (req.method === 'speed_set' && active.mode === 'ce') {
     return { ok: false, error: 'Game speed runs through Cheat Engine for this table.' };
   }
+  // Game speed runs on starlightd whenever Cheat Engine doesn't run the table (D18).
+  if (active.mode === 'native' && req.method === 'set_speed') {
+    if (active.pid === null) return { ok: false, error: 'not attached to a game process' };
+    return scannerHost.call(active.pid, 'speed_set', req.params);
+  }
   if (active.mode === 'paused') {
     if (active.pid === null) return { ok: false, error: 'not attached to a game process' };
     if (req.method === 'set_speed') return scannerHost.call(active.pid, 'speed_set', req.params);
@@ -793,6 +1065,8 @@ export async function endSession(req: { sessionId: string }): Promise<{ ok: bool
   // the table no longer recognises the patched bytes.
   if (s.backend) await sendWithTimeout(s.backend, { method: 'shutdown' }, 5000).catch(() => {});
   try { await s.backend?.close(); } catch { /* ignore */ }
+  // A native table: detach starlightd's session and release the game.
+  await endNativeOf(s);
   return { ok: true };
 }
 

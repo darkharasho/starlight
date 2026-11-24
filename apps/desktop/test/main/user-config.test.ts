@@ -130,6 +130,16 @@ describe('user-config autoAttachOnDetect', () => {
   });
 });
 
+describe('user-config nativeTables', () => {
+  it('nativeTables defaults to true', async () => {
+    expect((await getConfigFrom(join(dir, 'missing.json'))).preferences.nativeTables).toBe(true);
+    const path = join(dir, 'config.json');
+    await writeFile(path, JSON.stringify({ schemaVersion: 1, preferences: { theme: 'dark' } }));
+    expect((await getConfigFrom(path)).preferences.nativeTables).toBe(true);
+    expect((await updateConfigFrom(path, { preferences: { nativeTables: false } })).preferences.nativeTables).toBe(false);
+  });
+});
+
 describe('user-config agent', () => {
   it('defaults the agent preferences, also for an existing file without them', async () => {
     const { DEFAULT_AGENT_PREFS } = await import('../../src/shared/ipc.js');

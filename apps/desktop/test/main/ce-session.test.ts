@@ -9,6 +9,11 @@ import { readFile } from 'node:fs/promises';
 import { startSession, releaseToStarlightd, ceSessionFor, setActive, endSession, getActiveSession, toWinePath, callSession, retryTables, cleanCeError, isStaleTableError } from '../../src/main/ce-session.js';
 import { PTRACE_MESSAGE } from '../../src/main/ce-native.js';
 import type { CeBackend } from '../../src/main/ce-backend.js';
+import type { BackendCommand, TableBackend } from '../../src/main/table-backend.js';
+import type { NativeBackendDeps } from '../../src/main/native-backend.js';
+import type { RouteDecision } from '../../src/main/ct-runner.js';
+import type { CompiledTable } from '@starlight/ct-importer';
+import type { Session } from '@starlight/engine';
 
 const scannerHost = vi.hoisted(() => ({
   call: vi.fn(async () => ({ ok: true, from: 'scanner' }) as Record<string, unknown>),
@@ -18,6 +23,19 @@ vi.mock('../../src/main/scanner-host.js', async (orig) => ({
   ...(await orig<typeof import('../../src/main/scanner-host.js')>()),
   createScannerHost: () => scannerHost,
 }));
+
+const hotkeyHost = vi.hoisted(() => ({ clearSessionHotkeys: vi.fn(), setSessionHotkeys: vi.fn() }));
+vi.mock('../../src/main/hotkey-host.js', () => hotkeyHost);
+
+/** Records every Cheat Engine launch (the real spawn still runs). */
+const spawnSpy = vi.hoisted(() => vi.fn());
+vi.mock('../../src/main/ce-process.js', async (orig) => {
+  const real = await orig<typeof import('../../src/main/ce-process.js')>();
+  return {
+    ...real,
+    spawnCeProcess: (...a: Parameters<typeof real.spawnCeProcess>) => { spawnSpy(...a); return real.spawnCeProcess(...a); },
+  };
+});
 
 let dir: string;
 /** Windows CE's directory in the runtime (CheatEngineWindows75). */
@@ -880,6 +898,303 @@ const reply = (cmd) => {
       expect(await callSession({ sessionId: r.sessionId, method: 'speed_set', params: { speed: 2 } }))
         .toEqual({ ok: false, error: 'Game speed runs through Cheat Engine for this table.' });
       expect(scannerHost.call).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('native tables', () => {
+    /** Routes by the table's FAKE spec: `route: 'native'` compiles, anything else needs CE (a Lua record). */
+    function fakeRoute() {
+      return vi.fn(async (ctPath: string, _label: string): Promise<RouteDecision> => {
+        const m = /<!--FAKE (.*?)-->/s.exec(await readFile(ctPath, 'utf8'));
+        const sp = m ? JSON.parse(m[1]!) : {};
+        const native = sp.route === 'native';
+        return {
+          engine: native ? 'native' : 'ce',
+          compiled: native ? ({ path: ctPath, spec: sp, records: [], native: true, reasons: [], registeredBy: {} } as unknown as CompiledTable) : null,
+          codes: native ? {} : { 'lua:block': 1 },
+          first: native ? null : { recordId: 3, name: 'Infinite Ammo', code: 'lua:block', detail: 'line 2: {$lua}' },
+          records: 3, sha256: 'sha',
+        };
+      });
+    }
+    /** A native backend that plays the table's FAKE spec, like the fake CE does. */
+    function fakeNative() {
+      const sends: BackendCommand[] = [];
+      const created: NativeBackendDeps[] = [];
+      const close = vi.fn(async () => {});
+      const fn = vi.fn((deps: NativeBackendDeps): TableBackend => {
+        created.push(deps);
+        let sp = (deps.compiled as unknown as { spec: { records?: { id: number }[]; enable?: Record<string, boolean>; check?: Record<string, boolean | string> } }).spec;
+        let on = new Set<number>();
+        return {
+          kind: 'native',
+          close,
+          send: async (cmd) => {
+            sends.push(cmd);
+            const p = (cmd.params ?? {}) as Record<string, unknown>;
+            switch (cmd.method) {
+              case 'ping': return { ok: true, ready: true, attached: true };
+              case 'status': return { attached: true, pid: 4242, ready: true };
+              case 'list_records': return { records: (sp.records ?? []).map((r) => ({ isGroupHeader: false, kind: 'script', depth: 0, ...r, isActive: on.has(r.id) })) };
+              case 'refresh': return { states: (sp.records ?? []).map((r) => ({ id: r.id, a: on.has(r.id) })) };
+              case 'set_active': {
+                if (sp.enable?.[String(p['id'])] !== true) return { ok: false, active: false, error: 'aob not found' };
+                if (p['active']) on.add(p['id'] as number); else on.delete(p['id'] as number);
+                return { ok: true, active: p['active'] };
+              }
+              case 'check_script': {
+                const how = sp.check?.[String(p['id'])];
+                return how === undefined || how === 'unknown' ? { unknown: true } : how ? { ok: true, found: 1 } : { ok: false, missing: 1 };
+              }
+              case 'load_table': {
+                const c = await deps.loadCompiled!(p['path'] as string);
+                sp = (c as unknown as { spec: typeof sp }).spec; on = new Set();
+                return { ok: true };
+              }
+              case 'set_value': return { ok: true, value: String(p['value']) };
+              case 'shutdown': on = new Set(); return { ok: true };
+              default: return { ok: false, error: `unknown method: ${cmd.method}` };
+            }
+          },
+        };
+      });
+      return { fn, sends, created, close };
+    }
+    function fakeEngineSession() {
+      const detach = vi.fn(async () => {});
+      return { detach, session: { pid: 4242, handle: 1, attached: true, client: {}, detach, onDetached: () => () => {} } as unknown as Session };
+    }
+    function nativeOpts(t: { tables: { id: number; filename: string; url: string; topicUrl: string }[] }, cacheKey: string) {
+      const route = fakeRoute();
+      const backend = fakeNative();
+      const engine = fakeEngineSession();
+      const release = vi.fn();
+      const holdTable = vi.fn((_pid: number) => release);
+      const attachEngineFn = vi.fn(async (_pid: number) => engine.session);
+      return {
+        route, backend, engine, release, holdTable, attachEngineFn,
+        opts: {
+          sources: ['https://f.example/viewtopic.php?t=1'], cacheKey, runtimeRoot: dir, ctCacheDir,
+          listTablesFn: async () => t.tables, ...native,
+          routeTableFn: route, createNativeBackendFn: backend.fn as never, attachEngineFn, holdTable,
+        },
+      };
+    }
+
+    it('a native-routed table attaches starlightd, holds the game and never launches Cheat Engine', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: [{ id: 5, name: 'God Mode' }] } });
+      const findWineRunnerFn = vi.fn();
+      const startCeServerFn = vi.fn();
+      try {
+        spawnSpy.mockClear();
+        const n = nativeOpts(t, 'nat1');
+        const r = await startSession({ ...n.opts, findWineRunnerFn, startCeServerFn });
+        expect(spawnSpy).not.toHaveBeenCalled();
+        expect(findWineRunnerFn).not.toHaveBeenCalled();
+        expect(startCeServerFn).not.toHaveBeenCalled();
+        expect(n.attachEngineFn).toHaveBeenCalledWith(4242);
+        expect(n.holdTable).toHaveBeenCalledTimes(1);
+        expect(n.holdTable).toHaveBeenCalledWith(4242);
+        expect(n.route).toHaveBeenCalledWith(expect.stringMatching(/nat1-a10\.ct$/), 'nat1#10');
+        expect(n.backend.created[0]).toMatchObject({ session: n.engine.session, mainModule: 'game' });
+        expect(r).toMatchObject({ mode: 'native', engine: 'starlightd', attached: true, tableId: 10, route: { engine: 'native', codes: {}, first: null } });
+        expect(r.records.map((x) => x.name)).toEqual(['God Mode']);
+        expect(getActiveSession()).toMatchObject({ mode: 'native', pid: 4242 });
+        expect(ceSessionFor(4242)).toBeNull();     // claims on a native game release nothing
+      } finally { await t.close(); }
+    });
+
+    it('native sessions run prerequisites and the verdict through the native backend', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER, enable: { 1: true } } });
+      try {
+        const n = nativeOpts(t, 'nat2');
+        const r = await startSession(n.opts);
+        expect(r).toMatchObject({ mode: 'native', verdict: 'works', hiddenIds: [1], prereqErrors: {} });
+        expect(n.backend.sends.filter((c) => c.method === 'set_active')).toEqual([{ method: 'set_active', params: { id: 1, active: true } }]);
+        // Toggles and retries go to the same backend.
+        expect(await setActive({ sessionId: r.sessionId, recordId: 1, active: false })).toEqual({ ok: true });
+        expect(await retryTables({ sessionId: r.sessionId })).toMatchObject({ ok: true, verdict: 'works', tableId: 10 });
+        const loads = n.backend.sends.filter((c) => c.method === 'load_table');
+        expect(loads).toEqual([{ method: 'load_table', params: { path: getActiveSession()!.ctPath } }]);
+      } finally { await t.close(); }
+    });
+
+    it('preview sessions report the route without launching anything', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'ce' } });
+      try {
+        spawnSpy.mockClear();
+        const n = nativeOpts(t, 'nat3');
+        const { pid: _pid, ...noPid } = n.opts;
+        const r = await startSession(noPid);
+        expect(r).toMatchObject({
+          attached: false, needsPicker: true,
+          route: { engine: 'ce', codes: { 'lua:block': 1 }, first: { recordId: 3, name: 'Infinite Ammo', code: 'lua:block', copy: 'A script in this table runs Lua code.' } },
+        });
+        expect(n.route).toHaveBeenCalledTimes(1);
+        expect(n.attachEngineFn).not.toHaveBeenCalled();
+        expect(n.backend.fn).not.toHaveBeenCalled();
+        expect(n.holdTable).not.toHaveBeenCalled();
+        expect(spawnSpy).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+
+    it('game exit ends a native session and releases the table hold', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: [{ id: 5, name: 'God Mode' }] } });
+      try {
+        let alive = true;
+        const exited: string[] = [];
+        const n = nativeOpts(t, 'nat4');
+        const r = await startSession({ ...n.opts, isGameAlive: () => alive, gameWatchMs: 20, onGameExit: (id) => { exited.push(id); } });
+        hotkeyHost.clearSessionHotkeys.mockClear();
+        scannerHost.end.mockClear();
+        alive = false;
+        await vi.waitFor(() => { if (exited.length === 0) throw new Error('not yet'); }, { timeout: 2000, interval: 10 });
+        expect(exited).toEqual([r.sessionId]);
+        expect(getActiveSession()).toBeNull();
+        await vi.waitFor(() => { if (hotkeyHost.clearSessionHotkeys.mock.calls.length === 0) throw new Error('not yet'); }, { timeout: 2000, interval: 10 });
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(n.backend.close).toHaveBeenCalledTimes(1);
+        expect(n.engine.detach).toHaveBeenCalledTimes(1);
+        expect(scannerHost.end).toHaveBeenCalledTimes(1);
+      } finally { await t.close(); }
+    });
+
+    it('ending a native session shuts the table down and releases the hold once', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: [{ id: 5, name: 'God Mode' }] } });
+      try {
+        const n = nativeOpts(t, 'nat4b');
+        const r = await startSession(n.opts);
+        hotkeyHost.clearSessionHotkeys.mockClear();
+        await endSession({ sessionId: r.sessionId });
+        await endSession({ sessionId: r.sessionId });
+        expect(n.backend.sends.at(-1)).toEqual({ method: 'shutdown' });
+        expect(n.backend.close).toHaveBeenCalledTimes(1);
+        expect(n.engine.detach).toHaveBeenCalledTimes(1);
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(hotkeyHost.clearSessionHotkeys).toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+
+    it('game speed in a native session goes to the scanner host', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: [{ id: 5, name: 'God Mode' }] } });
+      try {
+        const n = nativeOpts(t, 'nat5');
+        const r = await startSession(n.opts);
+        scannerHost.call.mockClear();
+        expect(await callSession({ sessionId: r.sessionId, method: 'set_speed', params: { speed: 2 } })).toEqual({ ok: true, from: 'scanner' });
+        expect(scannerHost.call).toHaveBeenCalledWith(4242, 'speed_set', { speed: 2 });
+        expect(await callSession({ sessionId: r.sessionId, method: 'speed_set', params: { speed: 1 } })).toEqual({ ok: true, from: 'scanner' });
+        // The rest goes to the table, through the same allow-list as Cheat Engine (R9).
+        expect(await callSession({ sessionId: r.sessionId, method: 'set_value', params: { id: 5, value: '9' } })).toEqual({ ok: true, value: '9' });
+        expect(await callSession({ sessionId: r.sessionId, method: 'shutdown' })).toMatchObject({ ok: false, error: expect.stringMatching(/unsupported/) });
+        expect(n.backend.sends.some((c) => c.method === 'set_speed')).toBe(false);
+      } finally { await t.close(); }
+    });
+
+    it('a CE candidate later in the pick switches to Cheat Engine once and stays', async () => {
+      const log = join(dir, 'fake-ce.log');
+      await installFakeCe(log);
+      const t = await serveTables({
+        'new.CT': { route: 'native', records: MASTER, enable: {} },
+        'mid.CT': { route: 'ce', records: MASTER, enable: {} },
+        'old.CT': { route: 'native', records: MASTER, enable: { 1: true } },
+      });
+      try {
+        spawnSpy.mockClear();
+        const n = nativeOpts(t, 'sw1');
+        const r = await startSession(n.opts);
+        expect(r.attempts.map((a) => `${a.filename}:${a.verdict}`)).toEqual(['new.CT:broken', 'mid.CT:broken', 'old.CT:works']);
+        expect(r).toMatchObject({
+          mode: 'ce', engine: 'ce', tableId: 10, verdict: 'works',
+          route: { engine: 'ce', codes: {}, first: { detail: 'cheat engine already running' } },
+        });
+        // The native backend was put away before Cheat Engine started, once.
+        expect(n.backend.sends.at(-1)).toEqual({ method: 'shutdown' });
+        expect(n.backend.close).toHaveBeenCalledTimes(1);
+        expect(n.engine.detach).toHaveBeenCalledTimes(1);
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(spawnSpy).toHaveBeenCalledTimes(1);
+        const lines = (await readFile(log, 'utf8')).split('\n');
+        expect(lines.filter((l) => l.startsWith('ct='))).toEqual([expect.stringContaining('sw1-a20.ct')]);
+        // The native-routable table after it loads in Cheat Engine, without asking the router.
+        expect(lines.filter((l) => l.startsWith('load_table'))).toEqual(['load_table sw1-a10.ct']);
+        expect(n.route.mock.calls.map((c) => c[1])).toEqual(['sw1#30', 'sw1#20']);
+        expect(getActiveSession()).toMatchObject({ mode: 'ce', pid: 4242 });
+        expect(ceSessionFor(4242)).toEqual({ sessionId: r.sessionId });
+      } finally { await t.close(); }
+    });
+
+    it('a CE-routed table on a game the agent holds opens paused, as before', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'ce', records: MASTER } });
+      try {
+        spawnSpy.mockClear();
+        const n = nativeOpts(t, 'held1');
+        const r = await startSession({ ...n.opts, starlightdHolders: () => ['agent'] });
+        expect(r).toMatchObject({ mode: 'paused', engine: 'starlightd', holders: ['agent'], route: { engine: 'ce' } });
+        expect(n.attachEngineFn).not.toHaveBeenCalled();
+        expect(n.holdTable).not.toHaveBeenCalled();
+        expect(spawnSpy).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+
+    it('a native-routed table on a game the agent holds runs native', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER, enable: { 1: true } } });
+      try {
+        const n = nativeOpts(t, 'held2');
+        const r = await startSession({ ...n.opts, starlightdHolders: () => ['agent'] });
+        expect(r).toMatchObject({ mode: 'native', verdict: 'works', holders: ['agent'] });
+        expect(n.backend.fn).toHaveBeenCalledTimes(1);
+        expect(getActiveSession()).toMatchObject({ mode: 'native' });
+      } finally { await t.close(); }
+    });
+
+    it('anti-cheat refuses before any backend starts', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER } });
+      try {
+        spawnSpy.mockClear();
+        const n = nativeOpts(t, 'ac-n');
+        const ensureRuntime = vi.fn();
+        await expect(startSession({
+          ...n.opts, ensureRuntime,
+          detectAntiCheatFn: async () => ({ name: 'Easy Anti-Cheat', module: 'EasyAntiCheat_EOS_x64.dll' }),
+        })).rejects.toThrow(/won't attach/);
+        expect(n.route).not.toHaveBeenCalled();           // R8: checked before routing
+        expect(n.attachEngineFn).not.toHaveBeenCalled();
+        expect(n.holdTable).not.toHaveBeenCalled();
+        expect(n.backend.fn).not.toHaveBeenCalled();
+        expect(ensureRuntime).not.toHaveBeenCalled();
+        expect(spawnSpy).not.toHaveBeenCalled();
+
+        // And again once the game has loaded its modules, on the native path too.
+        const late = nativeOpts(t, 'ac-n2');
+        let calls = 0;
+        await expect(startSession({
+          ...late.opts, waitForGameFn: async () => {},
+          detectAntiCheatFn: async () => (++calls === 1 ? null : { name: 'Easy Anti-Cheat', module: 'easyanticheat_x64.dll' }),
+        })).rejects.toThrow(/Easy Anti-Cheat is running in this game/);
+        expect(calls).toBe(2);
+        expect(late.backend.sends.some((c) => c.method === 'list_records')).toBe(false);   // never got to the pick
+        expect(late.engine.detach).toHaveBeenCalledTimes(1);
+        expect(late.release).toHaveBeenCalledTimes(1);
+        expect(getActiveSession()).toBeNull();
+      } finally { await t.close(); }
+    });
+
+    it('ptrace restricted without the grant refuses native with the Allow message', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER } });
+      try {
+        const n = nativeOpts(t, 'pt-n');
+        await expect(startSession({
+          ...n.opts, readPtraceScopeFn: async () => 1, engineNeedsPtraceGrantFn: async () => true,
+        })).rejects.toThrow(PTRACE_MESSAGE);
+        expect(n.attachEngineFn).not.toHaveBeenCalled();
+        expect(n.holdTable).not.toHaveBeenCalled();
+        // Unrestricted ptrace doesn't ask.
+        const free = nativeOpts(t, 'pt-n2');
+        const engineNeedsPtraceGrantFn = vi.fn(async () => true);
+        expect(await startSession({ ...free.opts, engineNeedsPtraceGrantFn })).toMatchObject({ mode: 'native' });
+        expect(engineNeedsPtraceGrantFn).not.toHaveBeenCalled();
+      } finally { await t.close(); }
     });
   });
 
