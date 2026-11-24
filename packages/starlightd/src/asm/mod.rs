@@ -349,6 +349,18 @@ mod tests {
     }
 
     #[test]
+    fn string_prefix_kinds_and_operand_shapes() {
+        for src in ["repne movsb", "repe stosq", "repnz lodsb", "rep scasb", "rep cmpsb", "repe movsb", "lock movsb"] {
+            let e = asm_err(src);
+            assert!(e.starts_with("line 1: prefix not allowed on "), "{src}: {e}");
+        }
+        assert_eq!(asm("cmpsb [rsi],[rdi]"), asm("cmpsb"));
+        assert_eq!(asm("lodsb [rsi]"), asm("lodsb"));
+        assert_eq!(asm("scasb [rdi]"), asm("scasb"));
+        assert_eq!(asm_err("mov eax,[rax+FFFFFFFFFFFFFFF8]"), "line 1: displacement out of range");
+    }
+
+    #[test]
     fn string_mnemonics_do_not_shadow_sse() {
         assert_eq!(asm("movsd xmm0,xmm1"), [0xF2, 0x0F, 0x10, 0xC1]);
         assert_eq!(asm("cmpsd xmm0,xmm1,1"), [0xF2, 0x0F, 0xC2, 0xC1, 0x01]);

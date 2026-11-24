@@ -456,10 +456,12 @@ fn string_instruction(prefixes: &[Prefix], mnemonic: &str, operands: &[Operand])
     if !operands.is_empty() && !shaped {
         return None;
     }
+    let compare = matches!(op, "cmps" | "scas");
     let rep = match prefixes {
         [] => R::None,
-        [Prefix::Rep | Prefix::Repe] => R::Repe,
-        [Prefix::Repne] => R::Repne,
+        [Prefix::Rep] if !compare => R::Repe,
+        [Prefix::Repe] if compare => R::Repe,
+        [Prefix::Repne] if compare => R::Repne,
         _ => return Some(Err(format!("prefix not allowed on {mnemonic} with these operands"))),
     };
     let ins = match (op, width) {
