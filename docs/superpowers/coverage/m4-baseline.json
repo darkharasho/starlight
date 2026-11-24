@@ -1,10 +1,10 @@
 {
   "compiler": "baseline",
-  "generatedAt": "2026-11-24T00:27:10.969Z",
+  "generatedAt": "2026-11-24T00:29:23.215Z",
   "tables": {
     "total": 390,
-    "native": 14,
-    "pct": 3.6
+    "native": 13,
+    "pct": 3.3
   },
   "records": {
     "total": 39113,
@@ -14,13 +14,23 @@
   "byCode": [
     {
       "code": "aa:script",
-      "tables": 364,
-      "records": 3313
+      "tables": 315,
+      "records": 2204
+    },
+    {
+      "code": "lua:block",
+      "tables": 257,
+      "records": 1109
     },
     {
       "code": "addr:expression",
       "tables": 216,
       "records": 27096
+    },
+    {
+      "code": "lua:table-script",
+      "tables": 152,
+      "records": 0
     },
     {
       "code": "value:type",

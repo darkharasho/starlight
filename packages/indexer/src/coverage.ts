@@ -64,9 +64,17 @@ function hasScript(e: RawEntry): boolean {
 
 function codeFor(e: RawEntry): string {
   if (text(e.LuaScript).trim().length > 0) return 'lua:script';
-  if (text(e.AssemblerScript).trim().length > 0) return 'aa:script';
+  if (text(e.AssemblerScript).trim().length > 0) {
+    return /\{\$lua\}/i.test(text(e.AssemblerScript)) ? 'lua:block' : 'aa:script';
+  }
   if (!text(e.VariableType) || !text(e.Address)) return 'value:type';
   return 'addr:expression';
+}
+
+/** True when Lua source holds anything besides comments and whitespace. */
+function hasLuaCode(src: string): boolean {
+  const stripped = src.replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, '').replace(/--[^\n]*/g, '');
+  return stripped.trim().length > 0;
 }
 
 export function baselineCompile(xml: string): { records: BaselineRecord[]; tableCodes: string[] } {
@@ -75,8 +83,11 @@ export function baselineCompile(xml: string): { records: BaselineRecord[]; table
 
   // Which records importCt turns into value cheats (id `cheat-<ID>`, deduped with `-N`).
   const result = importCt(xml, { gameName: 'coverage', processName: [] });
-  const isNativeCheat = (id: string): boolean => (result.trainer.categories.some((cat) =>
-    cat.cheats.some((c) => c.id === id && !('unsupported' in c && c.unsupported))));
+  const nativeIds = new Set<string>();
+  for (const cat of result.trainer.categories) {
+    for (const c of cat.cheats) if (!('unsupported' in c && c.unsupported)) nativeIds.add(c.id);
+  }
+  const isNativeCheat = (id: string): boolean => nativeIds.has(id);
 
   const records: BaselineRecord[] = [];
   const seen = new Map<string, number>();
@@ -91,7 +102,11 @@ export function baselineCompile(xml: string): { records: BaselineRecord[]; table
     const native = !rec.isGroupHeader && isNativeCheat(cheatId);
     records.push({ id: rec.id, native, code: native ? null : codeFor(e) });
   });
-  return { records, tableCodes: records.length === 0 ? ['table:empty'] : [] };
+  const tableCodes: string[] = [];
+  if (records.length === 0) tableCodes.push('table:empty');
+  const tableLua = (parseCt(xml).CheatTable as { LuaScript?: unknown }).LuaScript;
+  if (hasLuaCode(text(tableLua))) tableCodes.push('lua:table-script');
+  return { records, tableCodes };
 }
 
 export function measureTable(id: string, xml: string, compiler: Compiler): TableCoverage {

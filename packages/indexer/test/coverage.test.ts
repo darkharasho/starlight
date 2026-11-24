@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { baselineCompile, measureTable, summarize, type TableCoverage } from '../src/coverage.js';
 
-function ct(entries: string): string {
-  return `<?xml version="1.0" encoding="utf-8"?><CheatTable><CheatEntries>${entries}</CheatEntries></CheatTable>`;
+function ct(entries: string, tableLua = ''): string {
+  return `<?xml version="1.0" encoding="utf-8"?><CheatTable><CheatEntries>${entries}</CheatEntries><UserdefinedSymbols/>${tableLua}</CheatTable>`;
 }
+const aaLua = (id: number) =>
+  `<CheatEntry><ID>${id}</ID><Description>"AL"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]
+{$lua}
+print("x")
+{$asm}
+[DISABLE]
+nop</AssemblerScript></CheatEntry>`;
 const value = (id: number, name: string, addr = '"game.exe"+4030') =>
   `<CheatEntry><ID>${id}</ID><Description>"${name}"</Description><VariableType>4 Bytes</VariableType><Address>${addr}</Address></CheatEntry>`;
 const aa = (id: number) =>
@@ -34,7 +41,26 @@ describe('coverage', () => {
     expect(t.codes).toEqual({ 'aa:script': 1 });
   });
 
-  it('baseline: a Lua record counts as lua:script', () => {
+  it('table-level LuaScript with real code adds lua:table-script and is not native', () => {
+    const t = measureTable('g', ct(value(1, 'v'), '<LuaScript>--hi\nshowMessage("x")</LuaScript>'), 'baseline');
+    expect(t.tableCodes).toEqual(['lua:table-script']);
+    expect(t.native).toBe(false);
+    expect(t.nativeRecords).toBe(1);
+  });
+
+  it('table-level LuaScript that is only comments or whitespace does not count', () => {
+    const lua = '<LuaScript>--just a note\n  --[[ block\ncomment ]]\n\n</LuaScript>';
+    const t = measureTable('g', ct(value(1, 'v'), lua), 'baseline');
+    expect(t.tableCodes).toEqual([]);
+    expect(t.native).toBe(true);
+  });
+
+  it('{$lua} inside an AssemblerScript is lua:block, not aa:script', () => {
+    const t = measureTable('g', ct(aaLua(1) + aa(2)), 'baseline');
+    expect(t.codes).toEqual({ 'lua:block': 1, 'aa:script': 1 });
+  });
+
+  it('baseline: a per-entry Lua record counts as lua:script', () => {
     const t = measureTable('g', ct(lua(1) + value(2, 'v')), 'baseline');
     expect(t.codes).toEqual({ 'lua:script': 1 });
     expect(t.nativeRecords).toBe(1);
