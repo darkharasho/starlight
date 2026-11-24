@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { createSteamArt, type SteamArt } from './steam-art.js';
 
 const STEAM_CDN = (id: number): string =>
   `https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_600x900.jpg`;
@@ -149,6 +150,8 @@ export interface ResolveBoxartOpts {
   cachePath: string;
   apiKey: string | null;
   fetch: typeof fetch;
+  /** Best remote cover for a Steam app id; defaults to probing the old CDN paths. */
+  steamCover?: (appId: number) => Promise<string | null>;
 }
 
 export async function resolveBoxartFor(
@@ -166,15 +169,16 @@ export async function resolveBoxartFor(
     if (age < NEGATIVE_TTL_MS) return { url: null };
   }
 
+  const steamCover = opts.steamCover ?? ((id: number) => bestSteamCover(id, opts.fetch));
   let url: string | null = null;
   if (req.steamAppId != null && !req.forceFallback) {
-    url = await bestSteamCover(req.steamAppId, opts.fetch);
+    url = await steamCover(req.steamAppId);
   }
   if (url === null) {
     // Free path: ask Steam's store search for an appid matching the name.
     if (!req.forceFallback) {
       const appId = await steamStoreSearch(req.name, opts.fetch);
-      if (appId !== null) url = await bestSteamCover(appId, opts.fetch);
+      if (appId !== null) url = await steamCover(appId);
     }
     if (url === null && opts.apiKey) {
       // Last resort: SteamGridDB (requires API key).
@@ -194,10 +198,28 @@ function defaultCachePath(): string {
   return join(app.getPath('userData'), 'boxart-cache.json');
 }
 
+let steamArt: SteamArt | null = null;
+function steamArtSingleton(): SteamArt {
+  steamArt ??= createSteamArt({
+    fetch: globalThis.fetch,
+    // Loaded lazily: library-host pulls in sqlite and config, which this module doesn't need otherwise.
+    getSteamRoot: async () => (await import('./library-host.js')).defaultSteamRoot(),
+    cacheFile: join(app.getPath('userData'), 'steam-store-art.json'),
+  });
+  return steamArt;
+}
+
+/** Answers a `starlight-art://` request (the protocol handler registered in index.ts). */
+export function serveArt(url: string): Promise<Response> {
+  return steamArtSingleton().serve(url);
+}
+
 export async function resolveBoxart(req: { name: string; steamAppId?: number; forceFallback?: boolean }): Promise<{ url: string | null }> {
+  const art = steamArtSingleton();
   return resolveBoxartFor(req, {
     cachePath: defaultCachePath(),
     apiKey: process.env['STEAMGRIDDB_API_KEY'] ?? null,
     fetch: globalThis.fetch,
+    steamCover: (id) => art.remoteCover(id),
   });
 }

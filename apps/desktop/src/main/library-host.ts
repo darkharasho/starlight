@@ -32,7 +32,7 @@ async function exists(p: string): Promise<boolean> {
   try { await stat(p); return true; } catch { return false; }
 }
 
-async function defaultSteamRoot(): Promise<string | null> {
+export async function defaultSteamRoot(): Promise<string | null> {
   const home = homedir();
   const candidates: string[] = [];
   switch (platform()) {

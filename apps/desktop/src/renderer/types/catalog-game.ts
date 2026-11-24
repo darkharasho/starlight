@@ -11,5 +11,6 @@ export interface CatalogGame extends CatalogIndexEntry {
 
 export function steamCoverUrl(steamAppId: number | null): string | null {
   if (steamAppId == null) return null;
-  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_600x900.jpg`;
+  // Main answers this from Steam's local cache, the store's capsule or the CDN.
+  return `starlight-art://steam/${steamAppId}`;
 }

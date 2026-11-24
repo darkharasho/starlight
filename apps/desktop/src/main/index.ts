@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from 'electron';
 import { guardStdio } from './stdio-guard.js';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
 import { loadTrainer, setTrainerFromCatalog } from './trainer-loader.js';
@@ -12,7 +12,8 @@ import { fetchCatalog, fetchTrainer, getCachedIndex } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
 import type { FetchTrainerRequest } from '../shared/ipc.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
-import { resolveBoxart } from './boxart-host.js';
+import { resolveBoxart, serveArt } from './boxart-host.js';
+import { ART_SCHEME } from './steam-art.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
 import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
 import { routeTable, recordRoute } from './ct-runner.js';
@@ -316,7 +317,16 @@ engineHost.onDetached((reason) => {
 
 engineHost.onAttachStateChange((attached) => setEngineAttached(attached));
 
+// Steam cover art reaches the renderer through starlight-art://steam/<appid>,
+// which main answers from Steam's local cache or the store. Must be
+// registered before ready.
+protocol.registerSchemesAsPrivileged([
+  { scheme: ART_SCHEME, privileges: { standard: true, secure: true } },
+]);
+
 app.whenReady().then(async () => {
+  protocol.handle(ART_SCHEME, (request) => serveArt(request.url));
+
   setOnCorrupt((backupPath) => {
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.event, { type: 'config:corrupted', backupPath });

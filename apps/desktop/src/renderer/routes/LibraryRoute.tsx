@@ -8,11 +8,12 @@ import { gameKey } from '../lib/dedupe-games.js';
 import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 import { starlight } from '../ipc-client.js';
+import { steamCoverUrl } from '../types/catalog-game.js';
 
 function boxartUrl(g: DetectedGame): string | null {
   const id = g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : null);
   if (id == null || Number.isNaN(id)) return null;
-  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_600x900.jpg`;
+  return steamCoverUrl(id);
 }
 
 function GameTile({
