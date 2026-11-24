@@ -388,6 +388,17 @@ describe('ce-session-store engine', () => {
     expect(useCeSessionStore.getState().engine).toBe('ce');
   });
 
+  it('start stores mode and route; session:engine updates mode', async () => {
+    const route = { engine: 'ce', codes: { 'lua-script': 1 }, first: { recordId: 2, name: 'Infinite Ammo', code: 'lua-script', detail: 'x', copy: 'A script in this table runs Lua code.' } };
+    mockStart.mockResolvedValue({ ...ok, engine: 'ce', mode: 'ce', route, holders: [] });
+    await useCeSessionStore.getState().start({ source: 'x', cacheKey: 'k' });
+    expect(useCeSessionStore.getState()).toMatchObject({ mode: 'ce', route });
+    useCeSessionStore.getState().setEngine('s', 'starlightd', ['table'], 'native');
+    expect(useCeSessionStore.getState()).toMatchObject({ mode: 'native', engine: 'starlightd', holders: ['table'] });
+    useCeSessionStore.getState().setEngine('s', 'starlightd', ['agent'], 'paused');
+    expect(useCeSessionStore.getState().mode).toBe('paused');
+  });
+
   it('useTableInstead disables user cheats, stops the agent, then starts again', async () => {
     mockStart.mockResolvedValue({ ...ok, engine: 'starlightd', holders: ['agent'] });
     mockDisable.mockResolvedValue(undefined); mockAgentStop.mockResolvedValue(undefined);

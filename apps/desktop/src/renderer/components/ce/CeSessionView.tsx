@@ -52,7 +52,13 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
   const cover = useCover(s.lastReq?.game ?? (s.title ? { name: s.title } : undefined));
 
   const hasTable = s.tableId !== null || s.records.length > 0;
-  const paused = s.engine === 'starlightd';
+  const paused = s.mode === 'paused';
+  // A preview has no pid, so its mode stays 'ce' while the route can still be native: prefer the route.
+  const pill: 'native' | 'ce' | null = paused || !hasTable || !s.route ? null
+    : (s.route.engine === 'native' || s.mode === 'native') ? 'native' : 'ce';
+  const pillWhy = s.route?.first
+    ? `Runs in Cheat Engine: ${s.route.first.copy}${s.route.first.name ? ` (\u201c${s.route.first.name}\u201d)` : ''}`
+    : 'Runs in Cheat Engine';
   const cacheKey = s.lastReq?.cacheKey ?? null;
   const myKey = cacheKey === null ? null : userCheatsKey(cacheKey);
   const myPid = s.attached ? s.attachedTo?.pid ?? null : null;
@@ -203,7 +209,16 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
           <GameCover title={title} cover={cover} size={s.attached ? 'md' : 'lg'} />
         </div>
         <div className="relative w-full">
-          <h1 className="line-clamp-2 text-[20px] font-semibold leading-tight tracking-tight">{title}</h1>
+          <div className="flex items-center justify-center gap-2">
+            <h1 className="line-clamp-2 text-[20px] font-semibold leading-tight tracking-tight">{title}</h1>
+            {pill === 'native' && (
+              <span className="shrink-0 rounded-full border border-neon-cyan/40 bg-neon-cyan/[0.1] px-2.5 py-0.5 text-[11.5px] text-neon-cyan animate-rise">Starlight engine</span>
+            )}
+            {pill === 'ce' && (
+              <span tabIndex={0} title={pillWhy}
+                    className="shrink-0 rounded-full border border-line bg-panel px-2.5 py-0.5 text-[11.5px] text-soft animate-rise focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan">Cheat Engine</span>
+            )}
+          </div>
           <div className="mt-1.5 flex flex-col items-center gap-0.5 text-[12.5px] leading-snug text-muted">
             {s.attached && (
               <span className="inline-flex max-w-full items-center gap-1.5 text-soft"

@@ -106,6 +106,19 @@ export function SettingsRoute(): JSX.Element {
         </label>
         <label className="flex items-center justify-between gap-3 text-xs">
           <span>
+            <div className="text-ink">Run tables on Starlight's engine when possible</div>
+            <div className="text-[10px] text-muted">Off sends every table to Cheat Engine.</div>
+          </span>
+          <input
+            aria-label="Run tables on Starlight's engine when possible"
+            type="checkbox"
+            checked={config.preferences.nativeTables !== false}
+            onChange={() => void update({ preferences: { nativeTables: config.preferences.nativeTables === false } })}
+            className="accent-neon-cyan size-4"
+          />
+        </label>
+        <label className="flex items-center justify-between gap-3 text-xs">
+          <span>
             <div className="text-ink">In-game cheat hotkeys</div>
             <div className="text-[10px] text-muted">Switch cheats on and off from inside the game. The first cheats get numpad keys; change any of them on the cheat itself</div>
           </span>
