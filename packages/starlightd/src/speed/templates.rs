@@ -3,8 +3,8 @@
 //!
 //! # Calling convention of the shared routines
 //!
-//! `scale`, `guard_enter` and `guard_leave` live in the state page at fixed offsets and use their
-//! own convention, valid under both ABIs: arguments in `rcx`, `rdx`, `r8`; result in `rax`; they
+//! `scale`, `unscale`, `guard_enter` and `guard_leave` live in the state page at fixed offsets and use their
+//! own convention, valid under both ABIs: arguments in `rcx`, `rdx`, `r8` (and `r9`); result in `rax`; they
 //! clobber only `rax`, `rcx`, `rdx`, `r8`–`r11`, `xmm0` and flags (volatile under Win64 and SysV).
 //! Every routine takes the calling thread's key (its thread pointer) in `rcx`.
 //!
@@ -78,8 +78,17 @@ pub const OFF_GUARD_ENTER: u64 = OFF_CODE + ROUTINE_MAX;
 pub const OFF_GUARD_LEAVE: u64 = OFF_CODE + 2 * ROUTINE_MAX;
 /// `scale` for 32-bit millisecond counts (`GetTickCount`, `timeGetTime`), which wrap.
 pub const OFF_SCALE32: u64 = OFF_CODE + 3 * ROUTINE_MAX;
+/// `unscale`, the inverse of `scale`: a game-time deadline to real time (M4 D2).
+pub const OFF_UNSCALE: u64 = OFF_CODE + 4 * ROUTINE_MAX;
 /// Room for each shared routine.
 pub const ROUTINE_MAX: u64 = 0x200;
+
+/// Where glibc keeps a condvar's flags: `__wrefs` of `struct __pthread_cond_s`, whose bit 1 is
+/// its clock (set by `pthread_condattr_setclock(CLOCK_MONOTONIC)`, else REALTIME). 0x1c since
+/// glibc 2.41 removed `__g_refs` (checked on 2.44: offsetof, and the bit after setclock); it was
+/// 0x24 before, so `targets::native` hooks `pthread_cond_timedwait` only on glibc 2.41 or later.
+pub const COND_FLAGS_OFFSET: u64 = 0x1c;
+pub const COND_CLOCK_MONOTONIC_MASK: u32 = 2;
 
 /// `guard_enter` results: 0 outermost, 1 nested (both entered), `NOT_ENTERED` (pass the call
 /// through), `TIMED_OUT` (not entered, but scale: the lock holder is stuck).
@@ -112,12 +121,13 @@ jmp {p}_acquire
 
 /// The shared routines for a state page at `state`: `(offset, source)`, each assembled at
 /// `state + offset`.
-pub fn shared_routines(state: u64) -> [(u64, String); 4] {
+pub fn shared_routines(state: u64) -> [(u64, String); 5] {
     [
         (OFF_SCALE, scale(state, false)),
         (OFF_GUARD_ENTER, guard_enter(state)),
         (OFF_GUARD_LEAVE, guard_leave(state)),
         (OFF_SCALE32, scale(state, true)),
+        (OFF_UNSCALE, unscale(state)),
     ]
 }
 
@@ -225,6 +235,98 @@ add rax, qword ptr [r11+{SLOT_FAKE0:#x}]
 ret
 ",
         acquire = acquire("s"),
+        slot_shift = SLOT_SIZE.trailing_zeros(),
+    )
+}
+
+/// `unscale(rcx = key, rdx = slot, r8 = game, r9 = real now) -> rax = real time`, under the
+/// lock: when the slot's generation is behind, rebase it first exactly as `scale` would for a
+/// reading of `r9`; then `max(real0 + (game − fake0) / speed, 0)`. A slot never used (gen 0) has
+/// no game time yet, so the game's deadline is already real time: `game` is returned as is (and
+/// the slot stays unused). Without the lock, the same from a consistent lock-free read of the
+/// slot, or `game` if there is none.
+fn unscale(state: u64) -> String {
+    format!(
+        "mov r10, {state:#x}
+// The real time now is only needed to rebase; r9 holds the lock tag from here on.
+push r9
+{acquire}u_reentered:
+u_timeout:
+// No lock: read the slot as a seqlock reader (never written here).
+shl rdx, {slot_shift}
+lea r11, [r10+rdx+{OFF_SLOTS:#x}]
+mov r9d, dword ptr [r11+{SLOT_SEQ:#x}]
+test r9d, 1
+jne u_game
+cmp dword ptr [r11+{SLOT_GEN:#x}], 0
+je u_game
+call u_real
+cmp r9d, dword ptr [r11+{SLOT_SEQ:#x}]
+jne u_game
+add rsp, 8
+ret
+u_game:
+mov rax, r8
+add rsp, 8
+ret
+u_locked:
+shl rdx, {slot_shift}
+lea r11, [r10+rdx+{OFF_SLOTS:#x}]
+mov ecx, dword ptr [r11+{SLOT_GEN:#x}]
+test ecx, ecx
+je u_unused
+// gen is read before speed: the daemon writes speed first, then gen.
+mov r9d, dword ptr [r10+{OFF_GEN:#x}]
+cmp ecx, r9d
+je u_ready
+// Rebase as scale does: continue from the game time the old speed gives now.
+inc dword ptr [r11+{SLOT_SEQ:#x}]
+mov rdx, qword ptr [rsp]
+call u_fake
+mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
+mov qword ptr [r11+{SLOT_REAL0:#x}], rdx
+mov rcx, qword ptr [r10+{OFF_SPEED:#x}]
+mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
+mov dword ptr [r11+{SLOT_GEN:#x}], r9d
+inc dword ptr [r11+{SLOT_SEQ:#x}]
+u_ready:
+call u_real
+jmp u_unlock
+u_unused:
+mov rax, r8
+u_unlock:
+mov dword ptr [r10+{OFF_LOCK:#x}], 0
+add rsp, 8
+ret
+// rax = fake0 + (i64)((f64)max(rdx - real0, 0) * speed) for slot r11: scale's s_fake for the
+// real time in rdx. Clobbers only rax and xmm0.
+u_fake:
+mov rax, rdx
+sub rax, qword ptr [r11+{SLOT_REAL0:#x}]
+jge u_forward
+xor eax, eax
+u_forward:
+cvtsi2sd xmm0, rax
+mulsd xmm0, qword ptr [r11+{SLOT_SPEED:#x}]
+cvttsd2si rax, xmm0
+add rax, qword ptr [r11+{SLOT_FAKE0:#x}]
+ret
+// rax = max(real0 + (i64)((f64)(game - fake0) / speed), 0) for slot r11 and game time r8: the
+// inverse of s_fake (a deadline before fake0 maps before real0). Clobbers only rax and xmm0.
+// (The session-end glide's landing inverse goes here, Task 4.)
+u_real:
+mov rax, r8
+sub rax, qword ptr [r11+{SLOT_FAKE0:#x}]
+cvtsi2sd xmm0, rax
+divsd xmm0, qword ptr [r11+{SLOT_SPEED:#x}]
+cvttsd2si rax, xmm0
+add rax, qword ptr [r11+{SLOT_REAL0:#x}]
+jns u_done
+xor eax, eax
+u_done:
+ret
+",
+        acquire = acquire("u"),
         slot_shift = SLOT_SIZE.trailing_zeros(),
     )
 }
@@ -342,7 +444,8 @@ mov qword ptr [{ptr}+8], rdx
 /// The highest slot a target of `kind` uses when its base slot is `slot`.
 pub fn last_slot(kind: Kind, slot: u32) -> u32 {
     match kind {
-        Kind::ClockGettime => slot + 7,
+        // Clock-indexed: clock id `n` uses `slot + n`.
+        Kind::ClockGettime | Kind::ClockNanosleep | Kind::CondTimedwait | Kind::CondClockwait | Kind::SemTimedwait | Kind::SemClockwait => slot + 7,
         _ => slot,
     }
 }
@@ -408,6 +511,9 @@ add rax, qword ptr [rbx+8]
             call_scale(state, OFF_SCALE, &format!("lea edx, [r12+{slot:#x}]")),
             split_store("rbx", "1000000000")
         ),
+        Kind::ClockNanosleep | Kind::CondTimedwait | Kind::CondClockwait | Kind::SemTimedwait | Kind::SemClockwait => {
+            unreachable!("{kind:?} is a wait: wait_hook_source")
+        }
         Kind::Gettimeofday | Kind::GettimeofdayGot => format!(
             "test r15d, r15d
 jne h_out
@@ -474,6 +580,131 @@ ret
     )
 }
 
+/// The hook for the absolute-deadline wait `kind` (SysV only), using the state page at `state`
+/// and the clock slots from `slot_base` (clock id `n` uses `slot_base + n`, as `clock_gettime`'s
+/// hook does). It calls the original at `trampoline`, and reads real time through
+/// `__vdso_clock_gettime` at `vdso_clock` (stored after the code as `h_vdso_clock`): libc's
+/// `clock_gettime` is hooked and would return game time.
+///
+/// Shape: save → the deadline's clock id (REALTIME for `sem_timedwait`, the cond's flags for
+/// `cond_timedwait`, else the argument) → pass through unless the id is one `clock_gettime`
+/// scales (0, 1, 4, 5, 6, 7), the deadline pointer is non-null and the deadline valid (an
+/// out-of-range `tv_nsec` gets the original's EINVAL; one too far for i64 ns is left alone), and
+/// for `clock_nanosleep` TIMER_ABSTIME is set → the real time now of that clock → `guard_enter`
+/// → if outermost (or timed out, where `unscale` reads its slot without the lock, as `scale`
+/// does): `unscale` the deadline into a 16-byte stack local, which replaces the deadline
+/// argument → `guard_leave` if entered → call the original → restore → `ret`. The guard is
+/// never held across the wait: a nesting entry per blocked thread would run out (64 entries).
+/// Five pushes plus `sub rsp, 30` keep `rsp` 16-byte aligned at every call.
+pub fn wait_hook_source(kind: Kind, state: u64, slot_base: u32, trampoline: u64, vdso_clock: u64) -> String {
+    // Arguments are kept in r12 = rdi, r13 = rsi, r14 = rdx, r15 = rcx; `deadline` names the
+    // register holding the deadline pointer. `clock` leaves the clock id in eax.
+    let (deadline, clock) = match kind {
+        Kind::ClockNanosleep => ("r14", "test r13d, 1\nje w_call\nmov eax, r12d\n".to_string()),
+        Kind::CondTimedwait => (
+            "r14",
+            format!(
+                "test r12, r12
+je w_call
+mov eax, dword ptr [r12+{COND_FLAGS_OFFSET:#x}]
+and eax, {COND_CLOCK_MONOTONIC_MASK:#x}
+// 0 = CLOCK_REALTIME, 1 = CLOCK_MONOTONIC.
+shr eax, {shift}
+",
+                shift = COND_CLOCK_MONOTONIC_MASK.trailing_zeros()
+            ),
+        ),
+        Kind::CondClockwait => ("r15", "mov eax, r14d\n".to_string()),
+        Kind::SemTimedwait => ("r13", "xor eax, eax\n".to_string()),
+        Kind::SemClockwait => ("r14", "mov eax, r13d\n".to_string()),
+        _ => unreachable!("{kind:?} is not a wait: hook_source"),
+    };
+    format!(
+        "endbr64
+push rbx
+push r12
+push r13
+push r14
+push r15
+// [rsp] the converted deadline, [rsp+10] guard_enter's result, [rsp+18] real now (ns),
+// [rsp+20] the game's deadline (ns).
+sub rsp, 30
+mov r12, rdi
+mov r13, rsi
+mov r14, rdx
+mov r15, rcx
+{clock}// Only the clocks clock_gettime scales (D14): REALTIME, MONOTONIC, MONOTONIC_RAW, the
+// coarse ones and BOOTTIME.
+cmp eax, 7
+ja w_call
+cmp eax, 2
+je w_call
+cmp eax, 3
+je w_call
+mov ebx, eax
+test {deadline}, {deadline}
+je w_call
+cmp qword ptr [{deadline}+8], #999999999
+ja w_call
+mov rax, qword ptr [{deadline}]
+imul rax, rax, #1000000000
+jo w_call
+add rax, qword ptr [{deadline}+8]
+jo w_call
+mov qword ptr [rsp+20], rax
+mov edi, ebx
+mov rsi, rsp
+call qword ptr [h_vdso_clock]
+test eax, eax
+jne w_call
+mov rax, qword ptr [rsp]
+imul rax, rax, #1000000000
+add rax, qword ptr [rsp+8]
+mov qword ptr [rsp+18], rax
+mov rcx, qword ptr fs:[0]
+mov rax, {enter:#x}
+call rax
+mov dword ptr [rsp+10], eax
+cmp eax, 1
+je w_leave
+cmp eax, {NOT_ENTERED}
+je w_call
+mov r8, qword ptr [rsp+20]
+mov r9, qword ptr [rsp+18]
+mov rcx, qword ptr fs:[0]
+lea edx, [rbx+{slot_base:#x}]
+mov rax, {unscale:#x}
+call rax
+{split}mov {deadline}, rsp
+w_leave:
+cmp dword ptr [rsp+10], 1
+ja w_call
+mov rcx, qword ptr fs:[0]
+mov rax, {leave:#x}
+call rax
+w_call:
+mov rdi, r12
+mov rsi, r13
+mov rdx, r14
+mov rcx, r15
+call {trampoline:#x}
+add rsp, 30
+pop r15
+pop r14
+pop r13
+pop r12
+pop rbx
+ret
+h_vdso_clock:
+dq {vdso_clock:#x}
+",
+        split = split_store("rsp", "1000000000"),
+        enter = state + OFF_GUARD_ENTER,
+        leave = state + OFF_GUARD_LEAVE,
+        unscale = state + OFF_UNSCALE,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,13 +713,31 @@ mod tests {
 
     const STATE: u64 = 0x7f12_3456_0000;
     const KINDS: [Kind; 7] = [Kind::Qpc, Kind::NtQpc, Kind::Tick32, Kind::Tick64, Kind::ClockGettime, Kind::Gettimeofday, Kind::GettimeofdayGot];
+    const WAIT_KINDS: [Kind; 5] = [Kind::ClockNanosleep, Kind::CondTimedwait, Kind::CondClockwait, Kind::SemTimedwait, Kind::SemClockwait];
+    const VDSO: u64 = 0x7ffd_1234_5000;
+
+    /// Every hook source the templates make, with a name for messages: each clock kind under
+    /// each ABI, and each wait (SysV only).
+    fn all_hooks(page: u64) -> Vec<(String, Abi, String)> {
+        let mut v = vec![];
+        for kind in KINDS {
+            for abi in [Abi::Win64, Abi::Sysv] {
+                v.push((format!("{kind:?}/{abi:?}"), abi, hook_source(kind, abi, STATE, 9, page + 0x800)));
+            }
+        }
+        for kind in WAIT_KINDS {
+            v.push((format!("{kind:?}"), Abi::Sysv, wait_hook_source(kind, STATE, 0, page + 0x800, VDSO)));
+        }
+        v
+    }
 
     #[test]
     fn layout_fits_the_state_page() {
         assert_eq!(OFF_SLOTS + SLOT_SIZE * SLOT_COUNT as u64, OFF_NEST);
         assert_eq!(OFF_NEST + NEST_ENTRY * NEST_COUNT, OFF_RECOVERY);
         assert!(OFF_RECOVERY_ENTRIES + RECOVERY_ENTRY * RECOVERY_MAX as u64 <= OFF_CODE);
-        assert!(OFF_SCALE32 + ROUTINE_MAX <= super::super::STATE_PAGE_SIZE);
+        assert!(OFF_UNSCALE + ROUTINE_MAX <= super::super::STATE_PAGE_SIZE);
+        assert_eq!(OFF_UNSCALE, 0x1800);
         assert!(SLOT_SEQ + 4 <= SLOT_SIZE);
         // The speed (f64) and gen (u32) are one contiguous 12-byte write.
         assert_eq!(OFF_SPEED + 8, OFF_GEN);
@@ -541,27 +790,49 @@ mod tests {
         // Walk the straight-line prologue: rsp must be 16-byte aligned at every call, given
         // rsp % 16 == 8 at entry. Pushes and pops must balance before `ret`.
         let page = 0x7f00_0000_0000u64;
-        for kind in KINDS {
-            for abi in [Abi::Win64, Abi::Sysv] {
-                let a = asm::assemble(&hook_source(kind, abi, STATE, 9, page + 0x800), page, &|_| None).unwrap();
-                let mut depth: i64 = 8;
-                for i in Decoder::with_ip(64, &a.bytes, page, DecoderOptions::NONE).iter() {
-                    match i.mnemonic() {
-                        Mnemonic::Push => depth += 8,
-                        Mnemonic::Pop => depth -= 8,
-                        Mnemonic::Sub if i.op0_register() == iced_x86::Register::RSP => depth += i.immediate(1) as i64,
-                        Mnemonic::Add if i.op0_register() == iced_x86::Register::RSP => depth -= i.immediate(1) as i64,
-                        Mnemonic::Call => assert_eq!(depth % 16, 0, "{kind:?}/{abi:?}: misaligned call at {:#x}", i.ip()),
-                        Mnemonic::Ret => {
-                            assert_eq!(depth, 8, "{kind:?}/{abi:?}: unbalanced stack at ret");
-                            break;
-                        }
-                        _ => {}
+        for (what, _, src) in all_hooks(page) {
+            let a = asm::assemble(&src, page, &|_| None).unwrap();
+            let mut depth: i64 = 8;
+            for i in Decoder::with_ip(64, &a.bytes, page, DecoderOptions::NONE).iter() {
+                match i.mnemonic() {
+                    Mnemonic::Push => depth += 8,
+                    Mnemonic::Pop => depth -= 8,
+                    Mnemonic::Sub if i.op0_register() == iced_x86::Register::RSP => depth += i.immediate(1) as i64,
+                    Mnemonic::Add if i.op0_register() == iced_x86::Register::RSP => depth -= i.immediate(1) as i64,
+                    Mnemonic::Call => assert_eq!(depth % 16, 0, "{what}: misaligned call at {:#x}", i.ip()),
+                    Mnemonic::Ret => {
+                        assert_eq!(depth, 8, "{what}: unbalanced stack at ret");
+                        break;
                     }
+                    _ => {}
                 }
-                // Win64 callees get their 32 bytes of shadow space.
-                assert!(depth == 8);
             }
+            // Win64 callees get their 32 bytes of shadow space.
+            assert!(depth == 8);
+        }
+    }
+
+    #[test]
+    fn wait_hook_assembles_for_each_kind() {
+        let page = 0x7f00_0000_0000u64;
+        for kind in WAIT_KINDS {
+            let src = wait_hook_source(kind, STATE, 0, page + 0x800, VDSO);
+            let a = asm::assemble(&src, page, &|_| None).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{src}"));
+            assert!(a.bytes.len() < 0x400, "{kind:?} is {} bytes", a.bytes.len());
+            let ins: Vec<_> = Decoder::with_ip(64, &a.bytes, page, DecoderOptions::NONE).iter().collect();
+            // The thread key is the SysV thread pointer (D13).
+            assert!(ins.iter().any(|i| i.segment_prefix() == iced_x86::Register::FS), "{kind:?}");
+            // Real time comes through the stored vDSO pointer.
+            let ptr = a.labels["h_vdso_clock"];
+            assert_eq!(a.bytes[(ptr - page) as usize..][..8], VDSO.to_le_bytes(), "{kind:?}");
+            let calls: Vec<_> = ins.iter().filter(|i| i.mnemonic() == Mnemonic::Call).collect();
+            assert!(calls.iter().any(|i| i.is_ip_rel_memory_operand() && i.ip_rel_memory_address() == ptr), "{kind:?}");
+            // The original is called once, after the guard is left.
+            let tramp: Vec<_> = calls.iter().filter(|i| i.near_branch_target() == page + 0x800).collect();
+            assert_eq!(tramp.len(), 1, "{kind:?}");
+            // The cond's clock comes from its flags word.
+            let flags = ins.iter().any(|i| i.memory_base() == iced_x86::Register::R12 && i.memory_displacement64() == COND_FLAGS_OFFSET);
+            assert_eq!(flags, kind == Kind::CondTimedwait, "{kind:?}");
         }
     }
 
@@ -626,6 +897,34 @@ mod tests {
         }
     }
 
+    impl LocalState {
+        /// `unscale(key, slot, game, real now)`.
+        fn unscale(&self, key: u64, slot: u64, game: u64, now: u64) -> u64 {
+            let out: u64;
+            unsafe {
+                std::arch::asm!(
+                    "call {f}",
+                    f = in(reg) self.0 + OFF_UNSCALE,
+                    inout("rcx") key => _,
+                    inout("rdx") slot => _,
+                    inout("r8") game => _,
+                    inout("r9") now => _,
+                    out("rax") out,
+                    out("r10") _,
+                    out("r11") _,
+                    out("xmm0") _,
+                );
+            }
+            out
+        }
+        fn get(&self, off: u64) -> u64 {
+            unsafe { std::ptr::read_volatile((self.0 + off) as *const u64) }
+        }
+        fn get32(&self, off: u64) -> u32 {
+            unsafe { std::ptr::read_volatile((self.0 + off) as *const u32) }
+        }
+    }
+
     impl Drop for LocalState {
         fn drop(&mut self) {
             unsafe { libc::munmap(self.0 as *mut libc::c_void, super::super::STATE_PAGE_SIZE as usize) };
@@ -633,6 +932,171 @@ mod tests {
     }
 
     const KEY: u64 = 0x7f00_dead_b000;
+
+    #[test]
+    fn unscale_inverts_scale_for_every_slot_kind() {
+        const S: u64 = 1_000_000_000;
+        let st = LocalState::new(2.0);
+        let slot = |n: u64| OFF_SLOTS + n * SLOT_SIZE;
+        for n in 0..SLOT_COUNT as u64 {
+            // A slot never used: the game's deadline is real time already, and the slot stays unused.
+            assert_eq!(st.unscale(KEY, n, 1234 * S, 1000 * S), 1234 * S, "slot {n}");
+            assert_eq!(st.get32(slot(n) + SLOT_GEN), 0, "slot {n}");
+            // In use at 2.0: real time 10 s later is game time 20 s later, and back.
+            assert_eq!(st.call(OFF_SCALE, KEY, n, 1000 * S), 1000 * S);
+            let game = st.call(OFF_SCALE, KEY, n, 1010 * S);
+            assert_eq!(game, 1020 * S);
+            // A deadline 20 ms of game time ahead is 10 ms of real time ahead.
+            assert_eq!(st.unscale(KEY, n, game + 20_000_000, 1010 * S), 1010 * S + 10_000_000, "slot {n}");
+            // A deadline before the slot's base is before real0; never below 0.
+            assert_eq!(st.unscale(KEY, n, 998 * S, 1010 * S), 999 * S);
+        }
+        // Far enough back, the real time would be negative: 0 instead.
+        let n = 31;
+        st.put(slot(n) + SLOT_REAL0, S);
+        st.put(slot(n) + SLOT_FAKE0, 100 * S);
+        assert_eq!(st.unscale(KEY, n, 0, 2 * S), 0);
+        // The speed changes (generation 2, 0.5) and no clock was read since: unscale rebases the
+        // slot exactly as scale would have at the real time now, so the two stay inverses.
+        st.put(OFF_SPEED, 0.5f64.to_bits());
+        st.put32(OFF_GEN, 2);
+        let n = 3;
+        assert_eq!(st.unscale(KEY, n, 1030 * S, 1012 * S), 1024 * S, "game time is 1024 s now; 6 s more at 0.5x take 12 s");
+        assert_eq!((st.get32(slot(n) + SLOT_GEN), st.get(slot(n) + SLOT_REAL0), st.get(slot(n) + SLOT_FAKE0)), (2, 1012 * S, 1024 * S));
+        assert_eq!(st.get(slot(n) + SLOT_SPEED), 0.5f64.to_bits());
+        assert_eq!(st.get32(slot(n) + SLOT_SEQ) % 2, 0, "the sequence is even after the write");
+        assert_eq!(st.call(OFF_SCALE, KEY, n, 1016 * S), 1026 * S, "scale continues from the rebased slot");
+        // The lock stays held by another thread: unscale reads the slot without it.
+        st.put32(OFF_LOCK, 0x1234_5679);
+        assert_eq!(st.unscale(KEY, n, 1026 * S, 1020 * S), 1016 * S);
+        // A slot mid-update can't be trusted, and an unused one has no game time: the deadline
+        // passes through.
+        st.put32(slot(n) + SLOT_SEQ, st.get32(slot(n) + SLOT_SEQ) + 1);
+        assert_eq!(st.unscale(KEY, n, 1026 * S, 1020 * S), 1026 * S);
+        st.put32(OFF_LOCK, 0);
+    }
+
+    /// A SysV wait hook in this process, on a stand-in original that copies the deadline it was
+    /// given (and its other arguments) to `seen`, with a stand-in vDSO clock returning `now`.
+    struct LocalWait {
+        page: u64,
+        hook: u64,
+        seen: u64,
+        now: u64,
+    }
+
+    impl LocalWait {
+        fn new(st: &LocalState, kind: Kind) -> LocalWait {
+            let prot = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
+            let p = unsafe { libc::mmap(std::ptr::null_mut(), 0x2000, prot, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) };
+            assert_ne!(p, libc::MAP_FAILED);
+            let page = p as u64;
+            let (orig, vdso, seen, now, hook) = (page, page + 0x100, page + 0x200, page + 0x240, page + 0x1000);
+            let dl = match kind {
+                Kind::CondClockwait => "rcx",
+                Kind::SemTimedwait => "rsi",
+                _ => "rdx",
+            };
+            // seen: [0] the deadline's tv_sec, [8] tv_nsec, [10] rdi, [18] rsi, [20] rdx, [28] rcx,
+            // [30] the clock id the vDSO was asked for.
+            let orig_src = format!(
+                "mov rax, {seen:#x}\ntest {dl}, {dl}\nje o_args\nmov r8, qword ptr [{dl}]\nmov qword ptr [rax], r8\nmov r8, qword ptr [{dl}+8]\nmov qword ptr [rax+8], r8\n\
+                 o_args:\nmov qword ptr [rax+10], rdi\nmov qword ptr [rax+18], rsi\nmov qword ptr [rax+20], rdx\nmov qword ptr [rax+28], rcx\nmov eax, #77\nret\n"
+            );
+            let vdso_src = format!(
+                "mov rax, {now:#x}\nmov r8, qword ptr [rax]\nmov qword ptr [rsi], r8\nmov r8, qword ptr [rax+8]\nmov qword ptr [rsi+8], r8\n\
+                 mov rax, {clock:#x}\nmov qword ptr [rax], rdi\nxor eax, eax\nret\n",
+                clock = seen + 0x30
+            );
+            let hook_src = wait_hook_source(kind, st.0, 0, orig, vdso);
+            for (at, src) in [(orig, orig_src), (vdso, vdso_src), (hook, hook_src)] {
+                let a = asm::assemble(&src, at, &|_| None).unwrap_or_else(|e| panic!("{e}\n{src}"));
+                unsafe { std::ptr::copy_nonoverlapping(a.bytes.as_ptr(), at as *mut u8, a.bytes.len()) };
+            }
+            LocalWait { page, hook, seen, now }
+        }
+        /// Call the hook with these four arguments at real time `now` (s, ns); returns its result
+        /// and the deadline the original saw.
+        fn call(&self, now: (u64, u64), args: [u64; 4]) -> (u64, (u64, u64)) {
+            unsafe {
+                std::ptr::write_volatile(self.now as *mut [u64; 2], [now.0, now.1]);
+                std::ptr::write_volatile(self.seen as *mut [u64; 7], [0; 7]);
+                let f: extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(self.hook as usize);
+                let r = f(args[0], args[1], args[2], args[3]);
+                let seen = std::ptr::read_volatile(self.seen as *const [u64; 7]);
+                (r, (seen[0], seen[1]))
+            }
+        }
+        fn args_seen(&self) -> [u64; 5] {
+            let s = unsafe { std::ptr::read_volatile(self.seen as *const [u64; 7]) };
+            [s[2], s[3], s[4], s[5], s[6]]
+        }
+    }
+
+    impl Drop for LocalWait {
+        fn drop(&mut self) {
+            unsafe { libc::munmap(self.page as *mut libc::c_void, 0x2000) };
+        }
+    }
+
+    fn nest_is_empty(st: &LocalState) -> bool {
+        let nest = unsafe { std::slice::from_raw_parts((st.0 + OFF_NEST) as *const u64, (NEST_COUNT * 2) as usize) };
+        nest.iter().step_by(2).all(|&k| k == 0)
+    }
+
+    #[test]
+    fn wait_hooks_wait_for_the_real_time_of_a_game_deadline() {
+        const S: u64 = 1_000_000_000;
+        let st = LocalState::new(2.0);
+        // MONOTONIC (slot 1) in use at 2.0 since real 1000 s; REALTIME (slot 0) never read.
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1000 * S), 1000 * S);
+        // At real 1010 s the game reads 1020 s and waits until 1020.02 s: 1010.01 s of real time.
+        let deadline = [1020u64, 20_000_000];
+        let d = deadline.as_ptr() as u64;
+        let real = (1010, 10_000_000);
+        let w = LocalWait::new(&st, Kind::ClockNanosleep);
+        assert_eq!(w.call((1010, 0), [1, 1, d, 0xbad]), (77, real), "clock_nanosleep(MONOTONIC, TIMER_ABSTIME)");
+        let a = w.args_seen();
+        assert_eq!((a[0], a[1], a[3], a[4]), (1, 1, 0xbad, 1), "the other arguments pass unchanged; the vDSO read clock 1");
+        assert_ne!(a[2], d, "the deadline argument is the converted copy");
+        assert_eq!(deadline, [1020, 20_000_000], "the game's timespec is never written");
+        // Relative sleeps, clocks not scaled (THREAD_CPUTIME_ID = 3, CPU clocks < 0), unused slots
+        // (REALTIME here), and invalid deadlines pass through unchanged.
+        assert_eq!(w.call((1010, 0), [1, 0, d, 0]).1, (1020, 20_000_000), "no TIMER_ABSTIME");
+        assert_eq!(w.call((1010, 0), [3, 1, d, 0]).1, (1020, 20_000_000), "THREAD_CPUTIME_ID");
+        assert_eq!(w.call((1010, 0), [(-6i64) as u64, 1, d, 0]).1, (1020, 20_000_000), "a CPU clock");
+        assert_eq!(w.call((1010, 0), [0, 1, d, 0]).1, (1020, 20_000_000), "REALTIME was never read");
+        let bad = [1020u64, 1_000_000_000];
+        assert_eq!(w.call((1010, 0), [1, 1, bad.as_ptr() as u64, 0]).1, (1020, 1_000_000_000), "tv_nsec out of range");
+        let far = [u64::MAX / 2, 0];
+        assert_eq!(w.call((1010, 0), [1, 1, far.as_ptr() as u64, 0]).1, (u64::MAX / 2, 0), "too far for i64 ns");
+        assert_eq!(w.call((1010, 0), [1, 1, 0, 0]).0, 77, "a null deadline reaches the original");
+        assert!(nest_is_empty(&st), "the guard is not held after the call");
+
+        // The other waits, by where their deadline and clock are.
+        let mut mono_cond = [0u32; 12];
+        mono_cond[(COND_FLAGS_OFFSET / 4) as usize] = COND_CLOCK_MONOTONIC_MASK | 1; // pshared too
+        let rt_cond = [0u32; 12];
+        let w = LocalWait::new(&st, Kind::CondTimedwait);
+        assert_eq!(w.call((1010, 0), [mono_cond.as_ptr() as u64, 0x5555, d, 0]), (77, real), "cond_timedwait on a MONOTONIC cond");
+        assert_eq!(w.call((1010, 0), [rt_cond.as_ptr() as u64, 0x5555, d, 0]).1, (1020, 20_000_000), "a REALTIME cond (slot unused)");
+        assert_eq!(w.args_seen()[1], 0x5555, "the mutex passes unchanged");
+        let w = LocalWait::new(&st, Kind::CondClockwait);
+        assert_eq!(w.call((1010, 0), [0x1111, 0x2222, 1, d]), (77, real), "cond_clockwait(MONOTONIC)");
+        let w = LocalWait::new(&st, Kind::SemClockwait);
+        assert_eq!(w.call((1010, 0), [0x1111, 1, d, 0]), (77, real), "sem_clockwait(MONOTONIC)");
+        // sem_timedwait is REALTIME: once slot 0 is in use, it converts too.
+        assert_eq!(st.call(OFF_SCALE, KEY, 0, 1000 * S), 1000 * S);
+        let w = LocalWait::new(&st, Kind::SemTimedwait);
+        assert_eq!(w.call((1010, 0), [0x1111, d, 0, 0]), (77, real), "sem_timedwait (REALTIME)");
+        assert!(nest_is_empty(&st));
+        // Another thread holds the lock and is stuck: the deadline is still converted, from the
+        // lock-free slot read, and no nesting entry is left behind.
+        st.put32(OFF_LOCK, 0x1234_5679);
+        assert_eq!(w.call((1010, 0), [0x1111, d, 0, 0]), (77, real), "with the lock stuck");
+        assert!(nest_is_empty(&st));
+        st.put32(OFF_LOCK, 0);
+    }
 
     #[test]
     fn tick32_time_keeps_counting_across_the_32_bit_wrap() {

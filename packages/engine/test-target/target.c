@@ -16,6 +16,7 @@
 #include <semaphore.h>
 #include <sys/syscall.h>
 #include <asm/prctl.h>
+#include <errno.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -290,6 +291,73 @@ static void* got_slot_of(const char* name) {
     return NULL;
 }
 
+/* --abs-sleep, --abs-cond, --abs-cond-rt, --abs-sem: a thread that loops "deadline = now + 20 ms
+ * (read through libc's clock_gettime, so game time under speed hooks); wait until the deadline;
+ * count". Each waits with an absolute deadline: clock_nanosleep(TIMER_ABSTIME) on MONOTONIC, a
+ * MONOTONIC condvar (pthread_condattr_setclock), a default-clock (REALTIME) condvar, and
+ * sem_timedwait (REALTIME). Under game speed s each should count 50 * s per real second.
+ * --abs-cond-threads <n> starts n more --abs-cond threads, all counting into g_abs_conds. */
+volatile int64_t   g_abs_sleeps   = 0;
+volatile int64_t   g_abs_conds    = 0;
+volatile int64_t   g_abs_conds_rt = 0;
+volatile int64_t   g_abs_sems     = 0;
+
+#define ABS_STEP_NS (20 * 1000000L)
+
+static struct timespec deadline_in(clockid_t clock, long ns) {
+    struct timespec ts;
+    clock_gettime(clock, &ts);
+    ts.tv_nsec += ns;
+    while (ts.tv_nsec >= 1000000000L) { ts.tv_nsec -= 1000000000L; ts.tv_sec += 1; }
+    return ts;
+}
+
+static void* abs_sleep_loop(void* arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec d = deadline_in(CLOCK_MONOTONIC, ABS_STEP_NS);
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &d, NULL) == EINTR) {}
+        __atomic_fetch_add(&g_abs_sleeps, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+/* arg: the clock the condvar uses (CLOCK_MONOTONIC or CLOCK_REALTIME = the default) and where to count. */
+typedef struct { clockid_t clock; volatile int64_t* counter; } AbsCond;
+
+static void* abs_cond_loop(void* arg) {
+    const AbsCond* a = arg;
+    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t c;
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    if (a->clock != CLOCK_REALTIME) pthread_condattr_setclock(&attr, a->clock);
+    pthread_cond_init(&c, &attr);
+    pthread_mutex_lock(&m);
+    for (;;) {
+        struct timespec d = deadline_in(a->clock, ABS_STEP_NS);
+        /* Nobody signals: every return but ETIMEDOUT is spurious. */
+        while (pthread_cond_timedwait(&c, &m, &d) != ETIMEDOUT) {}
+        __atomic_fetch_add(a->counter, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+static void* abs_sem_loop(void* arg) {
+    (void)arg;
+    sem_t s;
+    sem_init(&s, 0, 0);
+    for (;;) {
+        struct timespec d = deadline_in(CLOCK_REALTIME, ABS_STEP_NS);
+        while (sem_timedwait(&s, &d) != 0 && errno != ETIMEDOUT) {}
+        __atomic_fetch_add(&g_abs_sems, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+static AbsCond s_abs_mono = { CLOCK_MONOTONIC, &g_abs_conds };
+static AbsCond s_abs_rt   = { CLOCK_REALTIME,  &g_abs_conds_rt };
+
 static void* writer_loop(void* arg) {
     (void)arg;
     for (;;) {
@@ -347,6 +415,23 @@ int main(int argc, char** argv) {
             sem_init(&s_win64_ready, 0, 0);
             if (pthread_create(&th, NULL, win64_clocks_loop, NULL) != 0) { perror("--win64-clocks"); return 1; }
             sem_wait(&s_win64_ready);
+        }
+        if (strcmp(argv[i], "--abs-sleep") == 0 || strcmp(argv[i], "--abs-cond") == 0 ||
+            strcmp(argv[i], "--abs-cond-rt") == 0 || strcmp(argv[i], "--abs-sem") == 0) {
+            pthread_t th;
+            int r;
+            if (strcmp(argv[i], "--abs-sleep") == 0) r = pthread_create(&th, NULL, abs_sleep_loop, NULL);
+            else if (strcmp(argv[i], "--abs-cond") == 0) r = pthread_create(&th, NULL, abs_cond_loop, &s_abs_mono);
+            else if (strcmp(argv[i], "--abs-cond-rt") == 0) r = pthread_create(&th, NULL, abs_cond_loop, &s_abs_rt);
+            else r = pthread_create(&th, NULL, abs_sem_loop, NULL);
+            if (r != 0) { perror(argv[i]); return 1; }
+        }
+        if (strcmp(argv[i], "--abs-cond-threads") == 0 && i + 1 < argc) {
+            int n = atoi(argv[i + 1]);
+            for (int k = 0; k < n; k++) {
+                pthread_t th;
+                if (pthread_create(&th, NULL, abs_cond_loop, &s_abs_mono) != 0) { perror("--abs-cond-threads"); return 1; }
+            }
         }
         if (strcmp(argv[i], "--spin") == 0) {
             pthread_t th;
@@ -415,6 +500,16 @@ int main(int argc, char** argv) {
     printf("addr g_clock_sigs=%p\n",  (void*)&g_clock_sigs);
     printf("addr g_clock_other=%p\n", (void*)&g_clock_other);
     printf("addr got_gettimeofday=%p\n", got_slot_of("gettimeofday"));
+    printf("addr g_abs_sleeps=%p\n",   (void*)&g_abs_sleeps);
+    printf("addr g_abs_conds=%p\n",    (void*)&g_abs_conds);
+    printf("addr g_abs_conds_rt=%p\n", (void*)&g_abs_conds_rt);
+    printf("addr g_abs_sems=%p\n",     (void*)&g_abs_sems);
+    /* dlsym gives each name's default version, the one a game links against. */
+    printf("addr libc_clock_nanosleep=%p\n",        dlsym(RTLD_DEFAULT, "clock_nanosleep"));
+    printf("addr libc_pthread_cond_timedwait=%p\n", dlsym(RTLD_DEFAULT, "pthread_cond_timedwait"));
+    printf("addr libc_pthread_cond_clockwait=%p\n", dlsym(RTLD_DEFAULT, "pthread_cond_clockwait"));
+    printf("addr libc_sem_timedwait=%p\n",          dlsym(RTLD_DEFAULT, "sem_timedwait"));
+    printf("addr libc_sem_clockwait=%p\n",          dlsym(RTLD_DEFAULT, "sem_clockwait"));
     if (mapped) printf("addr mapped=%p\n", mapped);
     if (heap_chain) {
         printf("addr g_root=%p\n",       (void*)&g_root);

@@ -488,3 +488,135 @@ fn qpc_success_follows_each_functions_return_convention() {
     assert_rate(t.pid, hex(&t.addr("g_w_ntqpc")), 1e7, 1.8, 2.2, "NtQueryPerformanceCounter (STATUS_SUCCESS) at 2x");
     assert_rate(t.pid, hex(&t.addr("g_w_qpc_fail")), 1e7, 0.9, 1.1, "a failed QueryPerformanceCounter at 2x");
 }
+
+// ---- Absolute-time waits (M4 Task 3, D2): a deadline in game time is waited for in real time.
+
+/// The wait functions the native targets hook, with the target's address listing for each.
+const WAITS: [(&str, &str); 5] = [
+    ("clock_nanosleep", "libc_clock_nanosleep"),
+    ("pthread_cond_timedwait", "libc_pthread_cond_timedwait"),
+    ("pthread_cond_clockwait", "libc_pthread_cond_clockwait"),
+    ("sem_timedwait", "libc_sem_timedwait"),
+    ("sem_clockwait", "libc_sem_clockwait"),
+];
+
+/// The target's `flag` thread waits until "now + 20 ms" (now read through the hooked
+/// `clock_gettime`) with the hooked wait `hook`, and counts into `counter`: 50 per real second
+/// at 1.0, 100 at 2.0, 25 at 0.5 (each ±25%). Without the wait hooks 2.0 stalls (the deadline is
+/// ahead of real time by all the time gained) and 0.5 busy-loops (it is always in the past).
+fn abstime_wait_follows_game_speed(flag: &str, counter: &str, hook: &str) {
+    let _serial = serial();
+    let t = Target::spawn(&[flag, "--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let n = hex(&t.addr(counter));
+    settle();
+    assert_rate(t.pid, n, 1.0, 37.5, 62.5, &format!("{counter} at 1x (unhooked)"));
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, hook).as_deref(), Some("hooked"), "{r}");
+    settle();
+    assert_rate(t.pid, n, 1.0, 75.0, 125.0, &format!("{counter} at 2x"));
+    speed_set(&mut c, &h, 0.5).unwrap();
+    settle();
+    assert_rate(t.pid, n, 1.0, 18.75, 31.25, &format!("{counter} at 0.5x"));
+    speed_set(&mut c, &h, 1.0).unwrap();
+    settle();
+    assert_rate(t.pid, n, 1.0, 37.5, 62.5, &format!("{counter} at 1x (hooked)"));
+}
+
+#[test]
+fn abstime_sleep_follows_game_speed() {
+    abstime_wait_follows_game_speed("--abs-sleep", "g_abs_sleeps", "clock_nanosleep");
+}
+
+#[test]
+fn abstime_cond_wait_monotonic_follows_game_speed() {
+    // The condvar's clock (MONOTONIC here) is read from glibc's internal layout.
+    abstime_wait_follows_game_speed("--abs-cond", "g_abs_conds", "pthread_cond_timedwait");
+}
+
+#[test]
+fn abstime_cond_wait_realtime_follows_game_speed() {
+    abstime_wait_follows_game_speed("--abs-cond-rt", "g_abs_conds_rt", "pthread_cond_timedwait");
+}
+
+#[test]
+fn abstime_sem_wait_follows_game_speed() {
+    abstime_wait_follows_game_speed("--abs-sem", "g_abs_sems", "sem_timedwait");
+}
+
+fn proc_i32(pid: i32, addr: u64) -> i32 {
+    i32::from_le_bytes(proc_read(pid, addr, 4).try_into().unwrap())
+}
+
+#[test]
+fn relative_sleeps_are_untouched() {
+    // usleep(50 ms) reaches clock_nanosleep without TIMER_ABSTIME: a relative wait is already
+    // real time, so it stays 50 ms (D2 only translates absolute deadlines).
+    let _serial = serial();
+    let t = Target::spawn(&["--writer", "--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, "clock_nanosleep").as_deref(), Some("hooked"), "{r}");
+    settle();
+    let counter = hex(&t.addr("g_counter"));
+    let (v0, t0) = (proc_i32(t.pid, counter), Instant::now());
+    std::thread::sleep(Duration::from_secs(1));
+    let (v1, t1) = (proc_i32(t.pid, counter), Instant::now());
+    let rate = (v1 - v0) as f64 / (t1 - t0).as_secs_f64();
+    eprintln!("measured rate of g_counter at 2x: {rate:.3}/s");
+    assert!((15.0..=25.0).contains(&rate), "usleep(50 ms) loop runs {rate:.3}/s at 2x, expected about 20");
+    assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 1.8, 2.2, "CLOCK_MONOTONIC at 2x");
+}
+
+#[test]
+fn wait_hooks_are_listed_and_restored_on_detach() {
+    let _serial = serial();
+    let t = Target::spawn(&["--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let before: Vec<(u64, Vec<u8>)> = WAITS
+        .iter()
+        .map(|(_, a)| {
+            let f = hex(&t.addr(a));
+            (f, proc_read(t.pid, f, 16))
+        })
+        .collect();
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    for ((name, _), (f, orig)) in WAITS.iter().zip(&before) {
+        assert_eq!(hook_status(&r, name).as_deref(), Some("hooked"), "{name}: {r}");
+        // The default version, the one dlsym (and a game's linker) picks, is the one hooked.
+        let listed = r["hooks"].as_array().unwrap().iter().find(|x| x["name"] == *name).unwrap()["address"].clone();
+        assert_eq!(hex(listed.as_str().unwrap()), *f, "{name}: {r}");
+        assert_ne!(proc_read(t.pid, *f, 16), *orig, "{name} was not hooked");
+    }
+    c.call_timeout("detach", json!({"handle": h}), Duration::from_secs(10)).unwrap();
+    for ((name, _), (f, orig)) in WAITS.iter().zip(&before) {
+        assert_eq!(proc_read(t.pid, *f, 16), *orig, "detach did not restore {name}");
+    }
+    assert!(wait_until(Duration::from_secs(1), || tracer_pid(t.pid) == 0), "still traced after detach");
+}
+
+#[test]
+fn many_waiting_threads_do_not_exhaust_the_nesting_table() {
+    // 80 threads blocked in pthread_cond_timedwait at once: more than the 64 nesting entries. The
+    // wait hooks hold an entry only while converting the deadline, never across the wait, so the
+    // clock hooks still find a free entry and scale.
+    let _serial = serial();
+    let t = Target::spawn(&["--abs-cond-threads", "80", "--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, "pthread_cond_timedwait").as_deref(), Some("hooked"), "{r}");
+    settle();
+    assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 1.7, 2.3, "CLOCK_MONOTONIC at 2x with 80 waiting threads");
+    // And the waiters keep waking (80 threads × 100/s at 2x; a stall would be near 0).
+    let waits = rate(t.pid, hex(&t.addr("g_abs_conds")), 1.0);
+    eprintln!("measured rate of g_abs_conds (80 threads) at 2x: {waits:.1}/s");
+    assert!(waits > 6000.0, "80 waiting threads wake {waits:.1}/s at 2x, expected about 8000");
+}

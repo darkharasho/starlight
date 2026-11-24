@@ -47,6 +47,17 @@ pub enum Kind {
     Gettimeofday,
     /// `gettimeofday` reached through GOT slots; the hook calls `__vdso_gettimeofday` (D16).
     GettimeofdayGot,
+    /// Absolute-deadline waits (M4 D2, native only): the hook turns the game-time deadline into
+    /// real time before the call. `clock_nanosleep(id, flags, req, rem)`, only with TIMER_ABSTIME.
+    ClockNanosleep,
+    /// `pthread_cond_timedwait(cond, mutex, abstime)`: the cond's own clock (glibc layout).
+    CondTimedwait,
+    /// `pthread_cond_clockwait(cond, mutex, id, abstime)`.
+    CondClockwait,
+    /// `sem_timedwait(sem, abstime)`: REALTIME.
+    SemTimedwait,
+    /// `sem_clockwait(sem, id, abstime)`.
+    SemClockwait,
 }
 
 impl Kind {
@@ -61,8 +72,18 @@ impl Kind {
             "clock_gettime" => Kind::ClockGettime,
             "gettimeofday" => Kind::Gettimeofday,
             "gettimeofday_got" => Kind::GettimeofdayGot,
+            "clock_nanosleep" => Kind::ClockNanosleep,
+            "cond_timedwait" => Kind::CondTimedwait,
+            "cond_clockwait" => Kind::CondClockwait,
+            "sem_timedwait" => Kind::SemTimedwait,
+            "sem_clockwait" => Kind::SemClockwait,
             _ => return None,
         })
+    }
+
+    /// An absolute-deadline wait (`templates::wait_hook_source`), not a clock read.
+    pub fn is_wait(self) -> bool {
+        matches!(self, Kind::ClockNanosleep | Kind::CondTimedwait | Kind::CondClockwait | Kind::SemTimedwait | Kind::SemClockwait)
     }
 }
 
@@ -312,6 +333,16 @@ impl Speeds {
 
     /// An inline hook. Its original bytes are recorded before the entry jump is written.
     fn install_inline(&self, handle: u32, t: &Arc<Target>, tracer: &Arc<Tracer>, state: u64, e: &mut Entry, tg: &HookTarget) -> Result<(), HookError> {
+        let body: Box<dyn Fn(u64) -> String + '_> = if tg.kind.is_wait() {
+            // The hook reads the real time of the deadline's clock from the vDSO: libc's
+            // clock_gettime is hooked and would return game time.
+            let (Abi::Sysv, Some(vdso_clock)) = (tg.abi, tg.original) else {
+                return Err(HookError::Skipped("absolute-time waits need a SysV target and __vdso_clock_gettime".into()));
+            };
+            Box::new(move |tramp| tpl::wait_hook_source(tg.kind, state, tg.slot, tramp, vdso_clock))
+        } else {
+            Box::new(|tramp| tpl::hook_source(tg.kind, tg.abi, state, tg.slot, tramp))
+        };
         let original = hook::entry_bytes(t, tg.address)?;
         if original.len() > tpl::RECOVERY_ORIGINAL_MAX {
             return Err(HookError::Skipped(format!(
@@ -321,7 +352,6 @@ impl Speeds {
             )));
         }
         record_push(t, state, e, tg.address, &original)?;
-        let body = |tramp| tpl::hook_source(tg.kind, tg.abi, state, tg.slot, tramp);
         match hook::install(t, tracer, &self.patches, handle, tg.address, &body) {
             Ok(h) => {
                 // Tracked first: a live hook must always be reverted at session end.
@@ -608,6 +638,11 @@ mod tests {
             ("clock_gettime", Kind::ClockGettime),
             ("gettimeofday", Kind::Gettimeofday),
             ("gettimeofday_got", Kind::GettimeofdayGot),
+            ("clock_nanosleep", Kind::ClockNanosleep),
+            ("cond_timedwait", Kind::CondTimedwait),
+            ("cond_clockwait", Kind::CondClockwait),
+            ("sem_timedwait", Kind::SemTimedwait),
+            ("sem_clockwait", Kind::SemClockwait),
         ] {
             assert_eq!(Kind::parse(s), Some(k));
         }
@@ -622,7 +657,7 @@ mod tests {
         assert_eq!(img.len() as u64, STATE_PAGE_SIZE);
         assert_eq!(&img[..8], b"STLSPD01");
         assert!(img[8..tpl::OFF_CODE as usize].iter().all(|&b| b == 0), "state starts zeroed");
-        for off in [tpl::OFF_SCALE, tpl::OFF_GUARD_ENTER, tpl::OFF_GUARD_LEAVE, tpl::OFF_SCALE32] {
+        for off in [tpl::OFF_SCALE, tpl::OFF_GUARD_ENTER, tpl::OFF_GUARD_LEAVE, tpl::OFF_SCALE32, tpl::OFF_UNSCALE] {
             assert_ne!(img[off as usize], 0, "no routine at {off:#x}");
         }
     }

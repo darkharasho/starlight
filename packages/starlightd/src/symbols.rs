@@ -38,6 +38,10 @@ pub struct Export {
     pub kind: SymKind,
     /// PE forwarder target as written in the table: `"DLL.Name"` or `"DLL.#ord"`.
     pub forwarder: Option<String>,
+    /// ELF: the name's default version (`name@@VER`, what the linker and `dlsym` bind to), or an
+    /// unversioned symbol. False for a hidden older version (`name@VER`), whose code may differ:
+    /// glibc keeps a pre-2.3.2 `pthread_cond_timedwait@GLIBC_2.2.5`. Always true on PE.
+    pub default_version: bool,
 }
 
 /// Most forwarder hops `resolve` follows before giving up.
@@ -133,9 +137,9 @@ fn pe_entries(img: &Img) -> Option<Vec<(u32, Export)>> {
     let make = |name: String, rva: u64| -> Option<Export> {
         if rva >= dir_rva && rva < dir_rva + dir_size {
             let fwd = img.cstr(at(rva)?)?;
-            Some(Export { name, address: 0, kind: SymKind::Func, forwarder: Some(fwd) })
+            Some(Export { name, address: 0, kind: SymKind::Func, forwarder: Some(fwd), default_version: true })
         } else {
-            Some(Export { name, address: at(rva)?, kind: SymKind::Func, forwarder: None })
+            Some(Export { name, address: at(rva)?, kind: SymKind::Func, forwarder: None, default_version: true })
         }
     };
 
@@ -175,6 +179,14 @@ const DT_RELA: u64 = 7;
 const DT_RELASZ: u64 = 8;
 const DT_JMPREL: u64 = 23;
 const DT_GNU_HASH: u64 = 0x6fff_fef5;
+const DT_VERSYM: u64 = 0x6fff_fff0;
+const DT_VERDEF: u64 = 0x6fff_fffc;
+const DT_VERDEFNUM: u64 = 0x6fff_fffd;
+/// `.gnu.version` entry bit: the symbol is a hidden (non-default) version.
+const VERSYM_HIDDEN: u16 = 0x8000;
+/// `Elf64_Verdef` and `Elf64_Verdaux` sizes.
+const VERDEF_SIZE: usize = 20;
+const VERDAUX_SIZE: usize = 8;
 const SYM_SIZE: u64 = 24;
 const RELA_SIZE: u64 = 24;
 const R_X86_64_GLOB_DAT: u32 = 6;
@@ -190,6 +202,10 @@ struct ElfDyn {
     nsyms: u64,
     jmprel: Option<(u64, u64)>,
     rela: Option<(u64, u64)>,
+    /// `.gnu.version`: one `u16` per `.dynsym` entry.
+    versym: Option<u64>,
+    /// `.gnu.version_d` and its entry count.
+    verdef: Option<(u64, u64)>,
 }
 
 fn elf_dyn(img: &Img) -> Option<ElfDyn> {
@@ -225,6 +241,7 @@ fn elf_dyn(img: &Img) -> Option<ElfDyn> {
     let fix = |p: u64| if p >= img.base && p < img.end { p } else { p.wrapping_add(bias) };
     let (mut symtab, mut strtab, mut hash, mut gnu_hash) = (None, None, None, None);
     let (mut jmprel, mut pltrelsz, mut rela, mut relasz) = (None, 0u64, None, 0u64);
+    let (mut versym, mut verdef, mut verdefnum) = (None, None, 0u64);
     for e in dyn_bytes.chunks_exact(16) {
         let tag = u64::from_le_bytes(e[0..8].try_into().unwrap());
         let val = u64::from_le_bytes(e[8..16].try_into().unwrap());
@@ -238,6 +255,9 @@ fn elf_dyn(img: &Img) -> Option<ElfDyn> {
             DT_PLTRELSZ => pltrelsz = val,
             DT_RELA => rela = Some(fix(val)),
             DT_RELASZ => relasz = val,
+            DT_VERSYM => versym = Some(fix(val)),
+            DT_VERDEF => verdef = Some(fix(val)),
+            DT_VERDEFNUM => verdefnum = val,
             _ => {}
         }
     }
@@ -253,6 +273,8 @@ fn elf_dyn(img: &Img) -> Option<ElfDyn> {
         nsyms: nsyms.min(MAX_SYMS as u64),
         jmprel: jmprel.map(|a| (a, pltrelsz)),
         rela: rela.map(|a| (a, relasz)),
+        versym,
+        verdef: verdef.map(|a| (a, verdefnum)),
     })
 }
 
@@ -295,8 +317,10 @@ fn read_sym_name(img: &Img, d: &ElfDyn, index: u64) -> Option<String> {
 fn elf_exports(img: &Img) -> Option<Vec<Export>> {
     let d = elf_dyn(img)?;
     let table = img.get(d.symtab, (d.nsyms * SYM_SIZE) as usize)?;
+    // No (readable) version table: every symbol is unversioned, so its own default.
+    let versym = d.versym.and_then(|v| img.get(v, d.nsyms as usize * 2));
     let mut out = vec![];
-    for s in table.chunks_exact(SYM_SIZE as usize) {
+    for (i, s) in table.chunks_exact(SYM_SIZE as usize).enumerate() {
         let kind = match s[4] & 0xf {
             1 => SymKind::Object,
             2 => SymKind::Func,
@@ -312,7 +336,32 @@ fn elf_exports(img: &Img) -> Option<Vec<Export>> {
         let Some(name) = d.strtab.checked_add(name_off).and_then(|a| img.cstr(a)).filter(|n| !n.is_empty()) else {
             continue;
         };
-        out.push(Export { name, address: value.wrapping_add(d.bias), kind, forwarder: None });
+        let default_version = versym.as_ref().is_none_or(|v| u16::from_le_bytes([v[2 * i], v[2 * i + 1]]) & VERSYM_HIDDEN == 0);
+        out.push(Export { name, address: value.wrapping_add(d.bias), kind, forwarder: None, default_version });
+    }
+    Some(out)
+}
+
+/// Names of the versions an ELF module defines (`.gnu.version_d`), e.g. `GLIBC_2.41`; the first
+/// is the module's own name (its soname).
+fn elf_version_defs(img: &Img) -> Option<Vec<String>> {
+    let d = elf_dyn(img)?;
+    let (mut at, count) = d.verdef?;
+    let mut out = vec![];
+    for _ in 0..count.min(4096) {
+        let vd = img.get(at, VERDEF_SIZE)?;
+        let w = |o: usize| u32::from_le_bytes(vd[o..o + 4].try_into().unwrap()) as u64;
+        let (aux, next) = (w(12), w(16));
+        if let Some(name) = img.get(at.checked_add(aux)?, VERDAUX_SIZE).and_then(|a| {
+            let name_off = u32::from_le_bytes(a[0..4].try_into().unwrap()) as u64;
+            img.cstr(d.strtab.checked_add(name_off)?)
+        }) {
+            out.push(name);
+        }
+        if next == 0 {
+            break;
+        }
+        at = at.checked_add(next)?;
     }
     Some(out)
 }
@@ -396,6 +445,14 @@ pub fn got_slots_with(read: Reader, m: &Module, name: &str) -> Vec<u64> {
     elf_got_slots(&Img::new(read, m), name).unwrap_or_default()
 }
 
+/// The version names an ELF module defines (`GLIBC_2.41`, …); empty for PE or without a table.
+pub fn version_defs_with(read: Reader, m: &Module) -> Vec<String> {
+    if m.kind != Kind::Elf {
+        return vec![];
+    }
+    elf_version_defs(&Img::new(read, m)).unwrap_or_default()
+}
+
 fn target_reader(t: &Target) -> impl Fn(u64, usize) -> Option<Vec<u8>> + '_ {
     move |addr, len| mem::read_bytes(t, addr, len).ok()
 }
@@ -406,6 +463,10 @@ pub fn exports(t: &Target, m: &Module) -> Result<Vec<Export>, RpcError> {
 
 pub fn resolve(t: &Target, mods: &[Module], module: &str, name: &str) -> Result<u64, RpcError> {
     resolve_with(&target_reader(t), mods, module, name)
+}
+
+pub fn version_defs(t: &Target, m: &Module) -> Result<Vec<String>, RpcError> {
+    Ok(version_defs_with(&target_reader(t), m))
 }
 
 pub fn got_slots(t: &Target, m: &Module, name: &str) -> Result<Vec<u64>, RpcError> {
@@ -474,8 +535,8 @@ pub(crate) mod tests {
         assert_eq!(
             got,
             vec![
-                Export { name: "Alpha".into(), address: base + 0x1000, kind: SymKind::Func, forwarder: None },
-                Export { name: "Beta".into(), address: base + 0x1010, kind: SymKind::Func, forwarder: None },
+                Export { name: "Alpha".into(), address: base + 0x1000, kind: SymKind::Func, forwarder: None, default_version: true },
+                Export { name: "Beta".into(), address: base + 0x1010, kind: SymKind::Func, forwarder: None, default_version: true },
             ]
         );
     }
@@ -714,5 +775,39 @@ pub(crate) mod tests {
         let r = reader(vec![(base, b)]);
         assert_eq!(exports_with(&r, &m)[0].address, base + 0x1010);
         assert_eq!(got_slots_with(&r, &m, "gettimeofday"), vec![base + 0x1800, base + 0x1810]);
+    }
+
+    #[test]
+    fn elf_versions_mark_hidden_symbols_and_list_definitions() {
+        let base = 0x7000_0000u64;
+        let m = module("libc.so.6", base, 0x2000, Kind::Elf);
+        let mut b = elf(base, true, false);
+        // DT_VERSYM at 0x700 and DT_VERDEF (2 entries) at 0x780 replace the DT_NULL entry.
+        for (i, (tag, val)) in [(DT_VERSYM, base + 0x700), (DT_VERDEF, base + 0x780), (DT_VERDEFNUM, 2), (DT_NULL, 0)].iter().enumerate() {
+            put(&mut b, 0x100 + (7 + i) * 16, &tag.to_le_bytes());
+            put(&mut b, 0x100 + (7 + i) * 16 + 8, &val.to_le_bytes());
+        }
+        // foo: version 2 (default); ifn: version 2 hidden (an older `ifn@VER`); obj: global (1).
+        for (i, v) in [0u16, 2, 0x8002, 1, 0, 0, 0].iter().enumerate() {
+            put(&mut b, 0x700 + i * 2, &v.to_le_bytes());
+        }
+        put(&mut b, 0x480, b"libc.so.6\0GLIBC_2.41\0");
+        for (i, (name_off, next)) in [(0x80u32, 0x1cu32), (0x8a, 0)].iter().enumerate() {
+            let vd = 0x780 + i * 0x1c;
+            put(&mut b, vd, &1u16.to_le_bytes());
+            put(&mut b, vd + 4, &(i as u16 + 1).to_le_bytes());
+            put(&mut b, vd + 6, &1u16.to_le_bytes());
+            put(&mut b, vd + 12, &20u32.to_le_bytes());
+            put(&mut b, vd + 16, &next.to_le_bytes());
+            put(&mut b, vd + 20, &name_off.to_le_bytes());
+        }
+        let r = reader(vec![(base, b)]);
+        let got: Vec<_> = exports_with(&r, &m).into_iter().map(|e| (e.name, e.default_version)).collect();
+        assert_eq!(got, vec![("foo".into(), true), ("ifn".into(), false), ("obj".into(), true)]);
+        assert_eq!(version_defs_with(&r, &m), vec!["libc.so.6".to_string(), "GLIBC_2.41".to_string()]);
+        // Without a version table every symbol is its own default, and there are no definitions.
+        let plain = reader(vec![(base, elf(base, true, false))]);
+        assert!(exports_with(&plain, &m).iter().all(|e| e.default_version));
+        assert!(version_defs_with(&plain, &m).is_empty());
     }
 }
