@@ -338,8 +338,12 @@ export function createScannerHost(deps: {
     const s = await ensureSession(forPid);
     if ('ok' in s) return s;
     try {
-      await setSpeedFn(s, speed);
-      return { ok: true, speed };
+      const st = await setSpeedFn(s, speed);
+      // Which clocks were hooked (or skipped, and why), as the agent's set_speed reports them.
+      const hooks = Array.isArray(st?.hooks)
+        ? st.hooks.map((h) => (h.reason !== undefined ? { name: h.name, status: h.status, reason: h.reason } : { name: h.name, status: h.status }))
+        : undefined;
+      return { ok: true, speed, ...(hooks ? { hooks } : {}) };
     } catch (err) {
       return { ok: false, error: errMsg(err) };
     }

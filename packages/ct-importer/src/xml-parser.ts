@@ -13,8 +13,10 @@ export interface CtEntry {
   ID?: number;
   Description?: string;
   VariableType?: string;
+  /** Raw text: CE writes hex, so the XML parser leaves it unconverted. */
   Address?: string;
-  Offsets?: { Offset: number | number[] };
+  /** Raw hex text, in CE's file order (see `ctOffsetsInApplyOrder`). */
+  Offsets?: { Offset: string | string[] };
   Hotkeys?: { Hotkey: CtHotkey | CtHotkey[] };
   GroupHeader?: number;
   CheatEntries?: { CheatEntry: CtEntry | CtEntry[] };
@@ -38,12 +40,23 @@ const ALWAYS_ARRAY = new Set([
   'CheatTable.CheatEntries.CheatEntry.Hotkeys.Hotkey.Keys.Key',
 ]);
 
+/*
+ * Values CE writes as hex (addresses, offsets) or as text the player typed
+ * (hotkey values, dropdown lists) stay raw strings: fast-xml-parser would read
+ * "10" as decimal 10 and "1E5" as 100000 (R5).
+ */
+const RAW_SUFFIXES = [
+  '.CheatEntry.Address', '.Offsets.Offset', '.Hotkey.Value', '.CheatEntry.DropDownList', '.CheatEntry.DropDownListLink',
+];
+
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
   parseTagValue: true,
   parseAttributeValue: true,
   trimValues: true,
+  // Returning undefined keeps the raw (trimmed) text; returning the value parses it.
+  tagValueProcessor: (_name, value, jpath) => (RAW_SUFFIXES.some((x) => jpath.endsWith(x)) ? undefined : value),
   isArray: (_name, jpath) => ALWAYS_ARRAY.has(jpath) || jpath.endsWith('.CheatEntry'),
 });
 

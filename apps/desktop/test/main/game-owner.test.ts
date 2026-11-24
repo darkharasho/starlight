@@ -49,4 +49,19 @@ describe('game-owner', () => {
     a2();
     expect(owner.holders(10)).toEqual([]);
   });
+
+  it('table is a starlightd holder; claims on a native game release nothing', async () => {
+    // A native table session holds the game; no CE session exists for it.
+    const { owner, order } = setup(null);
+    const t = owner.hold(10, 'table');
+    expect(owner.ownerOf(10)).toEqual({ engine: 'starlightd', holders: ['table'] });
+    const a = await owner.claim(10, 'agent');
+    const u = await owner.claim(10, 'user-cheats');
+    expect(order).toEqual([]);
+    expect(owner.holders(10)).toEqual(['table', 'agent', 'user-cheats']);
+    a(); u();
+    expect(owner.holders(10)).toEqual(['table']);
+    t();
+    expect(owner.ownerOf(10)).toBeNull();
+  });
 });

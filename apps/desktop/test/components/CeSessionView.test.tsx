@@ -288,21 +288,76 @@ describe('CeSessionView with starlightd', () => {
   });
 
   it('in starlightd mode the CE records are replaced by the paused notice', async () => {
-    seed({ engine: 'starlightd', holders: ['user-cheats'] });
+    seed({ engine: 'starlightd', mode: 'paused', holders: ['user-cheats'] });
     render(<CeSessionView processes={[]} />);
     expect(await screen.findByText('The Cheat Engine table is paused while your cheats run.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Infinite Money: Off' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'God mode: On' })).toBeInTheDocument();
   });
 
+  it('paused mode shows no engine pill', async () => {
+    seed({ engine: 'starlightd', mode: 'paused', holders: ['user-cheats'], route: null });
+    render(<CeSessionView processes={[]} />);
+    expect(await screen.findByText('The Cheat Engine table is paused while your cheats run.')).toBeInTheDocument();
+    expect(screen.queryByText('Starlight engine')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cheat Engine')).not.toBeInTheDocument();
+  });
+
+  it('a native session shows the records with a Starlight engine pill, not the paused notice', () => {
+    seed({ engine: 'starlightd', mode: 'native', holders: ['table'], route: { engine: 'native', codes: {}, first: null } });
+    render(<CeSessionView processes={[]} />);
+    expect(screen.getByText('Starlight engine')).toBeInTheDocument();
+    expect(screen.queryByText('Cheat Engine')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Infinite Money: Off' })).toBeInTheDocument();
+    expect(screen.queryByText(/is paused while/)).not.toBeInTheDocument();
+  });
+
+  it('a native-routable preview (mode ce) still shows the Starlight engine pill', () => {
+    seed({ engine: 'ce', mode: 'ce', holders: [], route: { engine: 'native', codes: {}, first: null } });
+    render(<CeSessionView processes={[]} />);
+    expect(screen.getByText('Starlight engine')).toBeInTheDocument();
+  });
+
+  it('a CE-routed session explains why in the pill tooltip', () => {
+    seed({ engine: 'ce', mode: 'ce', holders: [], route: { engine: 'ce', codes: { 'lua-script': 1 },
+      first: { recordId: 2, name: 'Infinite Ammo', code: 'lua-script', detail: 'd', copy: 'A script in this table runs Lua code.' } } });
+    render(<CeSessionView processes={[]} />);
+    const pill = screen.getByText('Cheat Engine');
+    expect(pill).toHaveAttribute('title', 'Runs in Cheat Engine: A script in this table runs Lua code. (\u201cInfinite Ammo\u201d)');
+    expect(screen.queryByText('Starlight engine')).not.toBeInTheDocument();
+  });
+
+  it('a CE route without a record omits the record name', () => {
+    seed({ engine: 'ce', mode: 'ce', holders: [], route: { engine: 'ce', codes: { 'route:off': 1 },
+      first: { recordId: null, name: '', code: 'route:off', detail: 'd', copy: 'Native tables are turned off in Settings.' } } });
+    render(<CeSessionView processes={[]} />);
+    expect(screen.getByText('Cheat Engine')).toHaveAttribute('title', 'Runs in Cheat Engine: Native tables are turned off in Settings.');
+  });
+
+  it('no pill without a route', () => {
+    seed({ mode: 'ce', route: null });
+    render(<CeSessionView processes={[]} />);
+    expect(screen.queryByText('Starlight engine')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cheat Engine')).not.toBeInTheDocument();
+  });
+
+  it('speed buttons in a native session call set_speed and show the active speed', async () => {
+    call.mockResolvedValue({ ok: true });
+    seed({ engine: 'starlightd', mode: 'native', holders: ['table'], route: { engine: 'native', codes: {}, first: null } });
+    render(<CeSessionView processes={[]} />);
+    await userEvent.click(screen.getByRole('button', { name: '2×' }));
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ method: 'set_speed', params: { speed: 2 } }));
+    expect(await screen.findByRole('button', { name: '2×', pressed: true })).toBeInTheDocument();
+  });
+
   it('names the agent session when it holds the game', () => {
-    seed({ engine: 'starlightd', holders: ['agent'] });
+    seed({ engine: 'starlightd', mode: 'paused', holders: ['agent'] });
     render(<CeSessionView processes={[]} />);
     expect(screen.getByText('The Cheat Engine table is paused while the agent session runs.')).toBeInTheDocument();
   });
 
   it('offers to load the table when nothing holds the game', async () => {
-    seed({ engine: 'starlightd', holders: [] });
+    seed({ engine: 'starlightd', mode: 'paused', holders: [] });
     render(<CeSessionView processes={[]} />);
     expect(screen.getByText('The Cheat Engine table is closed.')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Load the table' }));
@@ -310,7 +365,7 @@ describe('CeSessionView with starlightd', () => {
   });
 
   it('Use the table instead turns user cheats off, stops the agent and restarts the session', async () => {
-    seed({ engine: 'starlightd', holders: ['agent', 'user-cheats'] });
+    seed({ engine: 'starlightd', mode: 'paused', holders: ['agent', 'user-cheats'] });
     render(<CeSessionView processes={[]} />);
     await userEvent.click(screen.getByRole('button', { name: 'Use the table instead' }));
     expect(screen.getByText('This turns off your cheats and ends the agent session — continue?')).toBeInTheDocument();
@@ -331,7 +386,7 @@ describe('CeSessionView with starlightd', () => {
   it('does not poll refresh in starlightd mode', async () => {
     vi.useFakeTimers();
     try {
-      seed({ engine: 'starlightd', holders: ['user-cheats'] });
+      seed({ engine: 'starlightd', mode: 'paused', holders: ['user-cheats'] });
       render(<CeSessionView processes={[]} />);
       await vi.advanceTimersByTimeAsync(5000);
       expect(call).not.toHaveBeenCalledWith(expect.objectContaining({ method: 'refresh' }));

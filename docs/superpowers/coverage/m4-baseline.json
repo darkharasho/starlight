@@ -1,0 +1,49 @@
+{
+  "compiler": "baseline",
+  "generatedAt": "2026-11-24T00:29:23.215Z",
+  "tables": {
+    "total": 390,
+    "native": 13,
+    "pct": 3.3
+  },
+  "records": {
+    "total": 39113,
+    "native": 8429,
+    "pct": 21.6
+  },
+  "byCode": [
+    {
+      "code": "aa:script",
+      "tables": 315,
+      "records": 2204
+    },
+    {
+      "code": "lua:block",
+      "tables": 257,
+      "records": 1109
+    },
+    {
+      "code": "addr:expression",
+      "tables": 216,
+      "records": 27096
+    },
+    {
+      "code": "lua:table-script",
+      "tables": 152,
+      "records": 0
+    },
+    {
+      "code": "value:type",
+      "tables": 36,
+      "records": 275
+    },
+    {
+      "code": "table:empty",
+      "tables": 2,
+      "records": 0
+    }
+  ],
+  "failed": 10,
+  "selected": 400,
+  "missing": 0
+}

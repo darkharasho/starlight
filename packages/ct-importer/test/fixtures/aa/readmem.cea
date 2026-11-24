@@ -1,0 +1,27 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Copies the original bytes into the cave instead of writing them out.
+}
+
+[ENABLE]
+
+aobscanmodule(INJECT,target,8B 05 ?? ?? ?? ?? 83 C0 01)
+alloc(newmem,$1000,INJECT)
+label(return)
+
+newmem:
+  readmem(INJECT,9)
+  jmp return
+
+INJECT:
+  jmp newmem
+  nop 4
+return:
+
+[DISABLE]
+
+INJECT:
+  readmem(newmem,9)
+
+dealloc(newmem)

@@ -1,0 +1,28 @@
+{ Game   : target
+  Author : starlight-tests
+}
+
+[ENABLE]
+
+aobscanmodule(INJECT,target,8B 05 ?? ?? ?? ?? 83 C0 01)
+alloc(newmem,$1000,INJECT)
+label(return)
+
+newmem:
+  mov eax,#999
+  jmp return
+
+INJECT:
+  jmp newmem
+  nop 4
+return:
+
+[DISABLE]
+
+INJECT:
+  db 8B 05 10 20 30 40 83 C0 01
+
+INJECT+20:
+  db 89 05 04 20 30 40
+
+dealloc(newmem)

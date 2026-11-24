@@ -275,6 +275,18 @@ fn instruction(
     ip: u64,
 ) -> Result<(Instruction, Option<Check>), String> {
     let cands = codes(mnemonic).ok_or_else(|| format!("unknown instruction {mnemonic}"))?;
+    if let Some(r) = string_instruction(prefixes, mnemonic, operands) {
+        return Ok((r?, None));
+    }
+    // `rep ret` (F3 C3) is the only prefixed `ret`.
+    if mnemonic == "ret" && operands.is_empty() && !prefixes.is_empty() {
+        if prefixes.iter().any(|p| !matches!(p, Prefix::Rep | Prefix::Repe)) {
+            return Err("prefix not allowed on ret with these operands".into());
+        }
+        let mut ins = Instruction::with(Code::Retnq);
+        ins.set_has_repe_prefix(true);
+        return Ok((ins, None));
+    }
     // `imul r, imm` is iced's (and CE's) short spelling of `imul r, r, imm`.
     let expanded;
     let operands = match (mnemonic, operands) {
@@ -319,7 +331,9 @@ fn instruction(
     let mut prefix_rejected = false;
     'cand: for &code in cands {
         let oc = code.op_code();
-        if oc.op_count() as usize != operands.len() || (oc.operand_size() == 16 && !wants_o16) {
+        // `cbw`/`cwd` are the 16-bit sign extensions and take no operand to say so.
+        let o16 = oc.operand_size() == 16 && !wants_o16 && !matches!(mnemonic, "cbw" | "cwd");
+        if oc.op_count() as usize != operands.len() || o16 {
             continue;
         }
         let prefix_ok = prefixes.iter().all(|p| match p {
@@ -414,6 +428,67 @@ fn instruction(
     finish(ins, operands, &vals, &addrs, ip)
 }
 
+/// The string instructions (`movsb`, `rep stosq`, …) with no operands or the memory operands the
+/// disassembler prints. `None` when the mnemonic or operands aren't a string form (`movsd xmm0,xmm1`).
+fn string_instruction(prefixes: &[Prefix], mnemonic: &str, operands: &[Operand]) -> Option<Result<Instruction, String>> {
+    use iced_x86::RepPrefixKind as R;
+    let (op, suffix) = mnemonic.split_at(mnemonic.len().checked_sub(1)?);
+    let width = match suffix {
+        "b" => MemSize::Byte,
+        "w" => MemSize::Word,
+        "d" => MemSize::Dword,
+        "q" => MemSize::Qword,
+        _ => return None,
+    };
+    // Memory operands, in the order the disassembler prints them.
+    let want: &[Register] = match op {
+        "movs" => &[Register::RDI, Register::RSI],
+        "cmps" => &[Register::RSI, Register::RDI],
+        "stos" | "scas" => &[Register::RDI],
+        "lods" => &[Register::RSI],
+        _ => return None,
+    };
+    let shaped = operands.len() == want.len()
+        && operands.iter().zip(want).all(|(o, w)| {
+            matches!(o, Operand::Mem { size, seg: None, base: Some(b), index: None, disp: Expr::Num(0), .. }
+                if b == w && size.is_none_or(|s| s == width))
+        });
+    if !operands.is_empty() && !shaped {
+        return None;
+    }
+    let compare = matches!(op, "cmps" | "scas");
+    let rep = match prefixes {
+        [] => R::None,
+        [Prefix::Rep] if !compare => R::Repe,
+        [Prefix::Repe] if compare => R::Repe,
+        [Prefix::Repne] if compare => R::Repne,
+        _ => return Some(Err(format!("prefix not allowed on {mnemonic} with these operands"))),
+    };
+    let ins = match (op, width) {
+        ("movs", MemSize::Byte) => Instruction::with_movsb(64, Register::None, rep),
+        ("movs", MemSize::Word) => Instruction::with_movsw(64, Register::None, rep),
+        ("movs", MemSize::Dword) => Instruction::with_movsd(64, Register::None, rep),
+        ("movs", _) => Instruction::with_movsq(64, Register::None, rep),
+        ("cmps", MemSize::Byte) => Instruction::with_cmpsb(64, Register::None, rep),
+        ("cmps", MemSize::Word) => Instruction::with_cmpsw(64, Register::None, rep),
+        ("cmps", MemSize::Dword) => Instruction::with_cmpsd(64, Register::None, rep),
+        ("cmps", _) => Instruction::with_cmpsq(64, Register::None, rep),
+        ("stos", MemSize::Byte) => Instruction::with_stosb(64, rep),
+        ("stos", MemSize::Word) => Instruction::with_stosw(64, rep),
+        ("stos", MemSize::Dword) => Instruction::with_stosd(64, rep),
+        ("stos", _) => Instruction::with_stosq(64, rep),
+        ("lods", MemSize::Byte) => Instruction::with_lodsb(64, Register::None, rep),
+        ("lods", MemSize::Word) => Instruction::with_lodsw(64, Register::None, rep),
+        ("lods", MemSize::Dword) => Instruction::with_lodsd(64, Register::None, rep),
+        ("lods", _) => Instruction::with_lodsq(64, Register::None, rep),
+        ("scas", MemSize::Byte) => Instruction::with_scasb(64, rep),
+        ("scas", MemSize::Word) => Instruction::with_scasw(64, rep),
+        ("scas", MemSize::Dword) => Instruction::with_scasd(64, rep),
+        _ => Instruction::with_scasq(64, rep),
+    };
+    Some(ins.map_err(|e| e.to_string()))
+}
+
 /// Point label references at placeholders and work out the final-bytes check.
 fn finish(
     mut ins: Instruction,
@@ -467,10 +542,8 @@ fn mem_addr(
         let d = v.value;
         let d32 = if (-TWO_GIB..TWO_GIB << 1).contains(&d) {
             d as i64 as i32
-        } else if (i64::MIN as i128..=u64::MAX as i128).contains(&d) && (d as i64) as i32 as i64 == d as i64 {
-            d as i64 as i32
         } else {
-            return Err(format!("displacement {d:#x} doesn't fit in 32 bits"));
+            return Err("displacement out of range".into());
         };
         return Ok(Addr::Regs {
             base: base.unwrap_or(Register::None),

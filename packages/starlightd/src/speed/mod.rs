@@ -15,6 +15,7 @@ use crate::tracer::Tracer;
 use crate::{asm, maps, mem, modules, remote};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use targets::HookTarget;
 use templates as tpl;
 
@@ -23,6 +24,10 @@ pub const MAGIC: [u8; 8] = *b"STLSPD01";
 /// Accepted speeds (D17). 1.0 keeps the hooks (a speed like any other).
 pub const MIN_SPEED: f64 = 0.1;
 pub const MAX_SPEED: f64 = 10.0;
+/// Session-end glide (M4 D3): the longest the daemon waits for every used clock to land on real
+/// time before reverting the hooks anyway, and how often it checks.
+pub const LAND_MAX_MS: u64 = 2000;
+pub const LAND_POLL_MS: u64 = 10;
 const PAGE: u64 = 0x1000;
 const RWX: i32 = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
 /// Orphan search: page starts are checked in rwx anonymous mappings up to this size, so a state
@@ -47,6 +52,17 @@ pub enum Kind {
     Gettimeofday,
     /// `gettimeofday` reached through GOT slots; the hook calls `__vdso_gettimeofday` (D16).
     GettimeofdayGot,
+    /// Absolute-deadline waits (M4 D2, native only): the hook turns the game-time deadline into
+    /// real time before the call. `clock_nanosleep(id, flags, req, rem)`, only with TIMER_ABSTIME.
+    ClockNanosleep,
+    /// `pthread_cond_timedwait(cond, mutex, abstime)`: the cond's own clock (glibc layout).
+    CondTimedwait,
+    /// `pthread_cond_clockwait(cond, mutex, id, abstime)`.
+    CondClockwait,
+    /// `sem_timedwait(sem, abstime)`: REALTIME.
+    SemTimedwait,
+    /// `sem_clockwait(sem, id, abstime)`.
+    SemClockwait,
 }
 
 impl Kind {
@@ -61,8 +77,18 @@ impl Kind {
             "clock_gettime" => Kind::ClockGettime,
             "gettimeofday" => Kind::Gettimeofday,
             "gettimeofday_got" => Kind::GettimeofdayGot,
+            "clock_nanosleep" => Kind::ClockNanosleep,
+            "cond_timedwait" => Kind::CondTimedwait,
+            "cond_clockwait" => Kind::CondClockwait,
+            "sem_timedwait" => Kind::SemTimedwait,
+            "sem_clockwait" => Kind::SemClockwait,
             _ => return None,
         })
+    }
+
+    /// An absolute-deadline wait (`templates::wait_hook_source`), not a clock read.
+    pub fn is_wait(self) -> bool {
+        matches!(self, Kind::ClockNanosleep | Kind::CondTimedwait | Kind::CondClockwait | Kind::SemTimedwait | Kind::SemClockwait)
     }
 }
 
@@ -289,9 +315,10 @@ impl Speeds {
             e
         };
         let (map, patches, en) = (self.map.clone(), self.patches.clone(), entry.clone());
-        // Kind `Patch`, registered before any hook: the hooks' own patch teardowns are newer, so
-        // they run first, and this one then keeps in the record whatever they couldn't restore.
-        let token = self.owner.add(Some(handle), Teardown::Patch, Box::new(move || teardown(&map, &patches, handle, &en)));
+        // Kind `Speed`, which runs before every `Patch` teardown: the clock lands while the hooks
+        // are still in, then this reverts them itself (their own teardowns find them gone) and
+        // keeps in the record whatever it couldn't restore.
+        let token = self.owner.add(Some(handle), Teardown::Speed, Box::new(move || teardown(&map, &patches, handle, &en)));
         let mut e = entry.lock().unwrap();
         if !e.dead {
             e.token = Some(token);
@@ -312,6 +339,16 @@ impl Speeds {
 
     /// An inline hook. Its original bytes are recorded before the entry jump is written.
     fn install_inline(&self, handle: u32, t: &Arc<Target>, tracer: &Arc<Tracer>, state: u64, e: &mut Entry, tg: &HookTarget) -> Result<(), HookError> {
+        let body: Box<dyn Fn(u64) -> String + '_> = if tg.kind.is_wait() {
+            // The hook reads the real time of the deadline's clock from the vDSO: libc's
+            // clock_gettime is hooked and would return game time.
+            let (Abi::Sysv, Some(vdso_clock)) = (tg.abi, tg.original) else {
+                return Err(HookError::Skipped("absolute-time waits need a SysV target and __vdso_clock_gettime".into()));
+            };
+            Box::new(move |tramp| tpl::wait_hook_source(tg.kind, state, tg.slot, tramp, vdso_clock))
+        } else {
+            Box::new(|tramp| tpl::hook_source(tg.kind, tg.abi, state, tg.slot, tramp))
+        };
         let original = hook::entry_bytes(t, tg.address)?;
         if original.len() > tpl::RECOVERY_ORIGINAL_MAX {
             return Err(HookError::Skipped(format!(
@@ -321,7 +358,6 @@ impl Speeds {
             )));
         }
         record_push(t, state, e, tg.address, &original)?;
-        let body = |tramp| tpl::hook_source(tg.kind, tg.abi, state, tg.slot, tramp);
         match hook::install(t, tracer, &self.patches, handle, tg.address, &body) {
             Ok(h) => {
                 // Tracked first: a live hook must always be reverted at session end.
@@ -353,7 +389,7 @@ impl Speeds {
         if tg.got_slots.is_empty() {
             return Err(HookError::Skipped(format!("no loaded module calls {} through its GOT", tg.name)));
         }
-        let page = remote::alloc(t, PAGE, None, RWX)?;
+        let page = remote::alloc_own(t, PAGE, None, RWX)?;
         let src = tpl::hook_source(tg.kind, tg.abi, state, tg.slot, original);
         let code = asm::assemble(&src, page, &|_| None).map_err(|err| RpcError::assemble_failed(err.to_string()))?;
         mem::write_bytes(t, page, &code.bytes)?;
@@ -393,18 +429,32 @@ impl Speeds {
     }
 }
 
-/// Session end for `handle`: revert its hooks (newest first; one that fails doesn't stop the
-/// rest), keep in the recovery record only what is still not restored, and let orphan recovery
-/// see the page again.
+/// Session end for `handle`: land the game's clocks on real time (D3; skipped once the game has
+/// exited), revert its hooks (newest first; one that fails doesn't stop the rest), keep in the
+/// recovery record only what is still not restored, and let orphan recovery see the page again.
 fn teardown(map: &Map, patches: &Patches, handle: u32, entry: &Arc<Mutex<Entry>>) {
     let mut e = entry.lock().unwrap();
     if !e.dead {
         e.dead = true;
+        if e.state.is_some() && !e.installed.is_empty() && !e.target.exited() {
+            match land(&mut e) {
+                Ok(Landed::All) => {}
+                Ok(Landed::TimedOut(n)) => eprintln!("starlightd: speed landing timed out with {n} clock(s) not back on real time"),
+                Err(err) => {
+                    if !e.target.exited() {
+                        eprintln!("starlightd: speed landing failed: {}", err.message);
+                    }
+                }
+            }
+        }
+        let gone = e.target.exited();
         for i in std::mem::take(&mut e.installed).iter().rev() {
             match patches.revert(i.patch_id, false) {
                 // -32009: the patch's own session teardown already restored it.
                 Ok(()) => {}
                 Err(err) if err.code == -32009 => {}
+                // The game exited: there is nothing left to restore.
+                Err(_) if gone => {}
                 // E.g. -32014: the game changed those bytes since. Left for orphan recovery.
                 Err(err) => eprintln!("starlightd: speed hook at {:#x} not restored: {}", i.addr, err.message),
             }
@@ -428,6 +478,54 @@ fn teardown(map: &Map, patches: &Patches, handle: u32, entry: &Arc<Mutex<Entry>>
     }
 }
 
+/// How a session-end landing ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landed {
+    /// Every used clock is on real time.
+    All,
+    /// `LAND_MAX_MS` passed (or the game exited) with this many used clocks still off real time.
+    TimedOut(u32),
+}
+
+/// The session-end glide (D3): write the `LANDING` sentinel (a new generation, the land mask
+/// cleared first), then wait until every used slot (gen ≠ 0, read from the page each time, as
+/// slots may start being used meanwhile) has set its bit, polling every `LAND_POLL_MS` for at most
+/// `LAND_MAX_MS`. A used slot no clock reads again never lands: it counts as not landed.
+fn land(e: &mut Entry) -> Result<Landed, RpcError> {
+    let (t, state) = (e.target.clone(), e.state.expect("land needs a state page"));
+    mem::write_bytes(&t, state + tpl::OFF_LAND_MASK, &0u32.to_le_bytes())?;
+    e.gen = write_speed(&t, &*t.tracer()?, state, tpl::LANDING, e.gen)?;
+    let deadline = Instant::now() + Duration::from_millis(LAND_MAX_MS);
+    loop {
+        let missing = unlanded(&t, state)?;
+        if missing == 0 {
+            return Ok(Landed::All);
+        }
+        if Instant::now() >= deadline || t.exited() {
+            return Ok(Landed::TimedOut(missing));
+        }
+        std::thread::sleep(Duration::from_millis(LAND_POLL_MS));
+    }
+}
+
+/// How many used slots (gen ≠ 0) of the state page at `state` have no bit in the land mask.
+fn unlanded(t: &Target, state: u64) -> Result<u32, RpcError> {
+    let mask = u32::from_le_bytes(mem::read_bytes(t, state + tpl::OFF_LAND_MASK, 4)?.try_into().unwrap());
+    let slots = mem::read_bytes(t, state + tpl::OFF_SLOTS, (tpl::SLOT_SIZE * tpl::SLOT_COUNT as u64) as usize)?;
+    Ok(count_unlanded(&slots, mask))
+}
+
+/// `unlanded` on the slots' bytes: used slots whose bit is clear.
+fn count_unlanded(slots: &[u8], mask: u32) -> u32 {
+    (0..tpl::SLOT_COUNT)
+        .filter(|&n| {
+            let at = (n as u64 * tpl::SLOT_SIZE + tpl::SLOT_GEN) as usize;
+            let gen = u32::from_le_bytes(slots[at..at + 4].try_into().unwrap());
+            gen != 0 && mask & (1 << n) == 0
+        })
+        .count() as u32
+}
+
 /// Write `speed`, then the next generation, in one write with the game stopped (so no thread
 /// reads a torn value). Returns the new generation (never 0: 0 marks unused slots).
 fn write_speed(t: &Target, tracer: &Tracer, state: u64, speed: f64, gen: u32) -> Result<u32, RpcError> {
@@ -440,7 +538,7 @@ fn write_speed(t: &Target, tracer: &Tracer, state: u64, speed: f64, gen: u32) ->
 
 /// A new state page: magic, zeroed state (an empty record), the shared routines.
 fn new_state_page(t: &Target) -> Result<u64, RpcError> {
-    let page = remote::alloc(t, STATE_PAGE_SIZE, None, RWX)?;
+    let page = remote::alloc_own(t, STATE_PAGE_SIZE, None, RWX)?;
     let image = state_image(page).and_then(|img| mem::write_bytes(t, page, &img));
     if let Err(err) = image {
         // Nothing can have run in it yet.
@@ -599,6 +697,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_used_slots_need_to_land() {
+        let mut slots = vec![0u8; (tpl::SLOT_SIZE * tpl::SLOT_COUNT as u64) as usize];
+        let use_slot = |slots: &mut Vec<u8>, n: u64| {
+            let at = (n * tpl::SLOT_SIZE + tpl::SLOT_GEN) as usize;
+            slots[at..at + 4].copy_from_slice(&7u32.to_le_bytes());
+        };
+        assert_eq!(count_unlanded(&slots, 0), 0, "nothing used: landed");
+        use_slot(&mut slots, 1);
+        use_slot(&mut slots, 8);
+        use_slot(&mut slots, 31);
+        assert_eq!(count_unlanded(&slots, 0), 3);
+        assert_eq!(count_unlanded(&slots, 1 << 1 | 1 << 2), 2, "an unused slot's bit doesn't count");
+        assert_eq!(count_unlanded(&slots, 1 << 1 | 1 << 8 | 1 << 31), 0);
+        // The sentinel is no speed the RPC accepts.
+        assert!(!(MIN_SPEED..=MAX_SPEED).contains(&tpl::LANDING));
+    }
+
+    #[test]
     fn kind_and_abi_names() {
         for (s, k) in [
             ("qpc", Kind::Qpc),
@@ -608,6 +724,11 @@ mod tests {
             ("clock_gettime", Kind::ClockGettime),
             ("gettimeofday", Kind::Gettimeofday),
             ("gettimeofday_got", Kind::GettimeofdayGot),
+            ("clock_nanosleep", Kind::ClockNanosleep),
+            ("cond_timedwait", Kind::CondTimedwait),
+            ("cond_clockwait", Kind::CondClockwait),
+            ("sem_timedwait", Kind::SemTimedwait),
+            ("sem_clockwait", Kind::SemClockwait),
         ] {
             assert_eq!(Kind::parse(s), Some(k));
         }
@@ -622,7 +743,7 @@ mod tests {
         assert_eq!(img.len() as u64, STATE_PAGE_SIZE);
         assert_eq!(&img[..8], b"STLSPD01");
         assert!(img[8..tpl::OFF_CODE as usize].iter().all(|&b| b == 0), "state starts zeroed");
-        for off in [tpl::OFF_SCALE, tpl::OFF_GUARD_ENTER, tpl::OFF_GUARD_LEAVE, tpl::OFF_SCALE32] {
+        for off in [tpl::OFF_SCALE, tpl::OFF_GUARD_ENTER, tpl::OFF_GUARD_LEAVE, tpl::OFF_SCALE32, tpl::OFF_UNSCALE] {
             assert_ne!(img[off as usize], 0, "no routine at {off:#x}");
         }
     }

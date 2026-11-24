@@ -6,11 +6,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 #[test]
-fn hello_reports_protocol_2() {
+fn hello_reports_protocol_3() {
     let d = Daemon::start();
     let mut c = d.client();
     let v = c.call("hello", json!({})).unwrap();
-    assert_eq!(v["protocol"], 2);
+    assert_eq!(v["protocol"], 3);
     assert!(v["capabilities"].as_array().unwrap().iter().any(|x| x == "read"));
 }
 

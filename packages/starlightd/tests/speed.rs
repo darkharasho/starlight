@@ -488,3 +488,368 @@ fn qpc_success_follows_each_functions_return_convention() {
     assert_rate(t.pid, hex(&t.addr("g_w_ntqpc")), 1e7, 1.8, 2.2, "NtQueryPerformanceCounter (STATUS_SUCCESS) at 2x");
     assert_rate(t.pid, hex(&t.addr("g_w_qpc_fail")), 1e7, 0.9, 1.1, "a failed QueryPerformanceCounter at 2x");
 }
+
+// ---- Absolute-time waits (M4 Task 3, D2): a deadline in game time is waited for in real time.
+
+/// The wait functions the native targets hook, with the target's address listing for each.
+const WAITS: [(&str, &str); 5] = [
+    ("clock_nanosleep", "libc_clock_nanosleep"),
+    ("pthread_cond_timedwait", "libc_pthread_cond_timedwait"),
+    ("pthread_cond_clockwait", "libc_pthread_cond_clockwait"),
+    ("sem_timedwait", "libc_sem_timedwait"),
+    ("sem_clockwait", "libc_sem_clockwait"),
+];
+
+/// The target's `flag` thread waits until "now + 20 ms" (now read through the hooked
+/// `clock_gettime`) with the hooked wait `hook`, and counts into `counter`: 50 per real second
+/// at 1.0, 100 at 2.0, 25 at 0.5 (each ±25%). Without the wait hooks 2.0 stalls (the deadline is
+/// ahead of real time by all the time gained) and 0.5 busy-loops (it is always in the past).
+fn abstime_wait_follows_game_speed(flag: &str, counter: &str, hook: &str) {
+    let _serial = serial();
+    let t = Target::spawn(&[flag, "--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let n = hex(&t.addr(counter));
+    settle();
+    assert_rate(t.pid, n, 1.0, 37.5, 62.5, &format!("{counter} at 1x (unhooked)"));
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, hook).as_deref(), Some("hooked"), "{r}");
+    settle();
+    assert_rate(t.pid, n, 1.0, 75.0, 125.0, &format!("{counter} at 2x"));
+    speed_set(&mut c, &h, 0.5).unwrap();
+    settle();
+    assert_rate(t.pid, n, 1.0, 18.75, 31.25, &format!("{counter} at 0.5x"));
+    speed_set(&mut c, &h, 1.0).unwrap();
+    settle();
+    assert_rate(t.pid, n, 1.0, 37.5, 62.5, &format!("{counter} at 1x (hooked)"));
+}
+
+#[test]
+fn abstime_sleep_follows_game_speed() {
+    abstime_wait_follows_game_speed("--abs-sleep", "g_abs_sleeps", "clock_nanosleep");
+}
+
+#[test]
+fn abstime_cond_wait_monotonic_follows_game_speed() {
+    // The condvar's clock (MONOTONIC here) is read from glibc's internal layout.
+    abstime_wait_follows_game_speed("--abs-cond", "g_abs_conds", "pthread_cond_timedwait");
+}
+
+#[test]
+fn abstime_cond_wait_realtime_follows_game_speed() {
+    abstime_wait_follows_game_speed("--abs-cond-rt", "g_abs_conds_rt", "pthread_cond_timedwait");
+}
+
+#[test]
+fn abstime_sem_wait_follows_game_speed() {
+    abstime_wait_follows_game_speed("--abs-sem", "g_abs_sems", "sem_timedwait");
+}
+
+fn proc_i32(pid: i32, addr: u64) -> i32 {
+    i32::from_le_bytes(proc_read(pid, addr, 4).try_into().unwrap())
+}
+
+#[test]
+fn relative_sleeps_are_untouched() {
+    // usleep(50 ms) reaches clock_nanosleep without TIMER_ABSTIME: a relative wait is already
+    // real time, so it stays 50 ms (D2 only translates absolute deadlines).
+    let _serial = serial();
+    let t = Target::spawn(&["--writer", "--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, "clock_nanosleep").as_deref(), Some("hooked"), "{r}");
+    settle();
+    let counter = hex(&t.addr("g_counter"));
+    let (v0, t0) = (proc_i32(t.pid, counter), Instant::now());
+    std::thread::sleep(Duration::from_secs(1));
+    let (v1, t1) = (proc_i32(t.pid, counter), Instant::now());
+    let rate = (v1 - v0) as f64 / (t1 - t0).as_secs_f64();
+    eprintln!("measured rate of g_counter at 2x: {rate:.3}/s");
+    assert!((15.0..=25.0).contains(&rate), "usleep(50 ms) loop runs {rate:.3}/s at 2x, expected about 20");
+    assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 1.8, 2.2, "CLOCK_MONOTONIC at 2x");
+}
+
+#[test]
+fn wait_hooks_are_listed_and_restored_on_detach() {
+    let _serial = serial();
+    let t = Target::spawn(&["--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let before: Vec<(u64, Vec<u8>)> = WAITS
+        .iter()
+        .map(|(_, a)| {
+            let f = hex(&t.addr(a));
+            (f, proc_read(t.pid, f, 16))
+        })
+        .collect();
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    for ((name, _), (f, orig)) in WAITS.iter().zip(&before) {
+        assert_eq!(hook_status(&r, name).as_deref(), Some("hooked"), "{name}: {r}");
+        // The default version, the one dlsym (and a game's linker) picks, is the one hooked.
+        let listed = r["hooks"].as_array().unwrap().iter().find(|x| x["name"] == *name).unwrap()["address"].clone();
+        assert_eq!(hex(listed.as_str().unwrap()), *f, "{name}: {r}");
+        assert_ne!(proc_read(t.pid, *f, 16), *orig, "{name} was not hooked");
+    }
+    c.call_timeout("detach", json!({"handle": h}), Duration::from_secs(10)).unwrap();
+    for ((name, _), (f, orig)) in WAITS.iter().zip(&before) {
+        assert_eq!(proc_read(t.pid, *f, 16), *orig, "detach did not restore {name}");
+    }
+    assert!(wait_until(Duration::from_secs(1), || tracer_pid(t.pid) == 0), "still traced after detach");
+}
+
+#[test]
+fn many_waiting_threads_do_not_exhaust_the_nesting_table() {
+    // 80 threads blocked in pthread_cond_timedwait at once: more than the 64 nesting entries. The
+    // wait hooks hold an entry only while converting the deadline, never across the wait, so the
+    // clock hooks still find a free entry and scale.
+    let _serial = serial();
+    let t = Target::spawn(&["--abs-cond-threads", "80", "--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, "pthread_cond_timedwait").as_deref(), Some("hooked"), "{r}");
+    settle();
+    assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 1.7, 2.3, "CLOCK_MONOTONIC at 2x with 80 waiting threads");
+    // And the waiters keep waking (80 threads × 100/s at 2x; a stall would be near 0).
+    let waits = rate(t.pid, hex(&t.addr("g_abs_conds")), 1.0);
+    eprintln!("measured rate of g_abs_conds (80 threads) at 2x: {waits:.1}/s");
+    assert!(waits > 6000.0, "80 waiting threads wake {waits:.1}/s at 2x, expected about 8000");
+}
+
+#[test]
+fn abstime_wait_on_a_gettimeofday_deadline_follows_game_speed() {
+    // gettimeofday + timeout, waited for on a REALTIME condvar: the game never calls
+    // clock_gettime(REALTIME), so the wait converts through gettimeofday's slot.
+    abstime_wait_follows_game_speed("--abs-cond-tod", "g_abs_conds_tod", "pthread_cond_timedwait");
+}
+
+#[test]
+fn a_late_realtime_reader_keeps_gettimeofday_deadlines_right() {
+    // gettimeofday runs at 2x for 1.5 s before anything reads clock_gettime(REALTIME). REALTIME
+    // then starts from gettimeofday's game time (one clock), so the REALTIME wait, now converted
+    // through REALTIME's slot, still gets gettimeofday's deadline right: about 100/s, not a
+    // stall on the 0.75 s gained.
+    let _serial = serial();
+    let t = Target::spawn(&["--abs-cond-tod", "--late-realtime", "1500"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, "pthread_cond_timedwait").as_deref(), Some("hooked"), "{r}");
+    let late = hex(&t.addr("g_late_rt"));
+    assert!(wait_until(Duration::from_secs(5), || proc_i64(t.pid, late) != 0), "REALTIME was never read");
+    settle();
+    let n = hex(&t.addr("g_abs_conds_tod"));
+    assert_rate(t.pid, n, 1.0, 75.0, 125.0, "g_abs_conds_tod at 2x after REALTIME's first read");
+    // And the two clocks agree: REALTIME's game time is gettimeofday's (to within a few 20 ms steps).
+    let ahead = proc_i64(t.pid, late) - std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64;
+    assert!(ahead > 1_000_000_000, "REALTIME is only {ahead} ns ahead of real time; it should carry gettimeofday's gain");
+}
+
+#[test]
+fn realtime_and_gettimeofday_change_speed_together() {
+    // Both clocks read at 2.0. Then, with REALTIME unread (and the REALTIME waiter idle), the speed
+    // goes to 1.0 and only gettimeofday is read for 1.2 s. REALTIME must still agree with
+    // gettimeofday when it is read again (rebased together, not on its own next read, which would
+    // leave it 1.2 s ahead for good), and a REALTIME wait on a gettimeofday deadline counts at
+    // 1.0's rate instead of busy-looping on a deadline already past.
+    let _serial = serial();
+    let t = Target::spawn(&["--abs-cond-tod", "--pair-clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let set = |c: &mut Client, name: &str, on: bool| {
+        c.call("write", json!({"handle": h, "address": t.addr(name), "bytes": if on { "01000000" } else { "00000000" }})).unwrap();
+    };
+    speed_set(&mut c, &h, 2.0).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    set(&mut c, "g_pair_rt_on", false);
+    set(&mut c, "g_abs_tod_on", false);
+    std::thread::sleep(Duration::from_millis(100));
+    speed_set(&mut c, &h, 1.0).unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    set(&mut c, "g_pair_rt_on", true);
+    settle();
+    let (tod, rt) = (hex(&t.addr("g_pair_tod_us")), hex(&t.addr("g_pair_rt_ns")));
+    // Stored one right after the other; our two reads may straddle one 20 ms step.
+    let gap_ms = (proc_i64(t.pid, rt) - proc_i64(t.pid, tod) * 1000) as f64 / 1e6;
+    eprintln!("REALTIME - gettimeofday after the late read: {gap_ms:.3} ms");
+    assert!(gap_ms.abs() < 25.0, "REALTIME and gettimeofday differ by {gap_ms:.3} ms after a speed change");
+    set(&mut c, "g_abs_tod_on", true);
+    settle();
+    assert_rate(t.pid, hex(&t.addr("g_abs_conds_tod")), 1.0, 37.5, 62.5, "g_abs_conds_tod at 1x after the late REALTIME read");
+}
+
+// ---- Session-end landing (M4 Task 4, D3): the clock glides back onto real time before the hooks
+// are removed, so detach neither steps it back nor forward.
+
+/// CLOCK_MONOTONIC now, as the test (never hooked) sees it, in ns.
+fn mono_now() -> i64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+}
+
+/// Detach `h` while a thread samples the i64 at `addr` every 20 ms, from just before the detach
+/// until 200 ms after it returned. Returns the samples and how long the detach took.
+fn detach_sampling(c: &mut Client, h: &Value, pid: i32, addr: u64) -> (Vec<i64>, Duration) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let stop = Arc::new(AtomicBool::new(false));
+    let s = stop.clone();
+    let sampler = std::thread::spawn(move || {
+        let mut v = vec![proc_i64(pid, addr)];
+        while !s.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(20));
+            v.push(proc_i64(pid, addr));
+        }
+        v
+    });
+    let t0 = Instant::now();
+    c.call_timeout("detach", json!({"handle": h}), Duration::from_secs(10)).unwrap();
+    let took = t0.elapsed();
+    std::thread::sleep(Duration::from_millis(200));
+    stop.store(true, Ordering::Relaxed);
+    (sampler.join().unwrap(), took)
+}
+
+#[test]
+fn detach_after_speed_up_never_turns_monotonic_time_back() {
+    let _serial = serial();
+    let t = Target::spawn(&["--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let f = hex(&t.addr("libc_clock_gettime"));
+    let before = proc_read(t.pid, f, 16);
+    speed_set(&mut c, &h, 2.0).unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    let (samples, took) = detach_sampling(&mut c, &h, t.pid, hex(&t.addr("g_mono_ns")));
+    eprintln!("detach after 600 ms at 2x took {took:?}");
+    for w in samples.windows(2) {
+        assert!(w[1] >= w[0], "CLOCK_MONOTONIC went back across detach: {} -> {} ({} ns)", w[0], w[1], w[1] - w[0]);
+    }
+    assert!(took <= Duration::from_millis(1600), "detach took {took:?}");
+    assert_eq!(proc_read(t.pid, f, 16), before, "detach did not restore clock_gettime");
+}
+
+#[test]
+fn detach_after_slow_down_catches_up_without_a_jump() {
+    let _serial = serial();
+    let t = Target::spawn(&["--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    speed_set(&mut c, &h, 0.5).unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+    let (samples, took) = detach_sampling(&mut c, &h, t.pid, hex(&t.addr("g_mono_ns")));
+    eprintln!("detach after 1000 ms at 0.5x took {took:?}");
+    for w in samples.windows(2) {
+        assert!(w[1] >= w[0], "CLOCK_MONOTONIC went back across detach: {} -> {}", w[0], w[1]);
+        assert!(w[1] - w[0] <= 60_000_000, "CLOCK_MONOTONIC jumped {} ns across detach", w[1] - w[0]);
+    }
+    // Afterwards the game's clock is real time (stored right after it by raw syscall).
+    let (game, raw) = (proc_i64(t.pid, hex(&t.addr("g_mono_ns"))), proc_i64(t.pid, hex(&t.addr("g_mono_raw_ns"))));
+    assert!((game - raw).abs() <= 5_000_000, "CLOCK_MONOTONIC is {} ns off real time after detach", game - raw);
+    assert!(mono_now() - raw < 1_000_000_000, "the clocks thread stopped");
+}
+
+#[test]
+fn landing_is_bounded_when_the_gap_is_too_large() {
+    let _serial = serial();
+    let t = Target::spawn(&["--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let (f, got) = (hex(&t.addr("libc_clock_gettime")), hex(&t.addr("got_gettimeofday")));
+    settle(); // the GOT slot is bound
+    let (before, got_before) = (proc_read(t.pid, f, 16), proc_read(t.pid, got, 8));
+    speed_set(&mut c, &h, 4.0).unwrap();
+    // About 3 s ahead: more than the glide can close in LAND_MAX_MS.
+    std::thread::sleep(Duration::from_millis(1000));
+    let t0 = Instant::now();
+    c.call_timeout("detach", json!({"handle": h}), Duration::from_secs(10)).unwrap();
+    let took = t0.elapsed();
+    eprintln!("detach 3 s ahead took {took:?}");
+    assert!(took <= Duration::from_millis(2500), "detach took {took:?}");
+    assert_eq!(proc_read(t.pid, f, 16), before, "detach did not restore clock_gettime");
+    assert_eq!(proc_read(t.pid, got, 8), got_before, "detach did not restore the gettimeofday GOT slot");
+    assert!(wait_until(Duration::from_secs(1), || tracer_pid(t.pid) == 0), "still traced after detach");
+}
+
+#[test]
+fn game_exit_skips_landing() {
+    let _serial = serial();
+    let mut t = Target::spawn(&["--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    speed_set(&mut c, &h, 2.0).unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    t.kill();
+    let t0 = Instant::now();
+    // The handle may already be gone (process_exited): either answer is fine, only the time counts.
+    let _ = c.call_timeout("detach", json!({"handle": h}), Duration::from_secs(10));
+    let took = t0.elapsed();
+    eprintln!("detach of an exited game took {took:?}");
+    assert!(took <= Duration::from_millis(300), "detach of an exited game took {took:?}");
+}
+
+#[test]
+fn abstime_waits_stay_sane_while_landing() {
+    // While the clock glides back (0.5x, clamped to real time once landed), clock_nanosleep
+    // deadlines keep converting: the waiter never stalls on a deadline the glide pushed away.
+    let _serial = serial();
+    let t = Target::spawn(&["--abs-sleep", "--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, "clock_nanosleep").as_deref(), Some("hooked"), "{r}");
+    std::thread::sleep(Duration::from_millis(600));
+    let (samples, took) = detach_sampling(&mut c, &h, t.pid, hex(&t.addr("g_abs_sleeps")));
+    eprintln!("detach with an abstime sleeper took {took:?}");
+    // 20 ms apart: 50 samples without progress is a 1 s gap.
+    let mut still = 0;
+    for w in samples.windows(2) {
+        still = if w[1] > w[0] { 0 } else { still + 1 };
+        assert!(still < 50, "g_abs_sleeps made no progress for 1 s while landing: {samples:?}");
+    }
+    assert!(samples.last() > samples.first(), "{samples:?}");
+}
+
+#[test]
+fn a_slot_idle_across_a_speed_change_stays_continuous() {
+    // REALTIME is read once, then left idle while the speed goes 2 → 1 (only gettimeofday is
+    // read). Its next reading continues from where it was: at most 2x the real time between.
+    let _serial = serial();
+    let t = Target::spawn(&["--pair-clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let set = |c: &mut Client, on: bool| {
+        c.call("write", json!({"handle": h, "address": t.addr("g_pair_rt_on"), "bytes": if on { "01000000" } else { "00000000" }})).unwrap();
+    };
+    let rt = hex(&t.addr("g_pair_rt_ns"));
+    speed_set(&mut c, &h, 2.0).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    // The last REALTIME store happens at most one 20 ms step before the write.
+    let t0 = Instant::now() - Duration::from_millis(25);
+    set(&mut c, false);
+    std::thread::sleep(Duration::from_millis(50));
+    let rt0 = proc_i64(t.pid, rt);
+    speed_set(&mut c, &h, 1.0).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    set(&mut c, true);
+    assert!(wait_until(Duration::from_secs(2), || proc_i64(t.pid, rt) != rt0), "REALTIME was not read again");
+    let elapsed = t0.elapsed().as_nanos() as i64;
+    let step = proc_i64(t.pid, rt) - rt0;
+    eprintln!("REALTIME step across the idle speed change: {step} ns over {elapsed} ns");
+    assert!(step >= 0, "REALTIME went back {step} ns");
+    assert!(step <= elapsed * 2 + 5_000_000, "REALTIME stepped {step} ns over {elapsed} ns of real time");
+}

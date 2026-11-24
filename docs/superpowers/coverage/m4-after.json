@@ -1,0 +1,134 @@
+{
+  "compiler": "native",
+  "generatedAt": "2026-11-24T03:25:35.642Z",
+  "tables": {
+    "total": 390,
+    "native": 35,
+    "pct": 9
+  },
+  "records": {
+    "total": 39113,
+    "native": 8277,
+    "pct": 21.2
+  },
+  "byCode": [
+    {
+      "code": "lua:block",
+      "tables": 259,
+      "records": 1151
+    },
+    {
+      "code": "sym:unresolved",
+      "tables": 192,
+      "records": 9577
+    },
+    {
+      "code": "lua:table-script",
+      "tables": 152,
+      "records": 0
+    },
+    {
+      "code": "asm:error",
+      "tables": 92,
+      "records": 479
+    },
+    {
+      "code": "aa:name",
+      "tables": 79,
+      "records": 322
+    },
+    {
+      "code": "aa:parse",
+      "tables": 70,
+      "records": 255
+    },
+    {
+      "code": "value:type",
+      "tables": 53,
+      "records": 7453
+    },
+    {
+      "code": "aa:assert",
+      "tables": 47,
+      "records": 126
+    },
+    {
+      "code": "addr:expression",
+      "tables": 45,
+      "records": 10936
+    },
+    {
+      "code": "aa:luacall",
+      "tables": 41,
+      "records": 53
+    },
+    {
+      "code": "aa:aobscanregion",
+      "tables": 33,
+      "records": 179
+    },
+    {
+      "code": "aa:readmem",
+      "tables": 29,
+      "records": 145
+    },
+    {
+      "code": "sym:mono",
+      "tables": 12,
+      "records": 62
+    },
+    {
+      "code": "aa:pointer-origin",
+      "tables": 6,
+      "records": 28
+    },
+    {
+      "code": "aa:no-enable",
+      "tables": 4,
+      "records": 23
+    },
+    {
+      "code": "aa:unknown-command",
+      "tables": 4,
+      "records": 12
+    },
+    {
+      "code": "aa:disable-write",
+      "tables": 3,
+      "records": 20
+    },
+    {
+      "code": "aa:reassemble",
+      "tables": 3,
+      "records": 4
+    },
+    {
+      "code": "aa:createthread",
+      "tables": 2,
+      "records": 7
+    },
+    {
+      "code": "aa:fullaccess",
+      "tables": 2,
+      "records": 2
+    },
+    {
+      "code": "table:empty",
+      "tables": 2,
+      "records": 0
+    },
+    {
+      "code": "aa:alloc-size",
+      "tables": 1,
+      "records": 1
+    },
+    {
+      "code": "aa:try",
+      "tables": 1,
+      "records": 1
+    }
+  ],
+  "failed": 10,
+  "selected": 400,
+  "missing": 0
+}

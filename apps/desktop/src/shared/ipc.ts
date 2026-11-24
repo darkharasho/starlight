@@ -184,7 +184,7 @@ export type StarlightEvent =
   | { type: 'session:game-exited';  sessionId: string }
   /** Who runs the game's cheats changed (Cheat Engine or starlightd). */
   | { type: 'userCheats:changed'; key: string }
-  | { type: 'session:engine'; sessionId: string; engine: 'ce' | 'starlightd'; holders: ('agent' | 'user-cheats')[] }
+  | { type: 'session:engine'; sessionId: string; engine: 'ce' | 'starlightd'; mode: SessionMode; holders: SessionHolder[] }
   /** The agent session changed (status, approval, live changes, activity). */
   | { type: 'agent:state'; state: AgentSnapshot }
   /** Open the agent view (an attach was approved, or a notification was clicked). */
@@ -278,6 +278,19 @@ export interface CeSessionStartRequest {
   game?: { id: string; name: string; steamAppId?: number | null } | undefined;
 }
 
+/** Who runs a session's table: Cheat Engine, Starlight's own engine, or nobody (paused). */
+export type SessionMode = 'ce' | 'native' | 'paused';
+
+/** Who holds a game on starlightd (`table` = a native table session). */
+export type SessionHolder = 'agent' | 'user-cheats' | 'table';
+
+/** Where a table was sent to run, and the first reason when that's Cheat Engine. */
+export interface RouteSummary {
+  engine: 'native' | 'ce';
+  codes: Record<string, number>;
+  first: { recordId: number | null; name: string; code: string; detail: string; copy: string } | null;
+}
+
 export type CeSessionStartResult =
   | ({
       ok: true; sessionId: string; proton: boolean; attached: boolean; needsPicker?: boolean;
@@ -285,9 +298,13 @@ export type CeSessionStartResult =
       running: boolean;
       tables: CeTable[];
       process?: { pid: number; name?: string | undefined } | undefined;
-      /** Who runs the game's cheats; starlightd means the table is paused. */
+      /** Who runs the game's cheats (derived from `mode`). */
       engine: 'ce' | 'starlightd';
-      holders: ('agent' | 'user-cheats')[];
+      /** Who runs the game's table. */
+      mode: SessionMode;
+      /** Where the loaded table was routed; null without a table. */
+      route: RouteSummary | null;
+      holders: SessionHolder[];
     } & CeSessionTableState)
   | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'ptrace' | 'anti-cheat' | 'unknown' };
 
@@ -393,6 +410,8 @@ export interface AppPreferences {
   autoAttachOnDetect: boolean;
   /** In-game hotkeys for cheats (table-defined, user-set and auto-assigned). */
   cheatHotkeys: boolean;
+  /** Run tables on Starlight's engine when every record compiles (off: always Cheat Engine). */
+  nativeTables: boolean;
 }
 
 export interface ManualGame {

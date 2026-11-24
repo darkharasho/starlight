@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>10</ID>
+      <Description>"Get player"</Description>
+      <Options moHideChildren="1"/>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+aobscanmodule(PLAYER_AOB,target,48 8B 43 18 8B 40 10)
+globalalloc(pPlayer,8)
+alloc(newmem,$1000,PLAYER_AOB)
+label(return)
+
+newmem:
+  mov [pPlayer],rbx
+  mov rax,[rbx+18]
+  mov eax,[rax+10]
+  jmp return
+
+PLAYER_AOB:
+  jmp newmem
+  nop 2
+return:
+
+[DISABLE]
+PLAYER_AOB:
+  db 48 8B 43 18 8B 40 10
+dealloc(newmem)
+</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>11</ID>
+          <Description>"Health"</Description>
+          <VariableType>4 Bytes</VariableType>
+          <Address>[pPlayer]+10</Address>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>12</ID>
+          <Description>"Stats"</Description>
+          <VariableType>4 Bytes</VariableType>
+          <Address>[pPlayer]+40</Address>
+          <CheatEntries>
+            <CheatEntry>
+              <ID>13</ID>
+              <Description>"Strength"</Description>
+              <VariableType>4 Bytes</VariableType>
+              <Address>+8</Address>
+            </CheatEntry>
+          </CheatEntries>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>14</ID>
+          <Description>"Inf health"</Description>
+          <VariableType>Auto Assembler Script</VariableType>
+          <AssemblerScript>[ENABLE]
+pPlayer+10:
+  db 00
+[DISABLE]
+</AssemblerScript>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>20</ID>
+      <Description>"Uses an unknown name"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+alloc(newmem,$100,pEnemy)
+newmem:
+  mov rax,[pEnemy]
+  ret
+[DISABLE]
+dealloc(newmem)
+</AssemblerScript>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

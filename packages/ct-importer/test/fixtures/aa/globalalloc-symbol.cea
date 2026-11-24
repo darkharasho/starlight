@@ -1,0 +1,36 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Saves the player structure pointer so other records can read it.
+}
+
+[ENABLE]
+
+aobscanmodule(PLAYER_AOB,target,48 8B 43 18 8B 40 10)
+globalalloc(pPlayer,8)
+alloc(newmem,$1000,PLAYER_AOB)
+
+label(code)
+label(return)
+registersymbol(PLAYER_AOB)
+
+newmem:
+  mov [pPlayer],rbx
+
+code:
+  mov rax,[rbx+18]
+  mov eax,[rax+10]
+  jmp return
+
+PLAYER_AOB:
+  jmp newmem
+  nop 2
+return:
+
+[DISABLE]
+
+PLAYER_AOB:
+  db 48 8B 43 18 8B 40 10
+
+unregistersymbol(PLAYER_AOB)
+dealloc(newmem)

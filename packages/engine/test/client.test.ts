@@ -53,11 +53,11 @@ describe('EngineClient', () => {
   it('rejects a daemon with the wrong protocol', async () => {
     const d = await fakeDaemon(() => ({ result: { protocol: 1, version: 'x', capabilities: [] } }));
     cleanups.push(d.close);
-    await expect(connectEngine({ socketPath: d.socketPath })).rejects.toThrow(/protocol 1, expected 2/);
+    await expect(connectEngine({ socketPath: d.socketPath })).rejects.toThrow(/protocol 1, expected 3/);
   });
 
   it('exposes capabilities from hello', async () => {
-    const d = await fakeDaemon(() => ({ result: { protocol: 2, version: 'x', capabilities: ['read', 'scan'] } }));
+    const d = await fakeDaemon(() => ({ result: { protocol: 3, version: 'x', capabilities: ['read', 'scan'] } }));
     cleanups.push(d.close);
     const client = await connectEngine({ socketPath: d.socketPath });
     cleanups.push(() => client.close());
@@ -68,12 +68,19 @@ describe('EngineClient', () => {
     const engine = await startTestEngine();
     cleanups.push(engine.stop);
     expect(engine.client.capabilities).toContain('freeze');
+    expect(engine.client.capabilities).toContain('aob_exec');
+  });
+
+  it('rejects a protocol 2 daemon (no aob_exec)', async () => {
+    const d = await fakeDaemon(() => ({ result: { protocol: 2, version: 'x', capabilities: [] } }));
+    cleanups.push(d.close);
+    await expect(connectEngine({ socketPath: d.socketPath })).rejects.toThrow(/protocol 2, expected 3/);
   });
 
   it('maps -32001 to PermissionError', async () => {
     const d = await fakeDaemon((method) =>
       method === 'hello'
-        ? { result: { protocol: 2, version: 'x', capabilities: [] } }
+        ? { result: { protocol: 3, version: 'x', capabilities: [] } }
         : { error: { code: -32001, message: 'ptrace denied' } });
     cleanups.push(d.close);
     const client = await connectEngine({ socketPath: d.socketPath });
@@ -90,7 +97,7 @@ describe('EngineClient', () => {
 
   it('rejects pending calls and fires onClose when the connection drops', async () => {
     const d = await fakeDaemon((method) =>
-      method === 'hello' ? { result: { protocol: 2, version: 'x', capabilities: [] } } : { result: {} });
+      method === 'hello' ? { result: { protocol: 3, version: 'x', capabilities: [] } } : { result: {} });
     cleanups.push(d.close);
     const client = await connectEngine({ socketPath: d.socketPath });
     let closed = false;

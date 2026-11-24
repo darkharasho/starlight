@@ -66,4 +66,21 @@ describe('validateAgentCheat', () => {
     const r = validateAgentCheat(value({ name: '' }));
     expect(errs(r).some((e) => e.startsWith('name: '))).toBe(true);
   });
+
+  it('rejects symbol addresses with the exact message', () => {
+    const r = validateAgentCheat(value({ address: { kind: 'symbol', expr: 'player' } }));
+    expect(errs(r)).toContain("address: agent-made cheats can't use table symbols; use an aob, pointer or module address");
+  });
+  it('requires a site for agent patch cheats', () => {
+    const r = validateAgentCheat(patch({ site: undefined }));
+    expect(errs(r)).toContain('site: agent-made code cheats need an aob site');
+  });
+  it('rejects aobScan and unregisterSymbol steps for agents', () => {
+    const r = validateAgentCheat(patch({ enable: [
+      { op: 'aobScan', name: 'h', pattern: '90' },
+      { op: 'unregisterSymbol', name: 'h' },
+    ] }));
+    expect(errs(r)).toContain("enable[0].op: agent-made cheats can't use aobScan; use site");
+    expect(errs(r)).toContain("enable[1].op: unregisterSymbol only belongs in a table's disable steps");
+  });
 });

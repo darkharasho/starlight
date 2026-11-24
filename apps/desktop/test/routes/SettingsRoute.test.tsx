@@ -55,6 +55,24 @@ describe('SettingsRoute', () => {
   });
 });
 
+describe('SettingsRoute native tables', () => {
+  it('the toggle writes preferences.nativeTables', async () => {
+    const patches: unknown[] = [];
+    useConfigStore.setState({ config: { ...baseConfig, preferences: { ...baseConfig.preferences, nativeTables: true } } as never, loading: false, error: null });
+    setStarlightApi({
+      getConfig: async () => baseConfig,
+      updateConfig: async (req: { patch: unknown }) => { patches.push(req.patch); return baseConfig; },
+      onEvent: () => () => {},
+    } as never);
+    render(<MemoryRouter><SettingsRoute /></MemoryRouter>);
+    expect(screen.getByText('Off sends every table to Cheat Engine.')).toBeInTheDocument();
+    const box = screen.getByLabelText("Run tables on Starlight's engine when possible") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    await userEvent.click(box);
+    await waitFor(() => expect(patches).toEqual([{ preferences: { nativeTables: false } }]));
+  });
+});
+
 describe('SettingsRoute agent settings', () => {
   const api = (patches: unknown[]) => setStarlightApi({
     getConfig: async () => baseConfig,

@@ -21,7 +21,8 @@ export interface PointerChainSpec {
 }
 
 export interface AobScanSpec {
-  module: string;
+  /** Without a module the daemon scans every executable region, in address order (protocol 3, `aob_exec`). */
+  module?: string;
   pattern: string;         // e.g. "DE AD BE EF ?? ?? CA FE"
   resultOffset?: number;   // bytes added to every match
 }
@@ -87,4 +88,19 @@ export interface ModuleExport {
 export interface VerifyResult {
   status: 'ok' | 'needs-update' | 'unverified';
   reasons: string[];
+}
+
+/** Table-wide symbols of one session: lowercase name -> `0x…` address. */
+export type SymbolRegistry = Map<string, string>;
+
+export interface EnableOptions {
+  /** Value cheats: the value to freeze (else the cheat's value/default). */
+  value?: number;
+  intervalMs?: number;
+  /** The session's table symbols: `registerSymbol` steps export here, `symbol` addresses read from it. */
+  symbols?: SymbolRegistry;
+  /** The game's main module, which AA's `$process` names. */
+  mainModule?: string;
+  /** Notes about the run (disable bytes that differ from the game's original). */
+  log?(line: string): void;
 }

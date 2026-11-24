@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"God mode"</Description>
+      <DropDownList DisplayValueAsItem="1">0:Off
+1:On
+</DropDownList>
+      <VariableType>Byte</VariableType>
+      <Address>"target"+5000</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"Enemy god mode"</Description>
+      <DropDownListLink>God mode</DropDownListLink>
+      <VariableType>Byte</VariableType>
+      <Address>"target"+5001</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"Money"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"target"+5010</Address>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Set Value</Action>
+          <Keys>
+            <Key>114</Key>
+          </Keys>
+          <Value>999</Value>
+          <ID>0</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Increase Value</Action>
+          <Keys>
+            <Key>16</Key>
+            <Key>33</Key>
+          </Keys>
+          <Value>0010</Value>
+          <ID>1</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Decrease Value</Action>
+          <Keys>
+            <Key>96</Key>
+          </Keys>
+          <Value>0.5</Value>
+          <ID>2</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Activate</Action>
+          <Keys>
+            <Key>18</Key>
+            <Key>112</Key>
+          </Keys>
+          <ID>3</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Deactivate</Action>
+          <Keys>
+            <Key>18</Key>
+            <Key>113</Key>
+          </Keys>
+          <ID>4</ID>
+        </Hotkey>
+      </Hotkeys>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

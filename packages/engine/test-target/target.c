@@ -16,6 +16,7 @@
 #include <semaphore.h>
 #include <sys/syscall.h>
 #include <asm/prctl.h>
+#include <errno.h>
 
 /* Stable global memory layout for tests.
  * Keep these in BSS/data so addresses are inspectable from the outside. */
@@ -92,6 +93,8 @@ static void on_usr2(int sig, siginfo_t* si, void* uc) {
 volatile int64_t   g_mono_ns    = 0;
 volatile int64_t   g_tod_us     = 0;
 volatile int64_t   g_wrapped_ns = 0;
+/* CLOCK_MONOTONIC by raw syscall right after g_mono_ns (never hooked): real time to compare with. */
+volatile int64_t   g_mono_raw_ns = 0;
 
 /* A game-side function that calls clock_gettime: hooking both must scale the time once. */
 __attribute__((noinline)) int clock_wrapper(clockid_t id, struct timespec* ts) {
@@ -104,6 +107,7 @@ static void* clocks_loop(void* arg) {
         struct timespec ts;
         struct timeval tv;
         if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) g_mono_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &ts) == 0) g_mono_raw_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
         if (gettimeofday(&tv, NULL) == 0) g_tod_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
         if (clock_wrapper(CLOCK_MONOTONIC, &ts) == 0) g_wrapped_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
         usleep(20 * 1000);
@@ -290,6 +294,132 @@ static void* got_slot_of(const char* name) {
     return NULL;
 }
 
+/* --abs-sleep, --abs-cond, --abs-cond-rt, --abs-sem: a thread that loops "deadline = now + 20 ms
+ * (read through libc's clock_gettime, so game time under speed hooks); wait until the deadline;
+ * count". Each waits with an absolute deadline: clock_nanosleep(TIMER_ABSTIME) on MONOTONIC, a
+ * MONOTONIC condvar (pthread_condattr_setclock), a default-clock (REALTIME) condvar, and
+ * sem_timedwait (REALTIME). Under game speed s each should count 50 * s per real second.
+ * --abs-cond-threads <n> starts n more --abs-cond threads, all counting into g_abs_conds. */
+volatile int64_t   g_abs_sleeps   = 0;
+volatile int64_t   g_abs_conds    = 0;
+volatile int64_t   g_abs_conds_rt = 0;
+volatile int64_t   g_abs_sems     = 0;
+
+#define ABS_STEP_NS (20 * 1000000L)
+
+static struct timespec deadline_in(clockid_t clock, long ns) {
+    struct timespec ts;
+    clock_gettime(clock, &ts);
+    ts.tv_nsec += ns;
+    while (ts.tv_nsec >= 1000000000L) { ts.tv_nsec -= 1000000000L; ts.tv_sec += 1; }
+    return ts;
+}
+
+static void* abs_sleep_loop(void* arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec d = deadline_in(CLOCK_MONOTONIC, ABS_STEP_NS);
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &d, NULL) == EINTR) {}
+        __atomic_fetch_add(&g_abs_sleeps, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+/* arg: the clock the condvar uses (CLOCK_MONOTONIC or CLOCK_REALTIME = the default) and where to count. */
+typedef struct { clockid_t clock; volatile int64_t* counter; } AbsCond;
+
+static void* abs_cond_loop(void* arg) {
+    const AbsCond* a = arg;
+    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t c;
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    if (a->clock != CLOCK_REALTIME) pthread_condattr_setclock(&attr, a->clock);
+    pthread_cond_init(&c, &attr);
+    pthread_mutex_lock(&m);
+    for (;;) {
+        struct timespec d = deadline_in(a->clock, ABS_STEP_NS);
+        /* Nobody signals: every return but ETIMEDOUT is spurious. */
+        while (pthread_cond_timedwait(&c, &m, &d) != ETIMEDOUT) {}
+        __atomic_fetch_add(a->counter, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+static void* abs_sem_loop(void* arg) {
+    (void)arg;
+    sem_t s;
+    sem_init(&s, 0, 0);
+    for (;;) {
+        struct timespec d = deadline_in(CLOCK_REALTIME, ABS_STEP_NS);
+        while (sem_timedwait(&s, &d) != 0 && errno != ETIMEDOUT) {}
+        __atomic_fetch_add(&g_abs_sems, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+/* --abs-cond-tod: the classic pattern: the deadline is built from gettimeofday and waited for
+ * on a default-clock (REALTIME) condvar; counts into g_abs_conds_tod.
+ * --late-realtime <ms>: a thread that starts reading clock_gettime(CLOCK_REALTIME) every 20 ms only
+ * after <ms>, storing it in g_late_rt (REALTIME first used long after gettimeofday). */
+volatile int64_t   g_abs_conds_tod = 0;
+volatile int64_t   g_late_rt       = 0;
+/* Tests switch the --abs-cond-tod waiter off (0) and on (1) through memory. */
+volatile int32_t   g_abs_tod_on    = 1;
+
+/* --pair-clocks: a thread that every 20 ms reads gettimeofday, then (while g_pair_rt_on is 1)
+ * clock_gettime(CLOCK_REALTIME), storing both: g_pair_tod_us, g_pair_rt_ns. */
+volatile int32_t   g_pair_rt_on    = 1;
+volatile int64_t   g_pair_tod_us   = 0;
+volatile int64_t   g_pair_rt_ns    = 0;
+
+static void* pair_clocks_loop(void* arg) {
+    (void)arg;
+    for (;;) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        g_pair_tod_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+        if (g_pair_rt_on) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            g_pair_rt_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        }
+        usleep(20 * 1000);
+    }
+    return NULL;
+}
+
+static void* abs_cond_tod_loop(void* arg) {
+    (void)arg;
+    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+    pthread_mutex_lock(&m);
+    for (;;) {
+        if (!g_abs_tod_on) { usleep(5 * 1000); continue; }
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        struct timespec d = { tv.tv_sec, tv.tv_usec * 1000L + ABS_STEP_NS };
+        while (d.tv_nsec >= 1000000000L) { d.tv_nsec -= 1000000000L; d.tv_sec += 1; }
+        while (pthread_cond_timedwait(&c, &m, &d) != ETIMEDOUT) {}
+        __atomic_fetch_add(&g_abs_conds_tod, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+static void* late_realtime_loop(void* arg) {
+    usleep((useconds_t)(long)arg * 1000);
+    for (;;) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        g_late_rt = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        usleep(20 * 1000);
+    }
+    return NULL;
+}
+
+static AbsCond s_abs_mono = { CLOCK_MONOTONIC, &g_abs_conds };
+static AbsCond s_abs_rt   = { CLOCK_REALTIME,  &g_abs_conds_rt };
+
 static void* writer_loop(void* arg) {
     (void)arg;
     for (;;) {
@@ -347,6 +477,35 @@ int main(int argc, char** argv) {
             sem_init(&s_win64_ready, 0, 0);
             if (pthread_create(&th, NULL, win64_clocks_loop, NULL) != 0) { perror("--win64-clocks"); return 1; }
             sem_wait(&s_win64_ready);
+        }
+        if (strcmp(argv[i], "--abs-sleep") == 0 || strcmp(argv[i], "--abs-cond") == 0 ||
+            strcmp(argv[i], "--abs-cond-rt") == 0 || strcmp(argv[i], "--abs-sem") == 0) {
+            pthread_t th;
+            int r;
+            if (strcmp(argv[i], "--abs-sleep") == 0) r = pthread_create(&th, NULL, abs_sleep_loop, NULL);
+            else if (strcmp(argv[i], "--abs-cond") == 0) r = pthread_create(&th, NULL, abs_cond_loop, &s_abs_mono);
+            else if (strcmp(argv[i], "--abs-cond-rt") == 0) r = pthread_create(&th, NULL, abs_cond_loop, &s_abs_rt);
+            else r = pthread_create(&th, NULL, abs_sem_loop, NULL);
+            if (r != 0) { perror(argv[i]); return 1; }
+        }
+        if (strcmp(argv[i], "--abs-cond-tod") == 0) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, abs_cond_tod_loop, NULL) != 0) { perror("--abs-cond-tod"); return 1; }
+        }
+        if (strcmp(argv[i], "--pair-clocks") == 0) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, pair_clocks_loop, NULL) != 0) { perror("--pair-clocks"); return 1; }
+        }
+        if (strcmp(argv[i], "--late-realtime") == 0 && i + 1 < argc) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, late_realtime_loop, (void*)atol(argv[i + 1])) != 0) { perror("--late-realtime"); return 1; }
+        }
+        if (strcmp(argv[i], "--abs-cond-threads") == 0 && i + 1 < argc) {
+            int n = atoi(argv[i + 1]);
+            for (int k = 0; k < n; k++) {
+                pthread_t th;
+                if (pthread_create(&th, NULL, abs_cond_loop, &s_abs_mono) != 0) { perror("--abs-cond-threads"); return 1; }
+            }
         }
         if (strcmp(argv[i], "--spin") == 0) {
             pthread_t th;
@@ -408,6 +567,7 @@ int main(int argc, char** argv) {
     printf("addr g_sig=%p\n",         (void*)g_sig);
     printf("addr libc_clock_gettime=%p\n", dlsym(RTLD_DEFAULT, "clock_gettime"));
     printf("addr g_mono_ns=%p\n",    (void*)&g_mono_ns);
+    printf("addr g_mono_raw_ns=%p\n", (void*)&g_mono_raw_ns);
     printf("addr g_tod_us=%p\n",     (void*)&g_tod_us);
     printf("addr g_wrapped_ns=%p\n", (void*)&g_wrapped_ns);
     printf("addr clock_wrapper=%p\n", (void*)&clock_wrapper);
@@ -415,6 +575,22 @@ int main(int argc, char** argv) {
     printf("addr g_clock_sigs=%p\n",  (void*)&g_clock_sigs);
     printf("addr g_clock_other=%p\n", (void*)&g_clock_other);
     printf("addr got_gettimeofday=%p\n", got_slot_of("gettimeofday"));
+    printf("addr g_abs_sleeps=%p\n",   (void*)&g_abs_sleeps);
+    printf("addr g_abs_conds=%p\n",    (void*)&g_abs_conds);
+    printf("addr g_abs_conds_rt=%p\n", (void*)&g_abs_conds_rt);
+    printf("addr g_abs_sems=%p\n",     (void*)&g_abs_sems);
+    printf("addr g_abs_conds_tod=%p\n", (void*)&g_abs_conds_tod);
+    printf("addr g_late_rt=%p\n",      (void*)&g_late_rt);
+    printf("addr g_abs_tod_on=%p\n",   (void*)&g_abs_tod_on);
+    printf("addr g_pair_rt_on=%p\n",   (void*)&g_pair_rt_on);
+    printf("addr g_pair_tod_us=%p\n",  (void*)&g_pair_tod_us);
+    printf("addr g_pair_rt_ns=%p\n",   (void*)&g_pair_rt_ns);
+    /* dlsym gives each name's default version, the one a game links against. */
+    printf("addr libc_clock_nanosleep=%p\n",        dlsym(RTLD_DEFAULT, "clock_nanosleep"));
+    printf("addr libc_pthread_cond_timedwait=%p\n", dlsym(RTLD_DEFAULT, "pthread_cond_timedwait"));
+    printf("addr libc_pthread_cond_clockwait=%p\n", dlsym(RTLD_DEFAULT, "pthread_cond_clockwait"));
+    printf("addr libc_sem_timedwait=%p\n",          dlsym(RTLD_DEFAULT, "sem_timedwait"));
+    printf("addr libc_sem_clockwait=%p\n",          dlsym(RTLD_DEFAULT, "sem_clockwait"));
     if (mapped) printf("addr mapped=%p\n", mapped);
     if (heap_chain) {
         printf("addr g_root=%p\n",       (void*)&g_root);

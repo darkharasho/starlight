@@ -156,6 +156,25 @@ pub fn alloc(t: &Target, size: u64, near: Option<u64>, prot: i32) -> Result<u64,
     })?
 }
 
+/// Pages this daemon mapped for its own code and data (speed hook and state pages), as
+/// (pid, start, end). `aob_scan` over executable memory skips them (M4 D10). Allocations made for
+/// the client (`alloc`) are the game's memory as far as scans go, so they are not listed.
+static OWN: std::sync::Mutex<Vec<(i32, u64, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// `alloc` for the daemon's own pages: the block is listed in `own_ranges` until it is freed.
+pub fn alloc_own(t: &Target, size: u64, near: Option<u64>, prot: i32) -> Result<u64, RpcError> {
+    let addr = alloc(t, size, near, prot)?;
+    OWN.lock().unwrap().push((t.pid, addr, addr + page_round(size)));
+    Ok(addr)
+}
+
+/// The daemon's own pages in `pid`, as sorted (start, end) ranges.
+pub fn own_ranges(pid: i32) -> Vec<(u64, u64)> {
+    let mut v: Vec<(u64, u64)> = OWN.lock().unwrap().iter().filter(|e| e.0 == pid).map(|e| (e.1, e.2)).collect();
+    v.sort_unstable();
+    v
+}
+
 /// A failed `free`, and whether the pages may already be unmapped.
 pub struct FreeError {
     pub error: RpcError,
@@ -164,6 +183,9 @@ pub struct FreeError {
 
 /// Unmap `size` bytes at `addr` (an earlier `alloc`).
 pub fn free(t: &Target, addr: u64, size: u64) -> Result<(), FreeError> {
+    // Unlisted first: if the pages may be gone, scanning there again is harmless.
+    let end = addr.saturating_add(page_round(size));
+    OWN.lock().unwrap().retain(|&(pid, s, e)| !(pid == t.pid && s < end && addr < e));
     let not_run = |error| FreeError { error, maybe_unmapped: false };
     let tracer = t.tracer().map_err(not_run)?;
     syscall_site(t, &tracer).map_err(not_run)?;

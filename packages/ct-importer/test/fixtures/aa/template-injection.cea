@@ -1,0 +1,48 @@
+{ Game   : target
+  Version: 
+  Date   : 2026-11-23
+  Author : starlight-tests
+
+  This script adds 100 to the counter every time it is bumped.
+}
+
+[ENABLE]
+
+aobscanmodule(INJECT,target,8B 05 ?? ?? ?? ?? 83 C0 01) // should be unique
+alloc(newmem,$1000,INJECT)
+
+label(code)
+label(return)
+
+newmem:
+
+code:
+  mov eax,["target"+4030A019]
+  add eax,64
+  jmp return
+
+INJECT:
+  jmp newmem
+  nop 4
+return:
+registersymbol(INJECT)
+
+[DISABLE]
+
+INJECT:
+  db 8B 05 10 20 30 40 83 C0 01
+
+unregistersymbol(INJECT)
+dealloc(newmem)
+
+{
+// ORIGINAL CODE - INJECTION POINT: target+1234
+
+target+1220: 48 89 5C 24 08     - mov [rsp+08],rbx
+target+1225: 48 83 EC 20        - sub rsp,20
+// ---------- INJECTING HERE ----------
+target+1234: 8B 05 10 20 30 40  - mov eax,[target+40303244]
+// ---------- DONE INJECTING  ----------
+target+123A: 83 C0 01           - add eax,01
+target+123D: 89 05 04 20 30 40  - mov [target+40303247],eax
+}

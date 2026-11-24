@@ -1,6 +1,7 @@
 import type { CtEntry, CtHotkey } from './xml-parser.js';
 import { mapCtType } from './type-mapper.js';
 import { parseAddress } from './address-parser.js';
+import { ctOffsetsInApplyOrder } from './ct-address.js';
 import { parseHotkeys } from './hotkey-parser.js';
 import { classifyScript } from './script-classifier.js';
 import type { StarlightSupportedCheat, StarlightUnsupportedCheat } from './starlight-format.js';
@@ -79,10 +80,8 @@ export function convertEntry(entry: CtEntry): ConvertedEntry {
     };
   }
 
-  const offsets = asArray(entry.Offsets?.Offset).map((n) =>
-    typeof n === 'number' ? n : parseInt(String(n), 16),
-  );
-  const address = parseAddress(entry.Address, offsets.length > 0 ? offsets : undefined);
+  const offsets = ctOffsetsInApplyOrder(asArray<string | number>(entry.Offsets?.Offset));
+  const address = offsets ? parseAddress(entry.Address, offsets.length > 0 ? offsets : undefined) : null;
 
   if (!address) {
     if (children.length > 0) {

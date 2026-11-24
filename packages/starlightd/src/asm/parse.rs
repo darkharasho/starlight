@@ -230,6 +230,22 @@ impl Parser<'_> {
                 .collect::<PResult<Vec<_>>>()?
         };
         let mnemonic = alias(&lower).unwrap_or(lower);
+        // `nop N` is N single-byte nops (CE's injection templates); a memory operand is the long form.
+        if mnemonic == "nop" {
+            if let [Operand::Imm(e)] = &operands[..] {
+                let n = match e {
+                    Expr::Num(n) if prefixes.is_empty() && (1..=0x40).contains(n) => *n as usize,
+                    _ => return Err("nop count must be 1–40".into()),
+                };
+                for _ in 0..n {
+                    out.push(Stmt {
+                        line,
+                        kind: Line::Insn { prefixes: vec![], mnemonic: "nop".into(), operands: vec![] },
+                    });
+                }
+                return Ok(());
+            }
+        }
         out.push(Stmt { line, kind: Line::Insn { prefixes, mnemonic, operands } });
         Ok(())
     }

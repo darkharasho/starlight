@@ -1,0 +1,8 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Older table style: one-shot patch with no sections.
+}
+
+"target"+1234:
+  db 90 90 90 90 90

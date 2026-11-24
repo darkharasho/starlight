@@ -68,8 +68,32 @@ At `ptrace_scope=0` no grant is needed. Tests spawn the target themselves.
 returns `{ status: 'ok' | 'needs-update' | 'unverified', reasons }`. A cheat without a `verify` block is
 `unverified`; with one, its AOB must match exactly once and every `verify` check must pass.
 
-`enableCheat(session, cheat, { value?, intervalMs? })` verifies first (throws `NeedsUpdateError` on
-`needs-update`), then runs the cheat and returns a `RunningCheat` (`setValue`, idempotent `disable`).
-Value cheats freeze the value; patch cheats run their `enable` steps in order (`alloc`, `assemble`,
-`writeBytes`, `registerSymbol`; `site` is predefined) and a failing step reverts the earlier patches.
-Cheats with `disable` steps need the native table runner and are refused. Memory from `alloc` steps is not freed.
+`enableCheat(session, cheat, { value?, intervalMs?, symbols?, mainModule?, log? })` verifies first (throws
+`NeedsUpdateError` on `needs-update`), then runs the cheat and returns a `RunningCheat` (`setValue`, idempotent
+`disable`). Value cheats freeze the value; `freeze` also takes raw `bytes` (a Buffer or hex) for String and Array of
+byte records. Memory from `alloc` steps is not freed.
+
+## Running compiled tables
+
+Cheat Engine tables compiled by `@starlight/ct-importer` (`compileAaScript`, `compileTable`) are v2 patch cheats, and
+`enableCheat` runs them natively:
+
+- **Symbols.** Pass one `SymbolRegistry` (`Map`, lowercase name → `0x…`) per session as `symbols`.
+  `registerSymbol` steps export to it and `unregisterSymbol` removes names; `symbol` addresses
+  (`{ expr: 'pPlayer+8', offsets: ['0x18', '-0x10'] }`) read `expr` through it (then module names) and walk
+  `offsets` like a pointer chain. An unknown name is `symbol <name> isn't registered`. Every lookup is
+  case-insensitive. `mainModule` is what AA's `$process` names.
+- **Phases.** A: the `site`, `aobScan` steps (the site's match is reused for the same module and pattern; without
+  a module the scan covers every executable region; no match is `ScanError('AOB <name> not found in …')`), `alloc`,
+  and `registerSymbol` steps that need no label. B: every `assemble` step is laid out, with labels defined in later
+  segments (`return:`) as placeholders until no label moves (at most 4 passes). C: the writes, in step order, as
+  recorded patches. D: `registerSymbol` steps that name labels. A failure in any phase reverts the patches (newest
+  first) and the registry entries the run added.
+- **Disable** reverts every patch, newest first. The table's own `disable` bytes are only compared with what is now
+  in the game; when they differ, `log` gets `disable bytes at <at> differ from the game's original; kept the
+  original` and nothing is written. Then `unregisterSymbol` runs.
+- **`checkAssembles(client, cheat, { known? })`** assembles a compiled cheat without a game (placeholder addresses
+  for allocations, aob names, `known` table symbols and modules) and returns `{ ok: true }` or
+  `{ ok: false, step, message }`. `scripts/ct-coverage.mjs --compiler native --assemble` counts its failures as
+  `asm:error`.
+- `aob_scan` without a module (protocol 3, capability `aob_exec`) skips the daemon's own hook and state pages.

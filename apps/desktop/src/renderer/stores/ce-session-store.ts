@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
-import type { CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget } from '../../shared/ipc.js';
+import type { RouteSummary, SessionMode, CePickStep, CeSessionRecord, CeSessionTableState, CeTable, CeTableAttempt, CeTableVerdict, LaunchTarget, SessionHolder } from '../../shared/ipc.js';
 import { buildCheatList } from '../../shared/cheat-list.js';
 import { hotkeyPayload } from '../lib/hotkeys.js';
 import { playToggleTone } from '../lib/tone.js';
@@ -80,8 +80,12 @@ interface CeSessionState {
   retries: number;
   /** Who runs the game's cheats; starlightd means the Cheat Engine table is paused. */
   engine: 'ce' | 'starlightd';
+  /** Which engine runs the session: Cheat Engine, native tables on starlightd, or the CE table paused for starlightd cheats. */
+  mode: SessionMode;
+  /** Where the loaded table was routed; null without a table. */
+  route: RouteSummary | null;
   /** What holds the game when the engine is starlightd. */
-  holders: ('agent' | 'user-cheats')[];
+  holders: SessionHolder[];
 
   start: (req: StartReq) => Promise<boolean>;
   /** Re-launch the current session targeting a running process (boots Windows CE if Proton). */
@@ -112,7 +116,7 @@ interface CeSessionState {
   /** Push the current hotkey set to Cheat Engine. */
   syncHotkeys: () => Promise<void>;
   /** `session:engine` arrived. */
-  setEngine: (sessionId: string, engine: 'ce' | 'starlightd', holders: ('agent' | 'user-cheats')[]) => void;
+  setEngine: (sessionId: string, engine: 'ce' | 'starlightd', holders: SessionHolder[], mode?: SessionMode) => void;
   /** Turn the player's cheats (and any agent session) off and bring the Cheat Engine table back. */
   useTableInstead: () => Promise<void>;
   /** Start the session again so the Cheat Engine table loads (nothing holds the game). */
@@ -166,7 +170,9 @@ const CLEARED = {
   retrying: false,
   retries: 0,
   engine: 'ce' as 'ce' | 'starlightd',
-  holders: [] as ('agent' | 'user-cheats')[],
+  mode: 'ce' as SessionMode,
+  route: null as RouteSummary | null,
+  holders: [] as SessionHolder[],
 };
 
 export const useCeSessionStore = create<CeSessionState>((set, get) => ({
@@ -221,6 +227,8 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
         running: r.running !== false,
         tables: r.tables ?? [],
         engine: r.engine ?? 'ce',
+        mode: r.mode ?? (r.engine === 'starlightd' ? 'paused' : 'ce'),
+        route: r.route ?? null,
         holders: r.holders ?? [],
         ...tableState(r),
       });
@@ -453,9 +461,9 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
     await starlight().ceSessionCall({ sessionId: sid, method: 'set_hotkeys', params: payload }).catch(() => {});
   },
 
-  setEngine: (sessionId, engine, holders) => {
+  setEngine: (sessionId, engine, holders, mode) => {
     if (get().sessionId !== sessionId) return;
-    set({ engine, holders });
+    set({ engine, holders, mode: mode ?? (engine === 'starlightd' ? 'paused' : 'ce') });
   },
 
   useTableInstead: async () => {

@@ -23,7 +23,8 @@ pub struct HookTarget {
     pub abi: Abi,
     pub kind: Kind,
     pub slot: u32,
-    /// `GettimeofdayGot` only: the function the hook calls (`__vdso_gettimeofday`).
+    /// `GettimeofdayGot`: the function the hook calls (`__vdso_gettimeofday`). Waits: the
+    /// `__vdso_clock_gettime` the hook reads real time with.
     pub original: Option<u64>,
     /// `GettimeofdayGot` only: the GOT slots to point at the hook.
     pub got_slots: Vec<u64>,
@@ -35,6 +36,8 @@ pub struct HookTarget {
 pub fn default_slot(kind: Kind, name: &str) -> u32 {
     match kind {
         Kind::ClockGettime => SLOT_CLOCK,
+        // A wait converts a deadline of the clock it names: clock_gettime's slots.
+        Kind::ClockNanosleep | Kind::CondTimedwait | Kind::CondClockwait | Kind::SemTimedwait | Kind::SemClockwait => SLOT_CLOCK,
         Kind::Gettimeofday | Kind::GettimeofdayGot => SLOT_GETTIMEOFDAY,
         Kind::Qpc | Kind::NtQpc => SLOT_QPC,
         Kind::Tick32 if name.eq_ignore_ascii_case("timeGetTime") => SLOT_TIME_GET_TIME,
@@ -54,22 +57,56 @@ fn vdso(t: &Target) -> Option<Module> {
     Some(Module { name: "[vdso]".into(), base: r.start, size: r.end - r.start, path: "[vdso]".into(), kind: ModKind::Elf })
 }
 
+/// The default version of `name` (`name@@VER`, what a game binds to): glibc keeps older code
+/// under some names, e.g. the pre-2.3.2 `pthread_cond_timedwait@GLIBC_2.2.5`.
 fn find<'a>(exports: &'a [Export], name: &str) -> Option<&'a Export> {
-    exports.iter().find(|e| e.name == name && matches!(e.kind, SymKind::Func | SymKind::Ifunc))
+    exports.iter().find(|e| e.name == name && e.default_version && matches!(e.kind, SymKind::Func | SymKind::Ifunc))
+}
+
+/// The absolute-deadline waits (M4 D2), in order: (export, kind).
+const WAITS: [(&str, Kind); 5] = [
+    ("clock_nanosleep", Kind::ClockNanosleep),
+    ("pthread_cond_timedwait", Kind::CondTimedwait),
+    ("pthread_cond_clockwait", Kind::CondClockwait),
+    ("sem_timedwait", Kind::SemTimedwait),
+    ("sem_clockwait", Kind::SemClockwait),
+];
+
+/// glibc 2.41 or later, from the versions the module defines (`GLIBC_2.41`, …): the condvar
+/// layout `templates::COND_FLAGS_OFFSET` describes.
+fn glibc_2_41_or_later(version_defs: &[String]) -> bool {
+    version_defs.iter().any(|v| {
+        let mut parts = v.strip_prefix("GLIBC_").into_iter().flat_map(|r| r.split('.')).map(|p| p.parse::<u32>().ok());
+        matches!((parts.next(), parts.next()), (Some(Some(major)), Some(Some(minor))) if (major, minor) >= (2, 41))
+    })
+}
+
+/// Why `pthread_cond_timedwait` can't be hooked in the libc `m`, if it can't: its cond's clock
+/// is read from glibc's internal layout.
+fn cond_timedwait_unsupported(t: &Target, m: &Module) -> Option<String> {
+    if m.name.starts_with("ld-musl") {
+        return Some("musl condvar clock unknown".into());
+    }
+    let defs = symbols::version_defs(t, m).unwrap_or_default();
+    (!glibc_2_41_or_later(&defs)).then(|| "glibc before 2.41: condvar clock layout unknown".into())
 }
 
 /// Native targets (D16): an inline hook on libc's `clock_gettime`; `gettimeofday` inline if it
 /// is a plain function, else (an IFUNC that glibc resolves straight to the vDSO) its GOT slots in
 /// every loaded module, pointed at a hook that calls `__vdso_gettimeofday`. The vDSO is only read.
+/// Then the absolute-deadline waits (M4 D2) of the same libc, each calling `__vdso_clock_gettime`
+/// for real time; `pthread_cond_timedwait` is skipped where the condvar layout isn't known.
 /// Functions that can't be found are left out.
 pub fn native(t: &Target, mods: &[Module]) -> Vec<HookTarget> {
     let mut out = vec![];
-    let Some(exports) = mods.iter().filter(|m| is_libc(m)).find_map(|m| {
+    let Some((libc, exports)) = mods.iter().filter(|m| is_libc(m)).find_map(|m| {
         let e = symbols::exports(t, m).ok()?;
-        find(&e, "clock_gettime").is_some().then_some(e)
+        find(&e, "clock_gettime").is_some().then_some((m, e))
     }) else {
         return out;
     };
+    let vdso_exports = vdso(t).and_then(|v| symbols::exports(t, &v).ok()).unwrap_or_default();
+    let vdso_fn = |names: &[&str]| names.iter().find_map(|n| find(&vdso_exports, n)).map(|e| e.address);
     let target = |name: &str, address, kind, original, got_slots| HookTarget {
         name: name.into(),
         address,
@@ -86,11 +123,7 @@ pub fn native(t: &Target, mods: &[Module]) -> Vec<HookTarget> {
     match find(&exports, "gettimeofday") {
         Some(e) if e.kind == SymKind::Func => out.push(target("gettimeofday", e.address, Kind::Gettimeofday, None, vec![])),
         Some(e) => {
-            let vdso_fn = vdso(t).and_then(|v| {
-                let ex = symbols::exports(t, &v).ok()?;
-                find(&ex, "__vdso_gettimeofday").or_else(|| find(&ex, "gettimeofday")).map(|e| e.address)
-            });
-            if let Some(original) = vdso_fn {
+            if let Some(original) = vdso_fn(&["__vdso_gettimeofday", "gettimeofday"]) {
                 let mut slots: Vec<u64> = mods
                     .iter()
                     .filter(|m| m.kind == ModKind::Elf)
@@ -102,6 +135,18 @@ pub fn native(t: &Target, mods: &[Module]) -> Vec<HookTarget> {
             }
         }
         None => {}
+    }
+    // Absolute-time waits (D2): each reads the real time through the vDSO's clock_gettime.
+    let vdso_clock = vdso_fn(&["__vdso_clock_gettime", "clock_gettime"]);
+    for (name, kind) in WAITS {
+        let Some(e) = find(&exports, name).filter(|e| e.kind == SymKind::Func) else { continue };
+        let mut tg = target(name, e.address, kind, vdso_clock, vec![]);
+        tg.skipped = match vdso_clock {
+            None => Some("no __vdso_clock_gettime to read real time with".into()),
+            Some(_) if kind == Kind::CondTimedwait => cond_timedwait_unsupported(t, libc),
+            Some(_) => None,
+        };
+        out.push(tg);
     }
     out
 }
@@ -244,6 +289,34 @@ mod tests {
         } else {
             assert_eq!((tod.kind, tod.original), (Kind::Gettimeofday, None));
         }
+    }
+
+    #[test]
+    fn native_wait_targets_of_the_test_target() {
+        // The C test target, launched here; never any other process.
+        let tt = TestTarget::spawn(&[]);
+        let t = open_target(tt.pid()).unwrap();
+        let mods = crate::modules::list(&t).unwrap();
+        let targets = native(&t, &mods);
+        let v = vdso(&t).unwrap();
+        for (name, kind) in WAITS {
+            let h = targets.iter().find(|h| h.name == name).unwrap_or_else(|| panic!("{name}: {targets:?}"));
+            // The default version, the one dlsym gives the target.
+            assert_eq!((h.kind, h.abi, h.slot, h.address), (kind, Abi::Sysv, SLOT_CLOCK, tt.addrs[&format!("libc_{name}")]), "{name}");
+            let orig = h.original.unwrap();
+            assert!(orig >= v.base && orig < v.base + v.size, "{name}: {orig:#x} is not in the vDSO");
+            assert_eq!(h.skipped, None, "{name} (this system's glibc is 2.41 or later)");
+        }
+    }
+
+    #[test]
+    fn glibc_version_gate() {
+        let v = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(glibc_2_41_or_later(&v(&["libc.so.6", "GLIBC_2.2.5", "GLIBC_2.41"])));
+        assert!(glibc_2_41_or_later(&v(&["GLIBC_2.44", "GLIBC_PRIVATE"])));
+        assert!(glibc_2_41_or_later(&v(&["GLIBC_3.0"])));
+        assert!(!glibc_2_41_or_later(&v(&["libc.so.6", "GLIBC_2.2.5", "GLIBC_2.40", "GLIBC_PRIVATE"])));
+        assert!(!glibc_2_41_or_later(&[]));
     }
 
     fn pe_module(name: &str, base: u64) -> Module {

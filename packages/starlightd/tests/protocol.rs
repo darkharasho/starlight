@@ -28,11 +28,11 @@ fn wait_for_file(p: &PathBuf, timeout: Duration) -> bool {
 }
 
 #[test]
-fn hello_reports_protocol_2() {
+fn hello_reports_protocol_3() {
     let d = Daemon::start();
     let mut c = d.client();
     let v = c.call("hello", json!({})).unwrap();
-    assert_eq!(v["protocol"], 2);
+    assert_eq!(v["protocol"], 3);
     assert!(v["capabilities"].as_array().unwrap().iter().any(|x| x == "freeze"));
 }
 
@@ -87,7 +87,7 @@ fn connection_close_runs_cleanup() {
     drop(c);
     assert!(wait_for_file(&p, Duration::from_secs(1)), "cleanup did not run on connection close");
     let mut c2 = d.client();
-    assert_eq!(c2.call("hello", json!({})).unwrap()["protocol"], 2);
+    assert_eq!(c2.call("hello", json!({})).unwrap()["protocol"], 3);
     let _ = std::fs::remove_file(&p);
 }
 

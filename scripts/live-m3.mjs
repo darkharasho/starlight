@@ -21,7 +21,7 @@
 // player's real games too: targets are always picked by the pid we spawned.
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync,
+  closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync,
   writeFileSync, writeSync, chmodSync, appendFileSync,
 } from 'node:fs';
 import { createServer, request as httpRequest } from 'node:http';
@@ -29,6 +29,7 @@ import { connect as netConnect } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PY_DESCENDANTS, statOf, trackOwned } from './live-procs.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP = join(ROOT, 'apps/desktop');
@@ -75,40 +76,6 @@ async function waitFor(fn, ms, every = 200) {
 
 // ------------------------------------------------------------- own processes (pid + start time)
 
-function statOf(pid) {
-  try {
-    const s = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const rest = s.slice(s.lastIndexOf(')') + 2).split(' ');
-    return { state: rest[0], ppid: Number(rest[1]), start: rest[19], comm: s.slice(s.indexOf('(') + 1, s.lastIndexOf(')')) };
-  } catch { return null; }
-}
-function procTable() {
-  const table = new Map();
-  for (const e of readdirSync('/proc')) {
-    if (!/^\d+$/.test(e)) continue;
-    const st = statOf(Number(e));
-    if (st) table.set(Number(e), st);
-  }
-  return table;
-}
-// Grows `owned` (pid -> start time) with the descendants of its live entries; a recycled pid is dropped first.
-function trackOwned(owned) {
-  const table = procTable();
-  for (const [p, start] of owned) if (table.get(p)?.start !== start) owned.delete(p);
-  const children = new Map();
-  for (const [p, st] of table) {
-    if (!children.has(st.ppid)) children.set(st.ppid, []);
-    children.get(st.ppid).push(p);
-  }
-  const queue = [...owned.keys()];
-  while (queue.length) {
-    for (const c of children.get(queue.shift()) ?? []) {
-      if (owned.has(c)) continue;
-      owned.set(c, table.get(c).start);
-      queue.push(c);
-    }
-  }
-}
 // Signals only a process we recorded, and only while it is still that process.
 function killOwn(pid, start, sig = 'SIGKILL') {
   if (!pid || start === undefined || statOf(pid)?.start !== start) return false;
@@ -166,24 +133,12 @@ for (const ev of ['uncaughtException', 'unhandledRejection']) {
 
 // PR_SET_CHILD_SUBREAPER, run argv, reap every orphan until none is left. PR_SET_PDEATHSIG: if this
 // script dies (even by SIGKILL), the wrapper gets SIGUSR1 and SIGKILLs its own descendants (found by
-// the ppid walk below it, so nothing else), then exits.
+// walking its own children lists, so nothing else), then exits.
 const SUBREAPER = `
 import ctypes, os, signal, subprocess, sys
 libc = ctypes.CDLL(None)
 libc.prctl(36, 1, 0, 0, 0)
-def descendants():
-    kids = {}
-    for e in os.listdir('/proc'):
-        if not e.isdigit(): continue
-        try:
-            s = open('/proc/%s/stat' % e).read()
-            kids.setdefault(int(s[s.rindex(')') + 2:].split()[1]), []).append(int(e))
-        except Exception: pass
-    out, q = [], [os.getpid()]
-    while q:
-        for c in kids.get(q.pop(), []):
-            out.append(c); q.append(c)
-    return out
+${PY_DESCENDANTS.trim()}
 def on_parent_death(*_):
     for _ in range(3):
         for p in descendants():

@@ -32,10 +32,12 @@ const isUnsupported = (c: StarlightCheat): c is Extract<StarlightCheat, { unsupp
 function addressText(c: StarlightCheat): string | undefined {
   if (isUnsupported(c)) return undefined;
   const a = c.type === 'patch' ? c.site : c.address;
+  if (!a) return undefined;
   switch (a.kind) {
     case 'absolute': return a.address;
     case 'module': return `${a.module}+${a.offset}`;
     case 'aob': return `aob ${a.module} ${a.pattern}${a.offset ? ` +${a.offset}` : ''}`;
+    case 'symbol': return `${a.expr}`;
     case 'pointer': return `${a.module ?? 'target'}+${a.baseOffset} → ${a.offsets.join(' → ')}`;
   }
 }
@@ -56,6 +58,8 @@ export function libraryTools(deps: LibraryToolsDeps): ToolDef<any>[] { // eslint
   async function withOriginals(session: Session, cheat: Extract<AgentCheatDraft, { type: 'patch' }>): Promise<typeof cheat> {
     const todo = cheat.enable.some((st) => st.op === 'writeBytes' && st.original === undefined && SITE_EXPR.test(st.at.trim()));
     if (!todo) return cheat;
+    // Without a site there is no `site` to read originals at (save_cheat's validation requires one).
+    if (!cheat.site) return cheat;
     const site = BigInt(await resolveSite(session, cheat.site));
     const enable: StarlightPatchCheat['enable'] = [];
     for (const step of cheat.enable) {
