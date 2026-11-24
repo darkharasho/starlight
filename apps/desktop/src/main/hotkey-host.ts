@@ -88,6 +88,32 @@ export function setAgentHotkeys(
 
 export type AgentHotkeysPort = { set: typeof setAgentHotkeys };
 
+interface SessionBinding { id: number; matcher: AcceleratorMatcher }
+const sessionBindings: SessionBinding[] = [];
+let onSessionPress: ((id: number) => void) | null = null;
+
+/**
+ * Hotkeys of the running native table session. A third slot, apart from the
+ * trainer's and the agent's: `registerForTrainer` and `unregisterAll` never
+ * clear it. Each call replaces the previous session bindings. `id`s are opaque
+ * to the host; a press calls `onPress(id)`. Bindings whose accelerator can't
+ * be read are skipped.
+ */
+export function setSessionHotkeys(bindings: Array<{ id: number; accelerator: string }>, onPress: (id: number) => void): void {
+  sessionBindings.length = 0;
+  for (const b of bindings) {
+    const matcher = parseAccelerator(b.accelerator);
+    if (matcher) sessionBindings.push({ id: b.id, matcher });
+  }
+  onSessionPress = onPress;
+  if (sessionBindings.length > 0) ensureStarted();
+}
+
+export function clearSessionHotkeys(): void {
+  sessionBindings.length = 0;
+  onSessionPress = null;
+}
+
 async function onKeyDown(e: UiohookKeyboardEvent): Promise<void> {
   for (const slot of AGENT_SLOTS) {
     const binding = agentBindings.get(slot);
@@ -95,6 +121,11 @@ async function onKeyDown(e: UiohookKeyboardEvent): Promise<void> {
       try { binding.handler(); } catch { /* a handler's failure must not break the listener */ }
       return;
     }
+  }
+  const press = onSessionPress;
+  for (const b of [...sessionBindings]) {
+    if (!press || !b.matcher(e)) continue;
+    try { press(b.id); } catch { /* a handler's failure must not break the listener */ }
   }
   for (const reg of cheats) {
     if (reg.toggleMatcher?.(e)) {
