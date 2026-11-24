@@ -27,6 +27,21 @@ describe('exeNameFromCmdline', () => {
     expect(exeNameFromCmdline(cmdline)).toBe('Game.exe');
   });
 
+  it('does not name a Proton wrapper after the game exe in its arguments', () => {
+    // Steam Runtime's entry point (comm clipped to 15 chars) runs with the game
+    // exe as its last argument while Proton starts; it is not the game.
+    const cmdline = [
+      '/bin/sh',
+      '/var/mnt/data/SteamLibrary/steamapps/common/SteamLinuxRuntime_4/_v2-entry-point',
+      '--verb=waitforexitandrun', '--',
+      '/var/mnt/data/SteamLibrary/steamapps/common/Proton - Experimental/proton',
+      'waitforexitandrun',
+      '/var/mnt/data/SteamLibrary/steamapps/common/Overlooting/Overlooting.exe',
+    ].join(NUL) + NUL;
+    expect(exeNameFromCmdline(cmdline, '_v2-entry-point')).toBeNull();
+    expect(exeNameFromCmdline(cmdline, 'pressure-vessel')).toBeNull();
+  });
+
   it('handles a Unix path exe', () => {
     expect(exeNameFromCmdline(`/opt/games/Foo.exe${NUL}`, 'Foo.exe')).toBe('Foo.exe');
   });
