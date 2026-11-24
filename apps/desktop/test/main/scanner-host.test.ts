@@ -54,6 +54,24 @@ describe('scanner-host', () => {
     expect(await host.call(10, 'speed_set', { speed: 3 })).toEqual({ ok: false, error: 'another session already controls this game\'s speed' });
   });
 
+  it('speed_set reports each speed hook the daemon placed or skipped', async () => {
+    const { host, setSpeedFn } = setup();
+    setSpeedFn.mockResolvedValueOnce({
+      speed: 2,
+      hooks: [
+        { name: 'RtlQueryPerformanceCounter', address: '0x6ffffff61600', status: 'hooked' },
+        { name: 'timeGetTime', address: '0x0', status: 'skipped', reason: 'module not loaded' },
+      ],
+    } as never);
+    expect(await host.call(10, 'speed_set', { speed: 2 })).toEqual({
+      ok: true, speed: 2,
+      hooks: [
+        { name: 'RtlQueryPerformanceCounter', status: 'hooked' },
+        { name: 'timeGetTime', status: 'skipped', reason: 'module not loaded' },
+      ],
+    });
+  });
+
   it('speed_set refuses speeds outside 0.1–10 (and a missing speed) without touching the game', async () => {
     const { host, setSpeedFn } = setup();
     for (const speed of [0, -1, 0.05, 10.5, null, undefined, 'fast', Number.NaN, Number.POSITIVE_INFINITY]) {
