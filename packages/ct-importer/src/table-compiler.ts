@@ -48,8 +48,11 @@ export interface CompiledTable {
   registeredBy: Record<string, number>;
 }
 
+/** CE's hotkey actions. Its bridge treats `action <= 2` (the first three) as toggles. */
 const ACTIONS: Record<string, CompiledHotkey['action']> = {
   'toggle activation': 'toggle',
+  'toggle activation allow increase': 'toggle',
+  'toggle activation allow decrease': 'toggle',
   'activate': 'activate',
   'deactivate': 'deactivate',
   'set value': 'set',

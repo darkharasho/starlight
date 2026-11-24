@@ -45,9 +45,9 @@ const FREEZE_INTERVAL_MS = 50;
 const READ_MANY_MAX = 4096;
 const NOT_ATTACHED = 'not attached to a game process';
 /**
- * The toggle actions: CE's `action <= 2` (Toggle Activation and its Allow Increase/Decrease
- * variants, which compile to `toggle`). `list_records.hotkey` reports one; `set_hotkeys`
- * `replace` drops only these. Activate and Deactivate hotkeys are kept, as in CE.
+ * The toggle actions: CE's `action <= 2`. The compiler maps Toggle Activation and its
+ * Allow Increase/Decrease variants all to `toggle`. `list_records.hotkey` reports one;
+ * `set_hotkeys` `replace` drops only these. Activate and Deactivate hotkeys are kept, as in CE.
  */
 const ON_OFF = new Set<CompiledHotkey['action']>(['toggle']);
 

@@ -147,6 +147,18 @@ dealloc(newmem)`;
     expect(byId(t.records, 1).hotkeys).toEqual([]);
   });
 
+  it('Toggle Activation Allow Increase/Decrease hotkeys compile to toggle (CE: action <= 2)', () => {
+    const hk = (action: string, key: number) => `<Hotkey><Action>${action}</Action><Keys><Key>${key}</Key></Keys></Hotkey>`;
+    const t = compileTable(ct(
+      `<CheatEntry><ID>1</ID><Description>"Gold"</Description><VariableType>4 Bytes</VariableType><Address>target.exe+10</Address>`
+      + `<Hotkeys>${hk('Toggle Activation Allow Increase', 112)}${hk('Toggle Activation Allow Decrease', 113)}</Hotkeys></CheatEntry>`,
+    ));
+    expect(byId(t.records, 1).hotkeys).toEqual([
+      { action: 'toggle', accelerator: 'F1' },
+      { action: 'toggle', accelerator: 'F2' },
+    ]);
+  });
+
   it('ShowAsHex and ShowAsSigned are read', () => {
     const t = compileTable(table('custom-type.CT'));
     // R26: 2/4/8-byte types are unsigned unless ShowAsSigned=1.
