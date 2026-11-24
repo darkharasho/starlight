@@ -650,3 +650,37 @@ fn a_late_realtime_reader_keeps_gettimeofday_deadlines_right() {
     let ahead = proc_i64(t.pid, late) - std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64;
     assert!(ahead > 1_000_000_000, "REALTIME is only {ahead} ns ahead of real time; it should carry gettimeofday's gain");
 }
+
+#[test]
+fn realtime_and_gettimeofday_change_speed_together() {
+    // Both clocks read at 2.0. Then, with REALTIME unread (and the REALTIME waiter idle), the speed
+    // goes to 1.0 and only gettimeofday is read for 1.2 s. REALTIME must still agree with
+    // gettimeofday when it is read again (rebased together, not on its own next read, which would
+    // leave it 1.2 s ahead for good), and a REALTIME wait on a gettimeofday deadline counts at
+    // 1.0's rate instead of busy-looping on a deadline already past.
+    let _serial = serial();
+    let t = Target::spawn(&["--abs-cond-tod", "--pair-clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let set = |c: &mut Client, name: &str, on: bool| {
+        c.call("write", json!({"handle": h, "address": t.addr(name), "bytes": if on { "01000000" } else { "00000000" }})).unwrap();
+    };
+    speed_set(&mut c, &h, 2.0).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    set(&mut c, "g_pair_rt_on", false);
+    set(&mut c, "g_abs_tod_on", false);
+    std::thread::sleep(Duration::from_millis(100));
+    speed_set(&mut c, &h, 1.0).unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    set(&mut c, "g_pair_rt_on", true);
+    settle();
+    let (tod, rt) = (hex(&t.addr("g_pair_tod_us")), hex(&t.addr("g_pair_rt_ns")));
+    // Stored one right after the other; our two reads may straddle one 20 ms step.
+    let gap_ms = (proc_i64(t.pid, rt) - proc_i64(t.pid, tod) * 1000) as f64 / 1e6;
+    eprintln!("REALTIME - gettimeofday after the late read: {gap_ms:.3} ms");
+    assert!(gap_ms.abs() < 25.0, "REALTIME and gettimeofday differ by {gap_ms:.3} ms after a speed change");
+    set(&mut c, "g_abs_tod_on", true);
+    settle();
+    assert_rate(t.pid, hex(&t.addr("g_abs_conds_tod")), 1.0, 37.5, 62.5, "g_abs_conds_tod at 1x after the late REALTIME read");
+}

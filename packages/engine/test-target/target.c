@@ -361,6 +361,30 @@ static void* abs_sem_loop(void* arg) {
  * after <ms>, storing it in g_late_rt (REALTIME first used long after gettimeofday). */
 volatile int64_t   g_abs_conds_tod = 0;
 volatile int64_t   g_late_rt       = 0;
+/* Tests switch the --abs-cond-tod waiter off (0) and on (1) through memory. */
+volatile int32_t   g_abs_tod_on    = 1;
+
+/* --pair-clocks: a thread that every 20 ms reads gettimeofday, then (while g_pair_rt_on is 1)
+ * clock_gettime(CLOCK_REALTIME), storing both: g_pair_tod_us, g_pair_rt_ns. */
+volatile int32_t   g_pair_rt_on    = 1;
+volatile int64_t   g_pair_tod_us   = 0;
+volatile int64_t   g_pair_rt_ns    = 0;
+
+static void* pair_clocks_loop(void* arg) {
+    (void)arg;
+    for (;;) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        g_pair_tod_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+        if (g_pair_rt_on) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            g_pair_rt_ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        }
+        usleep(20 * 1000);
+    }
+    return NULL;
+}
 
 static void* abs_cond_tod_loop(void* arg) {
     (void)arg;
@@ -368,6 +392,7 @@ static void* abs_cond_tod_loop(void* arg) {
     pthread_cond_t c = PTHREAD_COND_INITIALIZER;
     pthread_mutex_lock(&m);
     for (;;) {
+        if (!g_abs_tod_on) { usleep(5 * 1000); continue; }
         struct timeval tv;
         gettimeofday(&tv, NULL);
         struct timespec d = { tv.tv_sec, tv.tv_usec * 1000L + ABS_STEP_NS };
@@ -464,6 +489,10 @@ int main(int argc, char** argv) {
             pthread_t th;
             if (pthread_create(&th, NULL, abs_cond_tod_loop, NULL) != 0) { perror("--abs-cond-tod"); return 1; }
         }
+        if (strcmp(argv[i], "--pair-clocks") == 0) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, pair_clocks_loop, NULL) != 0) { perror("--pair-clocks"); return 1; }
+        }
         if (strcmp(argv[i], "--late-realtime") == 0 && i + 1 < argc) {
             pthread_t th;
             if (pthread_create(&th, NULL, late_realtime_loop, (void*)atol(argv[i + 1])) != 0) { perror("--late-realtime"); return 1; }
@@ -548,6 +577,10 @@ int main(int argc, char** argv) {
     printf("addr g_abs_sems=%p\n",     (void*)&g_abs_sems);
     printf("addr g_abs_conds_tod=%p\n", (void*)&g_abs_conds_tod);
     printf("addr g_late_rt=%p\n",      (void*)&g_late_rt);
+    printf("addr g_abs_tod_on=%p\n",   (void*)&g_abs_tod_on);
+    printf("addr g_pair_rt_on=%p\n",   (void*)&g_pair_rt_on);
+    printf("addr g_pair_tod_us=%p\n",  (void*)&g_pair_tod_us);
+    printf("addr g_pair_rt_ns=%p\n",   (void*)&g_pair_rt_ns);
     /* dlsym gives each name's default version, the one a game links against. */
     printf("addr libc_clock_nanosleep=%p\n",        dlsym(RTLD_DEFAULT, "clock_nanosleep"));
     printf("addr libc_pthread_cond_timedwait=%p\n", dlsym(RTLD_DEFAULT, "pthread_cond_timedwait"));

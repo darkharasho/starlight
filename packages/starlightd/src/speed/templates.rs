@@ -188,7 +188,11 @@ s_now:
         let rt = OFF_SLOTS + SLOT_REALTIME as u64 * SLOT_SIZE;
         let tod = OFF_SLOTS + SLOT_GETTIMEOFDAY as u64 * SLOT_SIZE;
         format!(
-            "lea rax, [r10+{rt:#x}]
+            "// A partner still at an older generation is rebased to now first, so it is seeded from
+// at the new speed (and the pair stays on one formula).
+mov rax, r8
+call s_pair
+lea rax, [r10+{rt:#x}]
 cmp r11, rax
 je s_from_tod
 lea rax, [r10+{tod:#x}]
@@ -210,7 +214,9 @@ idiv rcx
 mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
 jmp s_newgen
 s_from_tod:
-// REALTIME (ns): from gettimeofday's game time at r8 / 1000 µs, plus the leftover ns.
+// REALTIME (ns): from gettimeofday's game time at r8 / 1000 µs. The sub-µs leftover moves
+// real0 back instead of adding to fake0, so REALTIME is exactly gettimeofday × 1000 on the µs
+// grid at any speed.
 cmp dword ptr [r10+{tod_gen:#x}], 0
 je s_newgen
 push r11
@@ -227,12 +233,19 @@ pop rdx
 pop r8
 pop r11
 imul rax, rax, #1000
-add rax, rdx
 mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
+mov rax, r8
+sub rax, rdx
+mov qword ptr [r11+{SLOT_REAL0:#x}], rax
 ",
             rt_gen = rt + SLOT_GEN,
             tod_gen = tod + SLOT_GEN,
         )
+    };
+    let (rebase_pair, pair_sub) = if wrap32 {
+        (String::new(), String::new())
+    } else {
+        ("mov rax, r8\ncall s_pair\n".to_string(), pair_rebase("s"))
     };
     format!(
         "mov r10, {state:#x}
@@ -273,7 +286,7 @@ s_rebase:
 call s_fake
 mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
 mov qword ptr [r11+{SLOT_REAL0:#x}], r8
-s_newgen:
+{rebase_pair}s_newgen:
 mov rcx, qword ptr [r10+{OFF_SPEED:#x}]
 mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
 mov dword ptr [r11+{SLOT_GEN:#x}], r9d
@@ -294,7 +307,7 @@ mulsd xmm0, qword ptr [r11+{SLOT_SPEED:#x}]
 cvttsd2si rax, xmm0
 add rax, qword ptr [r11+{SLOT_FAKE0:#x}]
 ret
-",
+{pair_sub}",
         acquire = acquire("s"),
         slot_shift = SLOT_SIZE.trailing_zeros(),
     )
@@ -346,6 +359,8 @@ mov rdx, qword ptr [rsp]
 call u_fake
 mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
 mov qword ptr [r11+{SLOT_REAL0:#x}], rdx
+mov rax, rdx
+call u_pair
 mov rcx, qword ptr [r10+{OFF_SPEED:#x}]
 mov qword ptr [r11+{SLOT_SPEED:#x}], rcx
 mov dword ptr [r11+{SLOT_GEN:#x}], r9d
@@ -402,9 +417,67 @@ cmp rax, qword ptr [r11+{SLOT_FAKE0:#x}]
 jl u_zero
 mov rax, 7fffffffffffffff
 ret
-",
+{pair_sub}",
+        pair_sub = pair_rebase("u"),
         acquire = acquire("u"),
         slot_shift = SLOT_SIZE.trailing_zeros(),
+    )
+}
+
+/// `{p}_pair` (a local subroutine of `scale` and `unscale`, run under the lock): when the slot in
+/// `r11` is REALTIME's or gettimeofday's, rebase its partner, if in use and at an older
+/// generation, to the same instant: `rax` is the slot's real reading in its own unit (ns or µs).
+/// The two then always change speed at the same real time, so they never drift apart (a pair
+/// rebased on their separate next reads would differ by the time between them × the speed
+/// change, for good). In: `r9d` the global generation, `r10` the state. Clobbers only `rax`,
+/// `rcx`, `rdx` and `xmm0`.
+fn pair_rebase(p: &str) -> String {
+    let rt = OFF_SLOTS + SLOT_REALTIME as u64 * SLOT_SIZE;
+    let tod = OFF_SLOTS + SLOT_GETTIMEOFDAY as u64 * SLOT_SIZE;
+    format!(
+        "{p}_pair:
+lea rcx, [r10+{rt:#x}]
+cmp r11, rcx
+je {p}_pair_rt
+lea rcx, [r10+{tod:#x}]
+cmp r11, rcx
+jne {p}_pair_done
+// gettimeofday's reading (µs) as REALTIME's (ns).
+imul rax, rax, #1000
+lea rcx, [r10+{rt:#x}]
+jmp {p}_pair_rebase
+{p}_pair_rt:
+// REALTIME's reading (ns) as gettimeofday's (µs).
+mov rcx, #1000
+cqo
+idiv rcx
+lea rcx, [r10+{tod:#x}]
+{p}_pair_rebase:
+mov edx, dword ptr [rcx+{SLOT_GEN:#x}]
+test edx, edx
+je {p}_pair_done
+cmp edx, r9d
+je {p}_pair_done
+inc dword ptr [rcx+{SLOT_SEQ:#x}]
+push rax
+sub rax, qword ptr [rcx+{SLOT_REAL0:#x}]
+jge {p}_pair_forward
+xor eax, eax
+{p}_pair_forward:
+cvtsi2sd xmm0, rax
+mulsd xmm0, qword ptr [rcx+{SLOT_SPEED:#x}]
+cvttsd2si rax, xmm0
+add rax, qword ptr [rcx+{SLOT_FAKE0:#x}]
+mov qword ptr [rcx+{SLOT_FAKE0:#x}], rax
+pop rax
+mov qword ptr [rcx+{SLOT_REAL0:#x}], rax
+mov rdx, qword ptr [r10+{OFF_SPEED:#x}]
+mov qword ptr [rcx+{SLOT_SPEED:#x}], rdx
+mov dword ptr [rcx+{SLOT_GEN:#x}], r9d
+inc dword ptr [rcx+{SLOT_SEQ:#x}]
+{p}_pair_done:
+ret
+"
     )
 }
 
@@ -1131,9 +1204,11 @@ mod tests {
         assert_eq!(st.call(OFF_SCALE, KEY, tod, 1010 * 1_000_000), 1020 * 1_000_000);
         // REALTIME read for the first time 10 s later starts at gettimeofday's game time, not
         // real time, with the sub-µs part of the reading kept.
-        // (1010 s + 1.5 µs is gettimeofday's 1010.000001 s, 1020.000002 s of game time, + 500 ns.)
-        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1010 * S + 1_500), 1020 * S + 2_500);
-        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1012 * S), 1024 * S - 500);
+        // (1010 s + 1.5 µs is gettimeofday's 1010.000001 s, 1020.000002 s of game time; the
+        // 500 ns left over run at 2x from a real0 moved back by them.)
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1010 * S + 1_500), 1020 * S + 3_000);
+        // On the µs grid REALTIME is exactly gettimeofday × 1000.
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1012 * S), 1024 * S);
         assert_eq!(st.call(OFF_SCALE, KEY, tod, 1012 * 1_000_000), 1024 * 1_000_000);
         // The other way round: REALTIME first, gettimeofday starts from it (in µs, rounded down).
         let st = LocalState::new(0.5);
@@ -1267,6 +1342,46 @@ mod tests {
         assert_eq!(w.call((1010, 0), [0x1111, d, 0, 0]), (77, real), "with the lock stuck");
         assert!(nest_is_empty(&st));
         st.put32(OFF_LOCK, 0);
+    }
+
+    #[test]
+    fn a_speed_change_rebases_realtime_and_gettimeofday_together() {
+        const S: u64 = 1_000_000_000;
+        const US: u64 = 1_000_000;
+        let (rt, tod) = (SLOT_REALTIME as u64, SLOT_GETTIMEOFDAY as u64);
+        // Both read at 2.0 from real 1000 s.
+        let st = LocalState::new(2.0);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1000 * US), 1000 * US);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1000 * S), 1000 * S);
+        // 1.0 at real 1001 s; only gettimeofday is read then. REALTIME is next read 59 s later.
+        st.put(OFF_SPEED, 1.0f64.to_bits());
+        st.put32(OFF_GEN, 2);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1001 * US), 1002 * US);
+        assert_eq!(st.get32(OFF_SLOTS + rt * SLOT_SIZE + SLOT_GEN), 2, "REALTIME was rebased with it");
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1060 * S), 1061 * S, "not 1120 s (59 s more at 2x)");
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1100 * US), 1101 * US);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1100 * S), 1101 * S);
+        // A gettimeofday deadline (1101.02 s) waited for on REALTIME converts to 20 ms from now.
+        let deadline = [1101u64, 20_000_000];
+        let w = LocalWait::new(&st, Kind::SemTimedwait);
+        assert_eq!(w.call((1100, 0), [0x1111, deadline.as_ptr() as u64, 0, 0]).1, (1100, 20_000_000));
+        // The same through unscale's rebase: 0.5 at real 1100 s, the first touch is a REALTIME
+        // wait (unscale), and gettimeofday follows.
+        st.put(OFF_SPEED, 0.5f64.to_bits());
+        st.put32(OFF_GEN, 3);
+        assert_eq!(w.call((1100, 0), [0x1111, deadline.as_ptr() as u64, 0, 0]).1, (1100, 40_000_000));
+        assert_eq!(st.get32(OFF_SLOTS + tod * SLOT_SIZE + SLOT_GEN), 3, "gettimeofday was rebased with it");
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1140 * US), 1121 * US);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1140 * S), 1121 * S);
+        // A slot first used while its partner is still at an older generation: the partner is
+        // rebased to now first, then the new slot starts from it.
+        let st = LocalState::new(2.0);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1000 * US), 1000 * US);
+        st.put(OFF_SPEED, 1.0f64.to_bits());
+        st.put32(OFF_GEN, 2);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1010 * S), 1020 * S);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1050 * US), 1060 * US, "at 1.0 since 1010 s, not 2.0 until its own read");
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1050 * S), 1060 * S);
     }
 
     #[test]
