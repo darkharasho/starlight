@@ -252,6 +252,18 @@ describe('compileAaScript', () => {
     expect(fail(compileAaScript('{ [ENABLE] }\n// [ENABLE]\n"target"+10:\ndb 90\n', O)).code).toBe('aa:no-enable');
   });
 
+  it('a label declared after its use compiles like the in-order script', () => {
+    const inOrder = fixture('template-injection.cea');
+    // move label(return) below the `jmp return` and `return:` lines that use it
+    const late = inOrder.replace('label(return)\n', '').replace('registersymbol(INJECT)\n', 'registersymbol(INJECT)\nlabel(return)\n');
+    expect(late).not.toBe(inOrder);
+    expect(late.indexOf('label(return)')).toBeGreaterThan(late.indexOf('return:'));
+    expect(late.indexOf('label(return)')).toBeGreaterThan(late.indexOf('jmp return'));
+    const r = ok(compileAaScript(late, O));
+    expect(r).toEqual(ok(compileAaScript(inOrder, O)));
+    expect(r.cheat!.enable[3]).toEqual({ op: 'assemble', at: 'INJECT', source: 'jmp newmem\nnop 4\nreturn:' });
+  });
+
   it('an [ENABLE] with no statements is a no-op script', () => {
     expect(compileAaScript('[ENABLE]\n// nothing\n[DISABLE]\n', O)).toEqual({ ok: true, cheat: null, registers: [], uses: [] });
   });

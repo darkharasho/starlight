@@ -234,6 +234,17 @@ function substitute(text: string, defines: Map<string, string>): string {
   });
 }
 
+/** Every valid name declared by a `label(…)` statement anywhere in the script (lowercased). */
+function declaredLabels(lines: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const l of lines) {
+    const m = l.replace(/\{\$[^}]*\}/g, '').trim().match(/^label\s*\((.*)\)$/i);
+    if (!m) continue;
+    for (const a of splitArgs(m[1]!)) if (IDENT.test(a)) out.add(a.toLowerCase());
+  }
+  return out;
+}
+
 function compile(script: string, o: { id: string; name: string }): AaResult {
   const { lines, unterminatedAt } = stripComments(script);
 
@@ -245,7 +256,8 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
   let sawEnable = false;
   let sawDisable = false;
   const defines = new Map<string, string>();
-  const labels = new Set<string>();
+  // CE collects label() declarations in a first pass, so a label may be declared after its use.
+  const labels = declaredLabels(lines);
   const allocs: Alloc[] = [];
   const aobs: Aob[] = [];
   const registered: Array<{ name: string }> = [];
