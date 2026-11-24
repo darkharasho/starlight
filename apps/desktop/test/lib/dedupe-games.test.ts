@@ -47,3 +47,34 @@ describe('dedupeGames', () => {
     expect(out[0]!.trainerUpdatedAt).toBe('2026-05-01');
   });
 });
+
+describe('Steam ids', () => {
+  const t = (name: string, steamAppId: number | null, topic: number) =>
+    ({ name, steamAppId, trainerSource: `https://fearlessrevolution.com/viewtopic.php?f=4&t=${topic}` });
+
+  it('groups by Steam app id even when the names differ', async () => {
+    const { dedupeGamesWithSources } = await import('../../src/renderer/lib/dedupe-games.js');
+    const r = dedupeGamesWithSources([t('Dragon Age Inquisition', 1222690, 1), t('Dragon Age™ Inquisition', 1222690, 5)]);
+    expect(r.games).toHaveLength(1);
+    expect(r.games[0]!.trainerSource).toContain('t=5'); // the newer thread
+    expect(r.sources.get('steam:1222690')).toEqual([
+      'https://fearlessrevolution.com/viewtopic.php?f=4&t=5',
+      'https://fearlessrevolution.com/viewtopic.php?f=4&t=1',
+    ]);
+  });
+
+  it('folds an unmatched variant into the matched game of the same name', async () => {
+    const { dedupeGamesWithSources } = await import('../../src/renderer/lib/dedupe-games.js');
+    const r = dedupeGamesWithSources([t('Cyberpunk 2077', null, 9), t('Cyberpunk 2077', 1091500, 2)]);
+    expect(r.games).toHaveLength(1);
+    expect(r.games[0]!.steamAppId).toBe(1091500);
+    expect(r.sources.get('steam:1091500')).toHaveLength(2);
+  });
+
+  it('steamMatchedOnly hides unmatched entries, but not from a catalog with no ids', async () => {
+    const { steamMatchedOnly } = await import('../../src/renderer/lib/dedupe-games.js');
+    expect(steamMatchedOnly([t('A', 1, 1), t('B', null, 2)])).toEqual({ games: [t('A', 1, 1)], hidden: 1 });
+    const none = [t('A', null, 1), t('B', null, 2)];
+    expect(steamMatchedOnly(none)).toEqual({ games: none, hidden: 0 });
+  });
+});

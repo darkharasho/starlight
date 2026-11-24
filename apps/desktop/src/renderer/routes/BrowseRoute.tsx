@@ -1,13 +1,13 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BoxartGrid } from '../components/BoxartGrid.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { openCatalogGame } from '../lib/open-game.js';
-import { installedGameKeys } from '../lib/installed.js';
-import { gameKey } from '../lib/dedupe-games.js';
+import { installedGameKeys, isInstalled } from '../lib/installed.js';
 import type { CatalogGame } from '../types/catalog-game.js';
+import { steamMatchedOnly } from '../lib/dedupe-games.js';
 
 export function BrowseRoute(): JSX.Element {
   const navigate = useNavigate();
@@ -21,10 +21,13 @@ export function BrowseRoute(): JSX.Element {
 
   const installedKeys = installedGameKeys(detectedGames);
 
-  const games: CatalogGame[] = (index?.games ?? []).map(entry => ({
+  const [showUnmatched, setShowUnmatched] = useState(false);
+  const all: CatalogGame[] = (index?.games ?? []).map(entry => ({
     ...entry,
-    installed: installedKeys.has(gameKey(entry.name)),
+    installed: isInstalled(installedKeys, entry),
   }));
+  const matched = steamMatchedOnly(all);
+  const games = showUnmatched ? all : matched.games;
 
   async function onSelect(g: CatalogGame): Promise<void> {
     await openCatalogGame(g, navigate);
@@ -49,10 +52,19 @@ export function BrowseRoute(): JSX.Element {
     <div className="flex flex-col h-full min-h-0">
       <PageHeader title="Browse" subtitle={`${games.length} games in the catalog`}
         right={
-          <button type="button" onClick={() => void load()}
-                  className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan">
-            Refresh
-          </button>
+          <div className="flex items-center gap-3">
+            {matched.hidden > 0 && (
+              <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none"
+                     title="Forum threads Starlight couldn't match to a Steam game: emulator builds, hacks, delisted or very old games">
+                <input type="checkbox" checked={showUnmatched} onChange={(e) => setShowUnmatched(e.target.checked)} />
+                Show {matched.hidden} without a Steam match
+              </label>
+            )}
+            <button type="button" onClick={() => void load()}
+                    className="px-3 py-1.5 text-xs rounded-sm border border-line text-muted hover:border-neon-cyan hover:text-neon-cyan">
+              Refresh
+            </button>
+          </div>
         }
       />
       {loading && games.length === 0

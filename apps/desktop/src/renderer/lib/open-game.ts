@@ -4,7 +4,7 @@ import { useCatalogStore } from '../stores/catalog-store.js';
 import { useCeSessionStore, type StartReq } from '../stores/ce-session-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import type { LaunchTarget } from '../../shared/ipc.js';
-import { gameKey } from './dedupe-games.js';
+import { gameKey, sourcesKey } from './dedupe-games.js';
 import { launchTargetFor } from './installed.js';
 
 /**
@@ -30,7 +30,7 @@ export function sessionRequestFor(
   launch?: LaunchTarget,
 ): StartReq {
   const key = gameKey(entry.name) || entry.id;
-  const known = useCatalogStore.getState().tableSources.get(key) ?? [];
+  const known = useCatalogStore.getState().tableSources.get(sourcesKey(entry)) ?? [];
   const sources = [...new Set([...(entry.trainerSource ? [entry.trainerSource] : []), ...known])];
   const game: GameIdentity = { id: entry.id, name: entry.name, steamAppId: entry.steamAppId ?? null };
   return {
@@ -48,10 +48,13 @@ export function sessionRequestFor(
  * display catalog keeps one entry per game, which may be a different title
  * variant (and id) than the one main matched — so fall back to the game key.
  */
-export function findCatalogEntry(game: { id: string; name: string }): CatalogIndexEntry | undefined {
+export function findCatalogEntry(game: { id: string; name: string; steamAppId?: number | null }): CatalogIndexEntry | undefined {
   const games = useCatalogStore.getState().index?.games ?? [];
   const key = gameKey(game.name);
-  return games.find((g) => g.id === game.id) ?? games.find((g) => gameKey(g.name) === key);
+  const steamAppId = game.steamAppId;
+  return games.find((g) => g.id === game.id)
+    ?? (steamAppId != null ? games.find((g) => g.steamAppId === steamAppId) : undefined)
+    ?? games.find((g) => gameKey(g.name) === key);
 }
 
 /** Opens a catalog game's trainer and shows the session. */

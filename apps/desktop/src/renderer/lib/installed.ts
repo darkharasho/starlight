@@ -16,15 +16,21 @@ export function launchTargetFor(game: { name: string; steamAppId?: number | null
 }
 
 /**
- * Game keys of everything the library scan found. The catalog is built from
- * forum threads and carries no Steam app ids, so installed games are matched
- * to catalog entries by normalized name.
+ * Keys of everything the library scan found: each game's name key, plus
+ * `steam:<appid>` for Steam games, so catalog entries match by id first.
  */
 export function installedGameKeys(games: DetectedGame[]): Set<string> {
   const keys = new Set<string>();
   for (const g of games) {
     const k = gameKey(g.name);
     if (k) keys.add(k);
+    const id = g.source === 'steam' ? g.appId : g.boxartSteamAppId != null ? String(g.boxartSteamAppId) : null;
+    if (id && /^\d+$/.test(id)) keys.add(`steam:${id}`);
   }
   return keys;
+}
+
+/** Whether a catalog entry is installed, given `installedGameKeys`. */
+export function isInstalled(keys: Set<string>, entry: { name: string; steamAppId?: number | null }): boolean {
+  return (entry.steamAppId != null && keys.has(`steam:${entry.steamAppId}`)) || keys.has(gameKey(entry.name));
 }

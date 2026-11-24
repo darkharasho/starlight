@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { starlight } from '../ipc-client.js';
 import type { CatalogIndex, FetchTrainerRequest } from '../../shared/ipc.js';
 import type { CatalogIndexEntry, StarlightTrainer } from '@starlight/catalog/schema';
-import { dedupeGames, gameKey } from '../lib/dedupe-games.js';
+import { dedupeGamesWithSources } from '../lib/dedupe-games.js';
 
 interface CatalogState {
   index: CatalogIndex | null;
@@ -53,16 +53,10 @@ export const useCatalogStore = create<CatalogState>((set) => ({
     try {
       const r = await starlight().fetchCatalog();
       if (r.ok) {
-        // Collapse title-variant duplicates for display.
-        const index = { ...r.index, games: dedupeGames(r.index.games) };
-        const tableSources = new Map<string, string[]>();
-        for (const g of r.index.games) {
-          if (!g.trainerSource) continue;
-          const key = gameKey(g.name);
-          const list = tableSources.get(key);
-          if (!list) tableSources.set(key, [g.trainerSource]);
-          else if (!list.includes(g.trainerSource)) list.push(g.trainerSource);
-        }
+        // Collapse duplicates (same Steam app, or title variants) for display,
+        // keeping every thread each game has for the table picker.
+        const { games, sources: tableSources } = dedupeGamesWithSources(r.index.games);
+        const index = { ...r.index, games };
         set({ index, tableSources, loading: false });
       } else {
         set({ loading: false, error: r.error });

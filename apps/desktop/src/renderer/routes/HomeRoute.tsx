@@ -7,8 +7,8 @@ import { useConfigStore, attachConfigEvents } from '../stores/config-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { useTrainerStore } from '../stores/trainer-store.js';
 import { openCatalogGame, showGameScreen } from '../lib/open-game.js';
-import { installedGameKeys } from '../lib/installed.js';
-import { gameKey } from '../lib/dedupe-games.js';
+import { installedGameKeys, isInstalled } from '../lib/installed.js';
+import { steamMatchedOnly } from '../lib/dedupe-games.js';
 import type { CatalogGame } from '../types/catalog-game.js';
 import type { RecentTrainer } from '../../shared/ipc.js';
 
@@ -41,10 +41,11 @@ export function HomeRoute(): JSX.Element {
   const installedKeys = installedGameKeys(detectedGames);
   const allGames: CatalogGame[] = (index?.games ?? []).map(entry => ({
     ...entry,
-    installed: installedKeys.has(gameKey(entry.name)),
+    installed: isInstalled(installedKeys, entry),
   }));
   const installed = allGames.filter((g) => g.installed);
-  const featured = allGames;
+  // The shelf shows games matched to Steam; Browse and search have the rest.
+  const featured = steamMatchedOnly(allGames).games;
   const installedCount = installed.length;
 
   async function selectGame(g: CatalogGame): Promise<void> {

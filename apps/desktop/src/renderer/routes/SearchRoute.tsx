@@ -6,8 +6,7 @@ import { useSearchStore } from '../stores/search-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { openCatalogGame } from '../lib/open-game.js';
-import { installedGameKeys } from '../lib/installed.js';
-import { gameKey } from '../lib/dedupe-games.js';
+import { installedGameKeys, isInstalled } from '../lib/installed.js';
 import type { CatalogGame } from '../types/catalog-game.js';
 
 export function SearchRoute(): JSX.Element {
@@ -22,7 +21,7 @@ export function SearchRoute(): JSX.Element {
   const installedKeys = installedGameKeys(detectedGames);
   const allGames: CatalogGame[] = (index?.games ?? []).map(entry => ({
     ...entry,
-    installed: installedKeys.has(gameKey(entry.name)),
+    installed: isInstalled(installedKeys, entry),
   }));
   const matches = query.trim()
     ? allGames.filter((g) => g.name.toLowerCase().includes(query.trim().toLowerCase()))
