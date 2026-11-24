@@ -1117,7 +1117,11 @@ const reply = (cmd) => {
       try {
         spawnSpy.mockClear();
         const n = nativeOpts(t, 'sw1');
+        // Releasing the hold broadcasts session:engine with the session's mode.
+        const modeAtRelease: (string | undefined)[] = [];
+        n.release.mockImplementation(() => { modeAtRelease.push(getActiveSession()?.mode); });
         const r = await startSession(n.opts);
+        expect(modeAtRelease).toEqual(['ce']);
         expect(r.attempts.map((a) => `${a.filename}:${a.verdict}`)).toEqual(['new.CT:broken', 'mid.CT:broken', 'old.CT:works']);
         expect(r).toMatchObject({
           mode: 'ce', engine: 'ce', tableId: 10, verdict: 'works',
@@ -1195,6 +1199,34 @@ const reply = (cmd) => {
         expect(exited).toEqual([r.sessionId]);
         expect(n.release).toHaveBeenCalledTimes(1);
         expect(n.backend.close).toHaveBeenCalledTimes(1);
+      } finally { await t.close(); }
+    });
+
+    it('a retry on a native session skips a CE-routed candidate and stays native', async () => {
+      const log = join(dir, 'fake-ce.log');
+      await installFakeCe(log);
+      const t = await serveTables({
+        'new.CT': { route: 'native', records: MASTER, enable: {} },
+        'mid.CT': { route: 'ce', records: MASTER, enable: { 1: true } },
+      });
+      try {
+        spawnSpy.mockClear();
+        // The agent holds the game at first, so the startup pick can't switch.
+        let holders: string[] = ['agent'];
+        const n = nativeOpts(t, 'rt1');
+        const r = await startSession({ ...n.opts, starlightdHolders: () => holders as never });
+        expect(r).toMatchObject({ mode: 'native', verdict: 'broken' });
+        holders = [];
+        const again = await retryTables({ sessionId: r.sessionId });
+        expect(again).toMatchObject({ ok: true, verdict: 'broken', tableId: 20 });
+        expect(spawnSpy).not.toHaveBeenCalled();
+        expect(n.release).not.toHaveBeenCalled();
+        expect(n.engine.detach).not.toHaveBeenCalled();
+        expect(n.backend.close).not.toHaveBeenCalled();
+        expect(getActiveSession()).toMatchObject({ mode: 'native', pid: 4242 });
+        expect(getActiveSession()!.backend?.kind).toBe('native');
+        // Still usable.
+        expect(await callSession({ sessionId: r.sessionId, method: 'set_value', params: { id: 2, value: '7' } })).toEqual({ ok: true, value: '7' });
       } finally { await t.close(); }
     });
 

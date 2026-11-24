@@ -125,9 +125,10 @@ interface PickContext {
   /** Routes a downloaded candidate (native sessions; cached per path). */
   route?: ((ctPath: string, tableId: number) => Promise<RouteDecision | null>) | undefined;
   /**
-   * Native sessions: puts the native backend away and starts Cheat Engine on
-   * `ctPath` (D17). False when it can't now (starlightd is held), and the
-   * candidate is skipped.
+   * Native sessions, during the startup pick only: puts the native backend away
+   * and starts Cheat Engine on `ctPath` (D17). False when it can't now
+   * (starlightd is held), and the candidate is skipped. Cleared once the
+   * startup pick is done, so a retry never moves a native session to CE.
    */
   switchToCe?: ((ctPath: string) => Promise<boolean>) | undefined;
 }
@@ -637,8 +638,9 @@ async function startNativeSession(opts: StartSessionOpts, a: {
       await sendWithTimeout(old, { method: 'shutdown' }, 5000).catch(() => {});
       try { await old.close(); } catch { /* ignore */ }
     }
-    await endNativeOf(session);
+    // Mode first: releasing the hold broadcasts session:engine with it.
     session.mode = 'ce';
+    await endNativeOf(session);
     try {
       const detect = await ensureRuntime(opts);
       const proton2 = await (opts.detectProtonFn ?? detectProton)({ pid });
@@ -707,11 +709,14 @@ async function startNativeSession(opts: StartSessionOpts, a: {
     attached = status.attached !== false;
     picked = await pickTable(session, { loaded: tableId, ready: true, attached });
   } catch (err) {
+    pick.switchToCe = undefined;
     // Switched to Cheat Engine and then released to starlightd mid-pick.
     if (session.mode === 'paused' && active === session) return pausedResult();
     await endSession({ sessionId }).catch(() => {});
     throw err;
   }
+  // D17 applies to the startup pick only: a later retry keeps the session native.
+  pick.switchToCe = undefined;
   if (active !== session) throw new Error('The game closed while it was loading.');
 
   // On Cheat Engine now: a hold that landed while it started hands the game over.
@@ -872,7 +877,11 @@ async function pickTable(s: SessionState, first: { loaded: number | null; ready?
       const d = await ctx.route(ctPath, t.id);
       ctx.routes.set(t.id, routeSummary(d));
       if (d?.engine !== 'native') {
-        if (!ctx.switchToCe || !(await ctx.switchToCe(ctPath))) return false;
+        if (!ctx.switchToCe) {
+          console.log(`[ct-runner] ${ctx.cacheKey}#${t.id}: needs Cheat Engine; skipped while the table runs on Starlight's engine`);
+          return false;
+        }
+        if (!(await ctx.switchToCe(ctPath))) return false;
         backend = s.backend!;
         s.ctPath = ctPath;
         return true;
