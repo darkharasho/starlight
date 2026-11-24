@@ -107,7 +107,11 @@ export async function resolveSteamIds(titles: string[], opts: ResolveOpts): Prom
     if (i % 25 === 24) await writeMatchCache(opts.cachePath, cache);
     if (sleepMs > 0 && i < todo.length - 1) await sleep(sleepMs);
   }
-  if (todo.length > 0) await writeMatchCache(opts.cachePath, cache);
+  // Titles no longer in the catalog (or no longer cleaned to that form) drop out of the file.
+  const wanted = new Set(unique.map(keyOf));
+  let pruned = false;
+  for (const k of Object.keys(cache)) if (!wanted.has(k)) { delete cache[k]; pruned = true; }
+  if (todo.length > 0 || pruned) await writeMatchCache(opts.cachePath, cache);
 
   const out = new Map<string, SteamHit>();
   for (const t of unique) {

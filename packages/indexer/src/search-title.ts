@@ -19,7 +19,7 @@ const TRAILING_LABEL = new RegExp(
     'demo', 'playtest', 'early access', 'full release', 'full game', '(?:steam |gog )?release version',
     'latest(?: steam)?(?: update| version| patch)?', 'updated?', 'patch(?:ed)?', 'hotfix',
     'alpha', 'beta', 'build', 'table', 'tables', 'cheats?', 'mega ?-?cheat ?table', 'options?',
-    'free game', 'unofficial patch', 'and', '(?:achievement |gear |dlc |item )?unlocker', 'cheat ?engine', 'aio', 'ct', 'table v[.:]?',
+    'free game', 'unofficial patch', 'and', '(?:achievement |gear |dlc |item )?unlocker', 'cheat ?engine', 'aio', 'ct', 'ce', 'ce ?tables?', 'pc', 'table v[.:]?',
   ].join('|') + ')\\.?\\s*$',
   'i',
 );
@@ -33,13 +33,15 @@ export function searchTitle(name: string): string {
   // Some posters sort a thread down the list with a leading "z ".
   s = s.replace(/^z\s+(?=\S)/, '');
   s = s.replace(DATE, ' ').replace(MONTH_DATE, ' ');
+  // Stray quotes, and "Batman : Arkham" spacing the store search doesn't like.
+  s = s.replace(/["“”]/g, '').replace(/\s+:/g, ':');
   // Everything from the first bracket, option count or "@" on is a label.
-  const cut = s.search(/\s*(?:[([{]|\+\s*\d|\s\+\s|@|\*\*)/);
+  const cut = s.search(/\s*(?:[([{~]|\+\s*[\d?]|\s\+\s|@|\*\*)/);
   if (cut > 0) s = s.slice(0, cut);
   s = s.replace(/\s{2,}/g, ' ').trim();
   for (let prev = ''; prev !== s;) {
     prev = s;
-    s = s.replace(TRAILING_LABEL, '').replace(/\b(?:v|ver|version|b|build|update|patch)\s*[.:]?\s*\d[\w.]*\s*$/i, '').replace(/\s\d+(?:\.\d+){1,3}[a-z]?\s*$/i, '').trim();
+    s = s.replace(TRAILING_LABEL, '').replace(/\b(?:v|ver|version|b|build|update|patch)\s*[.:]?\s*\d[\w.]*\s*$/i, '').replace(/\s\d+(?:\.\d+){1,3}(?:[a-z]|-\S*)?\s*$/i, '').trim();
     s = s.replace(/[\s,;:/&|-]+$/, '');
   }
   return s.length > 0 ? s : name.trim();

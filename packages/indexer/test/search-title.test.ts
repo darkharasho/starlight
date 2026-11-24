@@ -55,6 +55,14 @@ describe('labels found in the live sample', () => {
     ['Descenders Next Achievement Unlocker', 'Descenders Next'],
     ['Yakuza Kiwami 2 Remastered AIO', 'Yakuza Kiwami 2 Remastered'],
     ['Grand Theft Auto V', 'Grand Theft Auto V'],
+    ['Mycopunk CETable', 'Mycopunk'],
+    ['"Danganronpa 2: Goodbye Despair" CE', 'Danganronpa 2: Goodbye Despair'],
+    ['Kena: Bridge of Spirits +?', 'Kena: Bridge of Spirits'],
+    ['Batman : Arkham Origins', 'Batman: Arkham Origins'],
+    ["Assassin's Creed 7 ~ Syndicate ~", "Assassin's Creed 7"],
+    ['Megabonk PC', 'Megabonk'],
+    ['Mythforce 1.0.2.2-1-g650a03c', 'Mythforce'],
+    ['Untitled Goose Game', 'Untitled Goose Game'],
     ['Grand Theft Auto V table v: 1.6 CT', 'Grand Theft Auto V'],
   ])('%s → %s', (raw, want) => { expect(searchTitle(raw)).toBe(want); });
 

@@ -46,6 +46,10 @@ describe('resolveSteamIds', () => {
     const out2 = await resolveSteamIds(['Cyberpunk 2077', 'Homebrew'], { cachePath, fetch: fakeFetch(db, again), sleepMs: 0 });
     expect(again).toEqual([]);
     expect(out2.size).toBe(1);
+
+    // A title gone from the catalog drops out of the file.
+    await resolveSteamIds(['Cyberpunk 2077'], { cachePath, fetch: fakeFetch(db, again), sleepMs: 0 });
+    expect(Object.keys(await readMatchCache(cachePath))).toEqual(['cyberpunk 2077']);
   });
 
   it('retries a miss after 30 days and leaves failed searches uncached', async () => {
