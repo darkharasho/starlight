@@ -581,7 +581,11 @@ async function startNativeSession(opts: StartSessionOpts, a: {
   const sessionId = randomUUID();
   const engineSession = await (opts.attachEngineFn ?? (async (p: number) => attach(await getEngineClient(), p)))(pid);
   const release = (opts.holdTable ?? (() => () => {}))(pid);
+  // Set once the session is active: a dropped starlightd connection ends it.
+  let offDetached = (): void => {};
   const endNative = async (): Promise<void> => {
+    // Our own detach must not count as the connection dropping.
+    offDetached();
     release();
     await engineSession.detach().catch(() => {});
   };
@@ -658,17 +662,23 @@ async function startNativeSession(opts: StartSessionOpts, a: {
     return true;
   };
 
-  session.stopWatch = watchGame(pid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, () => {
+  // The game exits, or starlightd's connection drops: the session ends, once,
+  // like a Cheat Engine session does when its game exits.
+  const gone = (): void => {
     if (active !== session) return;
     active = null;
+    session.stopWatch?.();
     void scannerHost.end().catch(() => {});
-    // The game is gone: close whichever backend runs the table now.
+    // Close whichever backend runs the table now, then detach and release.
     void (async () => {
       try { await session.backend?.close(); } catch { /* ignore */ }
       await endNativeOf(session);
     })();
     opts.onGameExit?.(sessionId);
-  });
+  };
+  session.stopWatch = watchGame(pid, opts.isGameAlive ?? defaultIsGameAlive, opts.gameWatchMs ?? 2000, gone);
+  offDetached = engineSession.onDetached(gone);
+  if (!engineSession.attached) gone();
 
   const pausedResult = async (): Promise<StartSessionResult> => {
     const records = await recordsFromCt(session.ctPath ?? ctPath);

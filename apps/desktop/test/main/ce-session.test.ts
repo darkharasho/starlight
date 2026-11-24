@@ -960,9 +960,24 @@ const reply = (cmd) => {
       });
       return { fn, sends, created, close };
     }
+    /** Like the engine's Session: detach (or a dropped connection) tells every listener, once. */
     function fakeEngineSession() {
-      const detach = vi.fn(async () => {});
-      return { detach, session: { pid: 4242, handle: 1, attached: true, client: {}, detach, onDetached: () => () => {} } as unknown as Session };
+      let attached = true;
+      const cbs: ((reason: string) => void)[] = [];
+      const mark = (reason: string): void => {
+        if (!attached) return;
+        attached = false;
+        for (const cb of [...cbs]) cb(reason);
+      };
+      const detach = vi.fn(async () => { mark('manual'); });
+      const session = {
+        pid: 4242, handle: 1, client: {}, detach,
+        get attached() { return attached; },
+        onDetached: (cb: (reason: string) => void) => { cbs.push(cb); return () => { const i = cbs.indexOf(cb); if (i !== -1) cbs.splice(i, 1); }; },
+      } as unknown as Session;
+      /** starlightd died or the socket dropped. */
+      const drop = (): void => mark('process-exit');
+      return { detach, session, drop };
     }
     function nativeOpts(t: { tables: { id: number; filename: string; url: string; topicUrl: string }[] }, cacheKey: string) {
       const route = fakeRoute();
@@ -1121,6 +1136,65 @@ const reply = (cmd) => {
         expect(n.route.mock.calls.map((c) => c[1])).toEqual(['sw1#30', 'sw1#20']);
         expect(getActiveSession()).toMatchObject({ mode: 'ce', pid: 4242 });
         expect(ceSessionFor(4242)).toEqual({ sessionId: r.sessionId });
+      } finally { await t.close(); }
+    });
+
+    it('a dropped starlightd connection ends a native session, clears hotkeys and releases the table hold', async () => {
+      const log = join(dir, 'fake-ce.log');
+      await installFakeCe(log);
+      const t = await serveTables({ 'game.CT': { route: 'native', records: [{ id: 5, name: 'God Mode' }] } });
+      try {
+        // A game owner: the table hold is what starlightd holds the game with.
+        const holders: string[] = [];
+        const exited: string[] = [];
+        const n = nativeOpts(t, 'drop1');
+        n.holdTable.mockImplementation(() => { holders.push('table'); return n.release; });
+        n.release.mockImplementation(() => { holders.splice(holders.indexOf('table'), 1); });
+        const r = await startSession({
+          ...n.opts, starlightdHolders: () => holders as never, onGameExit: (id) => { exited.push(id); },
+        });
+        expect(r.mode).toBe('native');
+        hotkeyHost.clearSessionHotkeys.mockClear();
+        scannerHost.end.mockClear();
+
+        n.engine.drop();
+        n.engine.drop();
+        expect(exited).toEqual([r.sessionId]);
+        expect(getActiveSession()).toBeNull();
+        await vi.waitFor(() => { if (hotkeyHost.clearSessionHotkeys.mock.calls.length === 0) throw new Error('not yet'); }, { timeout: 2000, interval: 10 });
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(holders).toEqual([]);
+        expect(n.backend.close).toHaveBeenCalledTimes(1);
+        expect(scannerHost.end).toHaveBeenCalledTimes(1);
+        // Ending it again (the game exit landing too, or the renderer) does nothing more.
+        await endSession({ sessionId: r.sessionId });
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(n.backend.close).toHaveBeenCalledTimes(1);
+        expect(exited).toHaveLength(1);
+
+        // A CE-routed table on the same game now runs on Cheat Engine, not paused.
+        const ce = await serveTables({ 'ce.CT': { route: 'ce', records: MASTER, enable: { 1: true } } });
+        try {
+          const c = nativeOpts(ce, 'drop1-ce');   // same pid (4242); its own cache entry
+          const r2 = await startSession({ ...c.opts, starlightdHolders: () => holders as never });
+          expect(r2).toMatchObject({ mode: 'ce', engine: 'ce' });
+        } finally { await ce.close(); }
+      } finally { await t.close(); }
+    });
+
+    it('a game exit and a dropped connection together end the native session once', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: [{ id: 5, name: 'God Mode' }] } });
+      try {
+        let alive = true;
+        const exited: string[] = [];
+        const n = nativeOpts(t, 'drop2');
+        const r = await startSession({ ...n.opts, isGameAlive: () => alive, gameWatchMs: 20, onGameExit: (id) => { exited.push(id); } });
+        alive = false;
+        n.engine.drop();
+        await new Promise((res) => setTimeout(res, 100));
+        expect(exited).toEqual([r.sessionId]);
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(n.backend.close).toHaveBeenCalledTimes(1);
       } finally { await t.close(); }
     });
 
