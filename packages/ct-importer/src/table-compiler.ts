@@ -206,7 +206,7 @@ export function compileTable(xml: string): CompiledTable {
     if (options.length > 0) r.options = options;
   });
 
-  // Pass 3: the table-wide symbol registry, then each script's uses against it (R16: lowercased).
+  // Pass 3: the table-wide symbol registry, then every record's needed names against it (R16: lowercased).
   const registeredBy: Record<string, number> = {};
   for (const r of records) {
     const script = r.kind === 'script' || r.kind === 'header' ? r.script : null;
@@ -215,10 +215,15 @@ export function compileTable(xml: string): CompiledTable {
       if (!(key in registeredBy)) registeredBy[key] = r.id;
     }
   }
+  // Names a record needs from the registry: a script's uses, or a value address's symbol base
+  // (the name before any +/-hex, also inside brackets, which parseCtAddress has already unwrapped).
+  const needed = (r: CompiledRecord): string[] => {
+    if (r.kind === 'script' || r.kind === 'header') return r.script?.uses ?? [];
+    if (r.kind === 'value' && r.address.kind === 'symbol') return [r.address.expr.replace(/\s*[+-].*$/, '')];
+    return [];
+  };
   records.forEach((r, k) => {
-    const script = r.kind === 'script' || r.kind === 'header' ? r.script : null;
-    if (!script) return;
-    const missing = script.uses.map((u) => u.toLowerCase()).filter((u) => !(u in registeredBy));
+    const missing = needed(r).map((u) => u.toLowerCase()).filter((u) => !(u in registeredBy));
     if (missing.length === 0) return;
     const { id, name, depth, opts, hotkeys } = r;
     records[k] = {

@@ -87,6 +87,29 @@ describe('compileTable', () => {
     expect(t.native).toBe(false);
   });
 
+  it('a value record whose symbol nobody registers is sym:unresolved and the table is not native', () => {
+    const v = (id: number, addr: string) =>
+      `<CheatEntry><ID>${id}</ID><Description>"V${id}"</Description><VariableType>4 Bytes</VariableType><Address>${addr}</Address></CheatEntry>`;
+    const t = compileTable(ct(v(1, '[pFoo]+10') + v(2, 'PFOO+8')));
+    expect(t.records[0]).toMatchObject({ kind: 'unsupported', code: 'sym:unresolved', detail: 'pfoo' });
+    expect(t.records[1]).toMatchObject({ kind: 'unsupported', code: 'sym:unresolved', detail: 'pfoo' });
+    expect(t.native).toBe(false);
+    expect(t.reasons.map((r) => [r.recordId, r.code])).toEqual([[1, 'sym:unresolved'], [2, 'sym:unresolved']]);
+  });
+
+  it('a value record whose symbol is registered stays native', () => {
+    const reg = `<CheatEntry><ID>1</ID><Description>"Reg"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]
+globalalloc(pFoo,8)
+[DISABLE]
+</AssemblerScript></CheatEntry>`;
+    const v = `<CheatEntry><ID>2</ID><Description>"V"</Description><VariableType>4 Bytes</VariableType><Address>[PFOO]+10</Address></CheatEntry>`;
+    const t = compileTable(ct(reg + v));
+    expect(t.registeredBy).toEqual({ pfoo: 1 });
+    expect(t.records[1]).toMatchObject({ kind: 'value', address: { kind: 'symbol', expr: 'PFOO', offsets: ['0x10'] } });
+    expect(t.reasons).toEqual([]);
+    expect(t.native).toBe(true);
+  });
+
   it('a used Mono name is sym:mono', () => {
     const script = `[ENABLE]
 alloc(newmem,$1000,PlayerController:Update+1A)
