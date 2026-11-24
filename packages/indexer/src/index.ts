@@ -7,7 +7,8 @@ import { readSeeds } from './seeds.js';
 import { allocateId } from './slug.js';
 import { writeIndex } from './write.js';
 import { discover } from './discover.js';
-import { loadSteamAppList } from './steam.js';
+import { resolveSteamIds } from './steam-match.js';
+import { searchTitle } from './search-title.js';
 import { Progress } from './progress.js';
 import { cleanTitle } from './title.js';
 
@@ -19,6 +20,8 @@ const SEEDS_PATH = join(PKG_ROOT, 'seeds.yaml');
 const CATALOG_DIR = join(REPO_ROOT, 'packages', 'catalog');
 const STATUS_PATH = join(PKG_ROOT, '.indexer-status.json');
 const DISCOVER_RESUME_PATH = join(PKG_ROOT, '.discover-progress.json');
+/** Title → Steam app match, checked in so each run only searches new titles. */
+const STEAM_IDS_PATH = join(PKG_ROOT, 'steam-ids.json');
 
 async function main(): Promise<number> {
   const subcommand = process.argv[2] ?? 'index';
@@ -33,9 +36,7 @@ async function main(): Promise<number> {
       ...(pageLimitEnv ? { pageLimit: Number(pageLimitEnv) } : {}),
       statusPath: STATUS_PATH,
       resumePath: DISCOVER_RESUME_PATH,
-      loadSteamMap: () => loadSteamAppList({
-        cachePath: join(PKG_ROOT, '.steam-applist-cache.json'),
-      }),
+      // Steam ids are matched by the index step (steam-ids.json).
     });
     return 0;
   }
@@ -53,18 +54,33 @@ async function main(): Promise<number> {
     lineEvery: 100,
   });
 
+  // Re-apply the cleaners from rawTitle when present, so changes to them
+  // propagate without needing a fresh discover run.
+  const titles = seeds.map((seed) => searchTitle(seed.rawTitle ? cleanTitle(seed.rawTitle) : seed.name));
+
+  // STARLIGHT_STEAM_OFFLINE=1 uses only already-matched titles; STARLIGHT_STEAM_LIMIT caps new searches.
+  const offline = process.env.STARLIGHT_STEAM_OFFLINE === '1';
+  const limitEnv = process.env.STARLIGHT_STEAM_LIMIT;
+  const steam = await resolveSteamIds(titles, {
+    cachePath: STEAM_IDS_PATH,
+    ...(offline ? { limit: 0 } : limitEnv ? { limit: Number(limitEnv) } : {}),
+    onProgress: (done, total, title) => {
+      if (done % 50 === 0) console.log(`[steam] ${done}/${total} ${title}`);
+    },
+  });
+
   const generatedAt = new Date().toISOString();
   const indexEntries: CatalogIndexEntry[] = [];
-  for (const seed of seeds) {
-    // Re-apply cleanTitle from rawTitle when present, so changes to the cleaner
-    // propagate without needing a fresh discover run.
-    const name = seed.rawTitle ? cleanTitle(seed.rawTitle) : seed.name;
+  for (const [i, seed] of seeds.entries()) {
+    const hit = steam.get(titles[i]!);
+    // A matched thread shows under Steam's name, so variants of one game agree.
+    const name = hit?.name ?? titles[i]!;
     const id = allocateId(name, taken);
     taken.add(id);
     indexEntries.push({
       id,
       name,
-      steamAppId: seed.steamAppId,
+      steamAppId: seed.steamAppId ?? hit?.id ?? null,
       processName: seed.processName,
       platform: seed.platform,
       ...(seed.tags ? { tags: seed.tags } : {}),
@@ -75,7 +91,8 @@ async function main(): Promise<number> {
     await progress.tick(id);
   }
   await writeIndex(CATALOG_DIR, indexEntries);
-  await progress.done(`${indexEntries.length} entries → packages/catalog/index.json`);
+  const withId = indexEntries.filter((e) => e.steamAppId != null).length;
+  await progress.done(`${indexEntries.length} entries (${withId} with Steam ids) → packages/catalog/index.json`);
   return 0;
 }
 

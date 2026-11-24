@@ -37,4 +37,5 @@ jobs:
           add-paths: |
             packages/catalog/index.json
             packages/catalog/trainers/**
+            packages/indexer/steam-ids.json
           delete-branch: true
