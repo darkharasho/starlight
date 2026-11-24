@@ -355,6 +355,40 @@ static void* abs_sem_loop(void* arg) {
     return NULL;
 }
 
+/* --abs-cond-tod: the classic pattern: the deadline is built from gettimeofday and waited for
+ * on a default-clock (REALTIME) condvar; counts into g_abs_conds_tod.
+ * --late-realtime <ms>: a thread that starts reading clock_gettime(CLOCK_REALTIME) every 20 ms only
+ * after <ms>, storing it in g_late_rt (REALTIME first used long after gettimeofday). */
+volatile int64_t   g_abs_conds_tod = 0;
+volatile int64_t   g_late_rt       = 0;
+
+static void* abs_cond_tod_loop(void* arg) {
+    (void)arg;
+    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+    pthread_mutex_lock(&m);
+    for (;;) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        struct timespec d = { tv.tv_sec, tv.tv_usec * 1000L + ABS_STEP_NS };
+        while (d.tv_nsec >= 1000000000L) { d.tv_nsec -= 1000000000L; d.tv_sec += 1; }
+        while (pthread_cond_timedwait(&c, &m, &d) != ETIMEDOUT) {}
+        __atomic_fetch_add(&g_abs_conds_tod, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+static void* late_realtime_loop(void* arg) {
+    usleep((useconds_t)(long)arg * 1000);
+    for (;;) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        g_late_rt = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        usleep(20 * 1000);
+    }
+    return NULL;
+}
+
 static AbsCond s_abs_mono = { CLOCK_MONOTONIC, &g_abs_conds };
 static AbsCond s_abs_rt   = { CLOCK_REALTIME,  &g_abs_conds_rt };
 
@@ -425,6 +459,14 @@ int main(int argc, char** argv) {
             else if (strcmp(argv[i], "--abs-cond-rt") == 0) r = pthread_create(&th, NULL, abs_cond_loop, &s_abs_rt);
             else r = pthread_create(&th, NULL, abs_sem_loop, NULL);
             if (r != 0) { perror(argv[i]); return 1; }
+        }
+        if (strcmp(argv[i], "--abs-cond-tod") == 0) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, abs_cond_tod_loop, NULL) != 0) { perror("--abs-cond-tod"); return 1; }
+        }
+        if (strcmp(argv[i], "--late-realtime") == 0 && i + 1 < argc) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, late_realtime_loop, (void*)atol(argv[i + 1])) != 0) { perror("--late-realtime"); return 1; }
         }
         if (strcmp(argv[i], "--abs-cond-threads") == 0 && i + 1 < argc) {
             int n = atoi(argv[i + 1]);
@@ -504,6 +546,8 @@ int main(int argc, char** argv) {
     printf("addr g_abs_conds=%p\n",    (void*)&g_abs_conds);
     printf("addr g_abs_conds_rt=%p\n", (void*)&g_abs_conds_rt);
     printf("addr g_abs_sems=%p\n",     (void*)&g_abs_sems);
+    printf("addr g_abs_conds_tod=%p\n", (void*)&g_abs_conds_tod);
+    printf("addr g_late_rt=%p\n",      (void*)&g_late_rt);
     /* dlsym gives each name's default version, the one a game links against. */
     printf("addr libc_clock_nanosleep=%p\n",        dlsym(RTLD_DEFAULT, "clock_nanosleep"));
     printf("addr libc_pthread_cond_timedwait=%p\n", dlsym(RTLD_DEFAULT, "pthread_cond_timedwait"));

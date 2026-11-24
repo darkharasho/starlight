@@ -23,7 +23,8 @@ pub struct HookTarget {
     pub abi: Abi,
     pub kind: Kind,
     pub slot: u32,
-    /// `GettimeofdayGot` only: the function the hook calls (`__vdso_gettimeofday`).
+    /// `GettimeofdayGot`: the function the hook calls (`__vdso_gettimeofday`). Waits: the
+    /// `__vdso_clock_gettime` the hook reads real time with.
     pub original: Option<u64>,
     /// `GettimeofdayGot` only: the GOT slots to point at the hook.
     pub got_slots: Vec<u64>,

@@ -620,3 +620,33 @@ fn many_waiting_threads_do_not_exhaust_the_nesting_table() {
     eprintln!("measured rate of g_abs_conds (80 threads) at 2x: {waits:.1}/s");
     assert!(waits > 6000.0, "80 waiting threads wake {waits:.1}/s at 2x, expected about 8000");
 }
+
+#[test]
+fn abstime_wait_on_a_gettimeofday_deadline_follows_game_speed() {
+    // gettimeofday + timeout, waited for on a REALTIME condvar: the game never calls
+    // clock_gettime(REALTIME), so the wait converts through gettimeofday's slot.
+    abstime_wait_follows_game_speed("--abs-cond-tod", "g_abs_conds_tod", "pthread_cond_timedwait");
+}
+
+#[test]
+fn a_late_realtime_reader_keeps_gettimeofday_deadlines_right() {
+    // gettimeofday runs at 2x for 1.5 s before anything reads clock_gettime(REALTIME). REALTIME
+    // then starts from gettimeofday's game time (one clock), so the REALTIME wait, now converted
+    // through REALTIME's slot, still gets gettimeofday's deadline right: about 100/s, not a
+    // stall on the 0.75 s gained.
+    let _serial = serial();
+    let t = Target::spawn(&["--abs-cond-tod", "--late-realtime", "1500"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = speed_set(&mut c, &h, 2.0).unwrap();
+    assert_eq!(hook_status(&r, "pthread_cond_timedwait").as_deref(), Some("hooked"), "{r}");
+    let late = hex(&t.addr("g_late_rt"));
+    assert!(wait_until(Duration::from_secs(5), || proc_i64(t.pid, late) != 0), "REALTIME was never read");
+    settle();
+    let n = hex(&t.addr("g_abs_conds_tod"));
+    assert_rate(t.pid, n, 1.0, 75.0, 125.0, "g_abs_conds_tod at 2x after REALTIME's first read");
+    // And the two clocks agree: REALTIME's game time is gettimeofday's (to within a few 20 ms steps).
+    let ahead = proc_i64(t.pid, late) - std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64;
+    assert!(ahead > 1_000_000_000, "REALTIME is only {ahead} ns ahead of real time; it should carry gettimeofday's gain");
+}

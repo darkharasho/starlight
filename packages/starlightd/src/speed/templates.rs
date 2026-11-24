@@ -39,7 +39,13 @@
 //! entries), so `guard_leave` needs no lock: only the owning thread changes its entry's depth,
 //! and at depth 0 it frees the entry with `lock cmpxchg key → 0`, which can't erase an entry
 //! that was freed and reclaimed meanwhile (R16 as amended).
+use super::targets::{SLOT_CLOCK, SLOT_GETTIMEOFDAY};
 use super::{Abi, Kind};
+
+/// `clock_gettime(CLOCK_REALTIME)`'s slot. It and gettimeofday's are one clock in two units (ns
+/// and µs): `scale` starts whichever is used second from the other's game time, so they agree,
+/// and a REALTIME wait converts through gettimeofday's when only that one was read.
+const SLOT_REALTIME: u32 = SLOT_CLOCK;
 
 /// `"STLSPD01"`.
 pub const OFF_MAGIC: u64 = 0x00;
@@ -173,6 +179,61 @@ s_now:
     } else {
         String::new()
     };
+    // REALTIME (ns) and gettimeofday (µs) are one clock: the slot used second starts from the
+    // game time the other gives now, not from real time, so a game mixing them (a deadline built
+    // from gettimeofday, waited for on REALTIME) sees one consistent clock.
+    let pair = if wrap32 {
+        String::new()
+    } else {
+        let rt = OFF_SLOTS + SLOT_REALTIME as u64 * SLOT_SIZE;
+        let tod = OFF_SLOTS + SLOT_GETTIMEOFDAY as u64 * SLOT_SIZE;
+        format!(
+            "lea rax, [r10+{rt:#x}]
+cmp r11, rax
+je s_from_tod
+lea rax, [r10+{tod:#x}]
+cmp r11, rax
+jne s_newgen
+// gettimeofday (µs): from REALTIME's game time at r8 × 1000 ns.
+cmp dword ptr [r10+{rt_gen:#x}], 0
+je s_newgen
+push r11
+push r8
+imul r8, r8, #1000
+lea r11, [r10+{rt:#x}]
+call s_fake
+pop r8
+pop r11
+mov rcx, #1000
+cqo
+idiv rcx
+mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
+jmp s_newgen
+s_from_tod:
+// REALTIME (ns): from gettimeofday's game time at r8 / 1000 µs, plus the leftover ns.
+cmp dword ptr [r10+{tod_gen:#x}], 0
+je s_newgen
+push r11
+push r8
+mov rax, r8
+mov rcx, #1000
+cqo
+idiv rcx
+push rdx
+mov r8, rax
+lea r11, [r10+{tod:#x}]
+call s_fake
+pop rdx
+pop r8
+pop r11
+imul rax, rax, #1000
+add rax, rdx
+mov qword ptr [r11+{SLOT_FAKE0:#x}], rax
+",
+            rt_gen = rt + SLOT_GEN,
+            tod_gen = tod + SLOT_GEN,
+        )
+    };
     format!(
         "mov r10, {state:#x}
 {acquire}s_reentered:
@@ -203,10 +264,10 @@ je s_ready
 inc dword ptr [r11+{SLOT_SEQ:#x}]
 test ecx, ecx
 jne s_rebase
-// First use of this slot: game time starts at real time.
+// First use of this slot: game time starts at real time (or REALTIME's partner's game time).
 mov qword ptr [r11+{SLOT_REAL0:#x}], r8
 mov qword ptr [r11+{SLOT_FAKE0:#x}], r8
-jmp s_newgen
+{pair}jmp s_newgen
 s_rebase:
 // Continue from the game time the old speed gives now.
 call s_fake
@@ -311,19 +372,35 @@ mulsd xmm0, qword ptr [r11+{SLOT_SPEED:#x}]
 cvttsd2si rax, xmm0
 add rax, qword ptr [r11+{SLOT_FAKE0:#x}]
 ret
-// rax = max(real0 + (i64)((f64)(game - fake0) / speed), 0) for slot r11 and game time r8: the
-// inverse of s_fake (a deadline before fake0 maps before real0). Clobbers only rax and xmm0.
+// rax = real0 + (i64)((f64)(game - fake0) / speed) for slot r11 and game time r8: the inverse
+// of s_fake (a deadline before fake0 maps before real0). Below 0 it is 0 (already past); past
+// i64 range it saturates to i64::MAX, so a far-future wait-forever deadline stays far away at low
+// speeds. Clobbers only rax, rdx and xmm0.
 // (The session-end glide's landing inverse goes here, Task 4.)
 u_real:
 mov rax, r8
 sub rax, qword ptr [r11+{SLOT_FAKE0:#x}]
+jo u_overflow
 cvtsi2sd xmm0, rax
 divsd xmm0, qword ptr [r11+{SLOT_SPEED:#x}]
 cvttsd2si rax, xmm0
+// cvttsd2si gives the integer indefinite value: the quotient is out of i64 range.
+mov rdx, 8000000000000000
+cmp rax, rdx
+je u_overflow
 add rax, qword ptr [r11+{SLOT_REAL0:#x}]
+jo u_overflow
 jns u_done
+u_zero:
 xor eax, eax
 u_done:
+ret
+// Out of range one way or the other: the sign of game - fake0 says which.
+u_overflow:
+mov rax, r8
+cmp rax, qword ptr [r11+{SLOT_FAKE0:#x}]
+jl u_zero
+mov rax, 7fffffffffffffff
 ret
 ",
         acquire = acquire("u"),
@@ -595,6 +672,7 @@ ret
 /// does): `unscale` the deadline into a 16-byte stack local, which replaces the deadline
 /// argument → `guard_leave` if entered → call the original → restore → `ret`. The guard is
 /// never held across the wait: a nesting entry per blocked thread would run out (64 entries).
+/// A REALTIME deadline converts through gettimeofday's slot (µs) when only that one was read.
 /// Five pushes plus `sub rsp, 30` keep `rsp` 16-byte aligned at every call.
 pub fn wait_hook_source(kind: Kind, state: u64, slot_base: u32, trampoline: u64, vdso_clock: u64) -> String {
     // Arguments are kept in r12 = rdi, r13 = rsi, r14 = rdx, r15 = rcx; `deadline` names the
@@ -647,6 +725,9 @@ je w_call
 cmp qword ptr [{deadline}+8], #999999999
 ja w_call
 mov rax, qword ptr [{deadline}]
+// A negative tv_sec gets the original's EINVAL.
+test rax, rax
+js w_call
 imul rax, rax, #1000000000
 jo w_call
 add rax, qword ptr [{deadline}+8]
@@ -669,12 +750,45 @@ cmp eax, 1
 je w_leave
 cmp eax, {NOT_ENTERED}
 je w_call
+test ebx, ebx
+jne w_unscale
+// REALTIME whose clock_gettime slot was never read, but gettimeofday's was: the deadline was
+// built from gettimeofday, so convert it in that slot's microseconds.
+mov rax, {rt_gen:#x}
+cmp dword ptr [rax], 0
+jne w_unscale
+mov rax, {tod_gen:#x}
+cmp dword ptr [rax], 0
+je w_unscale
+mov rcx, #1000
+mov rax, qword ptr [rsp+20]
+cqo
+idiv rcx
+mov qword ptr [rsp+28], rdx
+mov r8, rax
+mov rax, qword ptr [rsp+18]
+cqo
+idiv rcx
+mov r9, rax
+mov rcx, qword ptr fs:[0]
+mov edx, {SLOT_GETTIMEOFDAY:#x}
+mov rax, {unscale:#x}
+call rax
+imul rax, rax, #1000
+jo w_max
+add rax, qword ptr [rsp+28]
+jno w_split
+w_max:
+mov rax, 7fffffffffffffff
+jmp w_split
+w_unscale:
 mov r8, qword ptr [rsp+20]
 mov r9, qword ptr [rsp+18]
 mov rcx, qword ptr fs:[0]
 lea edx, [rbx+{slot_base:#x}]
 mov rax, {unscale:#x}
 call rax
+w_split:
 {split}mov {deadline}, rsp
 w_leave:
 cmp dword ptr [rsp+10], 1
@@ -702,6 +816,9 @@ dq {vdso_clock:#x}
         enter = state + OFF_GUARD_ENTER,
         leave = state + OFF_GUARD_LEAVE,
         unscale = state + OFF_UNSCALE,
+        // Clock id 0's slot.
+        rt_gen = state + OFF_SLOTS + slot_base as u64 * SLOT_SIZE + SLOT_GEN,
+        tod_gen = state + OFF_SLOTS + SLOT_GETTIMEOFDAY as u64 * SLOT_SIZE + SLOT_GEN,
     )
 }
 
@@ -939,6 +1056,9 @@ mod tests {
         let st = LocalState::new(2.0);
         let slot = |n: u64| OFF_SLOTS + n * SLOT_SIZE;
         for n in 0..SLOT_COUNT as u64 {
+            // A fresh page per slot: REALTIME and gettimeofday's slots start from each other
+            // (`realtime_and_gettimeofday_share_one_clock`).
+            let st = LocalState::new(2.0);
             // A slot never used: the game's deadline is real time already, and the slot stays unused.
             assert_eq!(st.unscale(KEY, n, 1234 * S, 1000 * S), 1234 * S, "slot {n}");
             assert_eq!(st.get32(slot(n) + SLOT_GEN), 0, "slot {n}");
@@ -953,11 +1073,14 @@ mod tests {
         }
         // Far enough back, the real time would be negative: 0 instead.
         let n = 31;
+        st.call(OFF_SCALE, KEY, n, 1000 * S);
         st.put(slot(n) + SLOT_REAL0, S);
         st.put(slot(n) + SLOT_FAKE0, 100 * S);
         assert_eq!(st.unscale(KEY, n, 0, 2 * S), 0);
         // The speed changes (generation 2, 0.5) and no clock was read since: unscale rebases the
         // slot exactly as scale would have at the real time now, so the two stay inverses.
+        assert_eq!(st.call(OFF_SCALE, KEY, 3, 1000 * S), 1000 * S);
+        assert_eq!(st.call(OFF_SCALE, KEY, 3, 1010 * S), 1020 * S);
         st.put(OFF_SPEED, 0.5f64.to_bits());
         st.put32(OFF_GEN, 2);
         let n = 3;
@@ -974,6 +1097,52 @@ mod tests {
         st.put32(slot(n) + SLOT_SEQ, st.get32(slot(n) + SLOT_SEQ) + 1);
         assert_eq!(st.unscale(KEY, n, 1026 * S, 1020 * S), 1026 * S);
         st.put32(OFF_LOCK, 0);
+    }
+
+    #[test]
+    fn unscale_saturates_far_deadlines_instead_of_making_them_past() {
+        const S: u64 = 1_000_000_000;
+        // At 0.1x a wait-forever deadline (tv_sec = INT32_MAX on MONOTONIC, ~2.1e18 ns) is
+        // ~2.1e19 ns of real time away: past i64. It stays far in the future.
+        let st = LocalState::new(0.1);
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1000 * S), 1000 * S);
+        assert_eq!(st.unscale(KEY, 1, i32::MAX as u64 * S, 1001 * S), i64::MAX as u64);
+        assert_eq!(st.unscale(KEY, 1, i64::MAX as u64, 1001 * S), i64::MAX as u64, "game − fake0 within range, quotient not");
+        // At 10x nothing overflows: a near deadline is still converted.
+        assert_eq!(st.unscale(KEY, 1, 1000 * S + 100_000_000, 1001 * S), 1001 * S);
+        // A huge real0 + quotient wraps i64: saturated too.
+        let st = LocalState::new(1.0);
+        st.call(OFF_SCALE, KEY, 2, 1000 * S);
+        st.put(OFF_SLOTS + 2 * SLOT_SIZE + SLOT_REAL0, i64::MAX as u64 - S);
+        assert_eq!(st.unscale(KEY, 2, 1000 * S + 2 * S, 0), i64::MAX as u64);
+        // And far in the past is 0, still.
+        let st = LocalState::new(0.1);
+        st.call(OFF_SCALE, KEY, 1, i64::MAX as u64 / 2);
+        assert_eq!(st.unscale(KEY, 1, 0, i64::MAX as u64 / 2), 0);
+    }
+
+    #[test]
+    fn realtime_and_gettimeofday_share_one_clock() {
+        const S: u64 = 1_000_000_000;
+        let (rt, tod) = (SLOT_REALTIME as u64, SLOT_GETTIMEOFDAY as u64);
+        // gettimeofday used first (µs), at 2.0 since real 1000 s.
+        let st = LocalState::new(2.0);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1000 * 1_000_000), 1000 * 1_000_000);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1010 * 1_000_000), 1020 * 1_000_000);
+        // REALTIME read for the first time 10 s later starts at gettimeofday's game time, not
+        // real time, with the sub-µs part of the reading kept.
+        // (1010 s + 1.5 µs is gettimeofday's 1010.000001 s, 1020.000002 s of game time, + 500 ns.)
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1010 * S + 1_500), 1020 * S + 2_500);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1012 * S), 1024 * S - 500);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1012 * 1_000_000), 1024 * 1_000_000);
+        // The other way round: REALTIME first, gettimeofday starts from it (in µs, rounded down).
+        let st = LocalState::new(0.5);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1000 * S), 1000 * S);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1010 * 1_000_000), 1005 * 1_000_000);
+        assert_eq!(st.call(OFF_SCALE, KEY, rt, 1012 * S), 1006 * S);
+        assert_eq!(st.call(OFF_SCALE, KEY, tod, 1012 * 1_000_000), 1006 * 1_000_000);
+        // Other slots stay independent: MONOTONIC starts at real time.
+        assert_eq!(st.call(OFF_SCALE, KEY, 1, 1012 * S), 1012 * S);
     }
 
     /// A SysV wait hook in this process, on a stand-in original that copies the deadline it was
@@ -1068,6 +1237,8 @@ mod tests {
         assert_eq!(w.call((1010, 0), [0, 1, d, 0]).1, (1020, 20_000_000), "REALTIME was never read");
         let bad = [1020u64, 1_000_000_000];
         assert_eq!(w.call((1010, 0), [1, 1, bad.as_ptr() as u64, 0]).1, (1020, 1_000_000_000), "tv_nsec out of range");
+        let neg = [(-5i64) as u64, 0];
+        assert_eq!(w.call((1010, 0), [1, 1, neg.as_ptr() as u64, 0]).1, ((-5i64) as u64, 0), "a negative tv_sec");
         let far = [u64::MAX / 2, 0];
         assert_eq!(w.call((1010, 0), [1, 1, far.as_ptr() as u64, 0]).1, (u64::MAX / 2, 0), "too far for i64 ns");
         assert_eq!(w.call((1010, 0), [1, 1, 0, 0]).0, 77, "a null deadline reaches the original");
@@ -1096,6 +1267,37 @@ mod tests {
         assert_eq!(w.call((1010, 0), [0x1111, d, 0, 0]), (77, real), "with the lock stuck");
         assert!(nest_is_empty(&st));
         st.put32(OFF_LOCK, 0);
+    }
+
+    #[test]
+    fn realtime_waits_use_gettimeofday_when_only_it_was_read() {
+        const S: u64 = 1_000_000_000;
+        const US: u64 = 1_000_000;
+        // The game reads only gettimeofday (2.0 since real 1000 s) and builds a REALTIME deadline
+        // from it: at real 1010 s it reads 1020 s and waits until 1020.02 s.
+        let st = LocalState::new(2.0);
+        assert_eq!(st.call(OFF_SCALE, KEY, SLOT_GETTIMEOFDAY as u64, 1000 * US), 1000 * US);
+        let deadline = [1020u64, 20_000_500];
+        let d = deadline.as_ptr() as u64;
+        let w = LocalWait::new(&st, Kind::SemTimedwait);
+        assert_eq!(w.call((1010, 0), [0x1111, d, 0, 0]), (77, (1010, 10_000_500)), "sem_timedwait (REALTIME) via gettimeofday's slot");
+        assert_eq!(st.get32(OFF_SLOTS + SLOT_REALTIME as u64 * SLOT_SIZE + SLOT_GEN), 0, "REALTIME's slot stays unused");
+        // MONOTONIC is not REALTIME: unused, passed through.
+        let w = LocalWait::new(&st, Kind::ClockNanosleep);
+        assert_eq!(w.call((1010, 0), [1, 1, d, 0]).1, (1020, 20_000_500));
+        // Once REALTIME was read too it starts from gettimeofday's game time, so converting
+        // through it gives the same real time.
+        assert_eq!(st.call(OFF_SCALE, KEY, SLOT_REALTIME as u64, 1010 * S), 1020 * S);
+        let w = LocalWait::new(&st, Kind::SemTimedwait);
+        assert_eq!(w.call((1010, 0), [0x1111, d, 0, 0]).1, (1010, 10_000_250), "sem_timedwait via REALTIME's slot");
+        assert!(nest_is_empty(&st));
+        // A wait-forever deadline at 0.1x stays far in the future through gettimeofday's slot too.
+        let st = LocalState::new(0.1);
+        assert_eq!(st.call(OFF_SCALE, KEY, SLOT_GETTIMEOFDAY as u64, 1000 * US), 1000 * US);
+        let forever = [i64::MAX as u64 / S, 0];
+        let w = LocalWait::new(&st, Kind::SemTimedwait);
+        let (_, (sec, _)) = w.call((1010, 0), [0x1111, forever.as_ptr() as u64, 0, 0]);
+        assert_eq!(sec, i64::MAX as u64 / S, "saturated, not 0");
     }
 
     #[test]
