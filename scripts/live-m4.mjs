@@ -25,7 +25,7 @@
 // stops only our own prefix's wineserver (`wineserver -k` with that prefix's WINEPREFIX).
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync,
+  closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync,
   writeFileSync, writeSync, chmodSync, appendFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
@@ -33,6 +33,7 @@ import { connect as netConnect } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PY_DESCENDANTS, statOf, trackOwned } from './live-procs.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP = join(ROOT, 'apps/desktop');
@@ -80,40 +81,6 @@ async function waitFor(fn, ms, every = 200) {
 
 // ------------------------------------------------------------- own processes (pid + start time)
 
-function statOf(pid) {
-  try {
-    const s = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const rest = s.slice(s.lastIndexOf(')') + 2).split(' ');
-    return { state: rest[0], ppid: Number(rest[1]), start: rest[19], comm: s.slice(s.indexOf('(') + 1, s.lastIndexOf(')')) };
-  } catch { return null; }
-}
-function procTable() {
-  const table = new Map();
-  for (const e of readdirSync('/proc')) {
-    if (!/^\d+$/.test(e)) continue;
-    const st = statOf(Number(e));
-    if (st) table.set(Number(e), st);
-  }
-  return table;
-}
-// Grows `owned` (pid -> start time) with the descendants of its live entries; a recycled pid is dropped first.
-function trackOwned(owned) {
-  const table = procTable();
-  for (const [p, start] of owned) if (table.get(p)?.start !== start) owned.delete(p);
-  const children = new Map();
-  for (const [p, st] of table) {
-    if (!children.has(st.ppid)) children.set(st.ppid, []);
-    children.get(st.ppid).push(p);
-  }
-  const queue = [...owned.keys()];
-  while (queue.length) {
-    for (const c of children.get(queue.shift()) ?? []) {
-      if (owned.has(c)) continue;
-      owned.set(c, table.get(c).start);
-      queue.push(c);
-    }
-  }
-}
 // Signals only a process we recorded, and only while it is still that process.
 function killOwn(pid, start, sig = 'SIGKILL') {
   if (!pid || start === undefined || statOf(pid)?.start !== start) return false;
@@ -156,9 +123,10 @@ function cleanupSync() {
   // Last sweep: nothing we started may be left.
   const left = [];
   for (const t of trees) {
-    trackOwned(t.owned);
+    if (t.track) t.track(); else trackOwned(t.owned);
     for (const [p, start] of t.owned) if (alive(p, start)) left.push(`${p}:${statOf(p)?.comm}`);
   }
+  console.log(`     tracked (children-list walk from our roots): ${trees.map((t) => `${t.name}: ${t.peak ?? t.owned.size} pids at most`).join(', ')}`);
   console.log(`     own processes left after cleanup: ${left.length ? left.join(', ') : 'none'}`);
   if (left.length) { failures++; results.push({ name: 'cleanup leaves no own process', status: 'FAIL', detail: left.join(', ') }); }
 }
@@ -171,24 +139,12 @@ for (const ev of ['uncaughtException', 'unhandledRejection']) {
 
 // PR_SET_CHILD_SUBREAPER, run argv, reap every orphan until none is left. PR_SET_PDEATHSIG: if this
 // script dies (even by SIGKILL), the wrapper gets SIGUSR1 and SIGKILLs its own descendants (found by
-// the ppid walk below it, so nothing else), then exits.
+// walking its own children lists, so nothing else), then exits.
 const SUBREAPER = `
 import ctypes, os, signal, subprocess, sys
 libc = ctypes.CDLL(None)
 libc.prctl(36, 1, 0, 0, 0)
-def descendants():
-    kids = {}
-    for e in os.listdir('/proc'):
-        if not e.isdigit(): continue
-        try:
-            s = open('/proc/%s/stat' % e).read()
-            kids.setdefault(int(s[s.rindex(')') + 2:].split()[1]), []).append(int(e))
-        except Exception: pass
-    out, q = [], [os.getpid()]
-    while q:
-        for c in kids.get(q.pop(), []):
-            out.append(c); q.append(c)
-    return out
+${PY_DESCENDANTS.trim()}
 def on_parent_death(*_):
     for _ in range(3):
         for p in descendants():
@@ -210,7 +166,8 @@ function spawnTree(name, argv, opts) {
   const rootStart = child.pid ? statOf(child.pid)?.start : undefined;
   const owned = new Map();
   if (rootStart !== undefined) owned.set(child.pid, rootStart);
-  const t = { name, child, owned, root: child.pid, rootStart, track: () => trackOwned(owned) };
+  const t = { name, child, owned, root: child.pid, rootStart, peak: owned.size };
+  t.track = () => { trackOwned(owned); t.peak = Math.max(t.peak, owned.size); };
   trees.push(t);
   return t;
 }
@@ -466,7 +423,7 @@ async function startHelperDaemon() {
   const dir = mkdtempSync(join(tmpdir(), 'starlight-live-m4-sock-'));
   const engine = await E.startEngine({ binary: DEBUG_DAEMON, socketPath: join(dir, 'sock') });
   const start = statOf(engine.pid)?.start;
-  trees.push({ name: 'debug daemon', owned: new Map(start !== undefined ? [[engine.pid, start]] : []) });
+  trees.push({ name: 'debug daemon', owned: new Map(start !== undefined ? [[engine.pid, start]] : []), peak: start !== undefined ? 1 : 0 });
   const d = { engine, pid: engine.pid, start, stopped: false };
   d.stop = async () => {
     if (d.stopped) return;
@@ -581,10 +538,14 @@ function targetTables(t) {
   return { aa: ctFile([player, counter, expose]), lua: ctFile([player, counter, expose, lua]) };
 }
 
-/** gold.CT: earn() gets a cave that adds 99 more to [rax+10] after the original code. */
+/**
+ * gold.CT: earn() gets a cave that adds 99 more to [rax+10] after the original code. The module is
+ * written GOLD.EXE (the game's module is gold.exe), so the session must resolve it case-insensitively.
+ */
+const GOLD_CT_MODULE = 'GOLD.EXE';
 function goldTable(g) {
   return ctFile([aaEntry(1, 'Gold ×100', injectScript({
-    module: 'gold.exe', sig: g.sig, d: g.d, post: ['add dword ptr [rax+10],#99'],
+    module: GOLD_CT_MODULE, sig: g.sig, d: g.d, post: ['add dword ptr [rax+10],#99'],
     comment: 'earn(): gold += 1, plus 99',
   }))]);
 }
@@ -948,13 +909,14 @@ async function proton() {
   mkdirSync(ctDir, { recursive: true });
   writeFileSync(join(ctDir, 'gold.CT'), gold);
   const gc = C.compileTable(gold);
+  info(`gold.CT: aobscanmodule(INJECT,${GOLD_CT_MODULE},…); compiled site module ${gc.records[0]?.script?.cheat?.site?.module}`);
   check('compileTable(gold.CT) → native: true', gc.native === true, gc.reasons.map((x) => `${x.code} ${x.detail}`).join(' ') || 'no reasons');
   const srv = await serveTables({ 'gold.CT': gold });
 
   const app = await startApp('proton');
   const r = await S(app, `ceSessionStart(${JSON.stringify({ source: srv.url('gold.CT'), cacheKey: 'live-m4-gold', pid: g.pid })})`);
   const ceRun = await ceAppears(app, 1500);
-  check('the session for gold.CT routes native and opens mode native (module gold.exe)',
+  check(`the session for gold.CT routes native and opens mode native (the CT says ${GOLD_CT_MODULE}, the module is gold.exe)`,
     r.ok && r.route?.engine === 'native' && r.mode === 'native' && r.attached === true && r.proton === true && ceRun.length === 0,
     `ok ${r.ok}, route ${r.route?.engine}, mode ${r.mode}, attached ${r.attached}, proton ${r.proton}, process ${JSON.stringify(r.process)}, CE: ${ceRun.join(' ') || 'none'}${r.error ? `, ${r.error}` : ''}`);
   if (!r.ok || r.mode !== 'native') throw new Error('no native session on gold.exe; the rest needs one');

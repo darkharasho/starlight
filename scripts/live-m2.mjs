@@ -12,10 +12,11 @@
 // this script's own descendants, the prefix is a fresh temp dir (never a game's compatdata), and
 // cleanup kills only pids we spawned or their descendants, then stops our own prefix's wineserver.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { statOf, trackOwned } from './live-procs.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const E = await import(join(ROOT, 'packages/engine/dist/index.js'));
@@ -83,46 +84,6 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 }
 for (const ev of ['uncaughtException', 'unhandledRejection']) {
   process.on(ev, (e) => { console.log(`FAIL ${ev}: ${e?.stack ?? e}`); cleanupSync(); process.exit(1); });
-}
-
-// ------------------------------------------------------------- own descendants via /proc ppid
-
-function statOf(pid) {
-  try {
-    const s = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const rest = s.slice(s.lastIndexOf(')') + 2).split(' ');
-    return { state: rest[0], ppid: Number(rest[1]), start: rest[19], comm: s.slice(s.indexOf('(') + 1, s.lastIndexOf(')')) };
-  } catch { return null; }
-}
-// One pass over /proc: pid -> { ppid, start, comm }.
-function procTable() {
-  const table = new Map();
-  for (const e of readdirSync('/proc')) {
-    if (!/^\d+$/.test(e)) continue;
-    const st = statOf(Number(e));
-    if (st) table.set(Number(e), st);
-  }
-  return table;
-}
-
-// Grows `owned` (pid -> start time) with the descendants of its live entries. An entry whose pid
-// now has another start time (or is gone) is dropped first, so a recycled pid is never a root.
-function trackOwned(owned) {
-  const table = procTable();
-  for (const [p, start] of owned) if (table.get(p)?.start !== start) owned.delete(p);
-  const children = new Map();
-  for (const [p, st] of table) {
-    if (!children.has(st.ppid)) children.set(st.ppid, []);
-    children.get(st.ppid).push(p);
-  }
-  const queue = [...owned.keys()];
-  while (queue.length) {
-    for (const c of children.get(queue.shift()) ?? []) {
-      if (owned.has(c)) continue;
-      owned.set(c, table.get(c).start);
-      queue.push(c);
-    }
-  }
 }
 
 // ------------------------------------------------------------------------------- shared checks
