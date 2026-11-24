@@ -1,0 +1,34 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Code injection template with define'd address and bytes.
+}
+
+define(address,"target"+1234)
+define(bytes,8B 05 10 20 30 40)
+
+[ENABLE]
+
+alloc(newmem,$1000,ADDRESS)
+label(code)
+label(return)
+label(bytes2)
+
+newmem:
+code:
+  mov eax,#100
+  jmp return
+bytes2:
+  dd 0
+
+Address:
+  jmp newmem
+  nop
+return:
+
+[DISABLE]
+
+address:
+  db BYTES
+
+dealloc(newmem)

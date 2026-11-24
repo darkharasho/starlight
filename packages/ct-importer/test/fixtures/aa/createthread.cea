@@ -1,0 +1,23 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Calls the game's give-item routine once on a new thread.
+}
+
+[ENABLE]
+
+aobscanmodule(GIVE_ITEM,target,48 83 EC 28 89 CF)
+alloc(newmem,$1000,GIVE_ITEM)
+
+newmem:
+  sub rsp,28
+  mov ecx,#42
+  call GIVE_ITEM
+  add rsp,28
+  ret
+
+createthread(newmem)
+
+[DISABLE]
+
+dealloc(newmem)

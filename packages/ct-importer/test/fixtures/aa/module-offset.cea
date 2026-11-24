@@ -1,0 +1,32 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Code injection at a fixed module offset (no AOB).
+}
+
+[ENABLE]
+
+alloc(newmem,2048)
+label(returnhere)
+label(originalcode)
+label(exit)
+
+newmem:
+  mov dword ptr [rbx+20],#999
+
+originalcode:
+  mov eax,[rbx+20]
+
+exit:
+  jmp returnhere
+
+"target"+1234:
+  jmp newmem
+returnhere:
+
+[DISABLE]
+
+"target"+1234:
+  db 8B 43 20 89 C1
+
+dealloc(newmem)

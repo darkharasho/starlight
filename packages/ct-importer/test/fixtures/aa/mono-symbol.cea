@@ -1,0 +1,29 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Mono injection: keeps the speed field at 100.
+}
+
+[ENABLE]
+
+alloc(newmem,$1000,PlayerController:Update+1A)
+label(code)
+label(return)
+
+newmem:
+  mov [rbx+3C],(float)100
+
+code:
+  movss xmm0,[rbx+3C]
+  jmp return
+
+PlayerController:Update+1A:
+  jmp newmem
+return:
+
+[DISABLE]
+
+PlayerController:Update+1A:
+  db F3 0F 10 43 3C
+
+dealloc(newmem)

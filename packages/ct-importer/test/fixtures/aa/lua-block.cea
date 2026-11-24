@@ -1,0 +1,15 @@
+{ Game   : target
+  Author : starlight-tests
+}
+
+[ENABLE]
+{$lua}
+if syntaxcheck then return end
+local base = getAddress("target")
+writeInteger(base + 0x1234, 999)
+{$asm}
+
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+{$asm}

@@ -1,0 +1,38 @@
+{ Game   : target
+  Author : starlight-tests
+
+  Infinite health: the damage write is skipped, and the heal path is
+  found by a second scan over executable memory.
+}
+
+[ENABLE]
+
+aobscanmodule(DAMAGE,target,29 47 10 8B 47 10) // sub [rdi+10],eax / mov eax,[rdi+10]
+aobscan(HEAL,01 47 10 C3)
+alloc(newmem,$100,DAMAGE)
+
+label(code)
+label(return)
+
+newmem:
+code:
+  mov eax,[rdi+10]
+  jmp return
+
+DAMAGE:
+  jmp newmem
+  nop
+return:
+
+HEAL+2:
+  db 90
+
+[DISABLE]
+
+DAMAGE:
+  db 29 47 10 8B 47 10
+
+HEAL+2:
+  db 10
+
+dealloc(newmem)
