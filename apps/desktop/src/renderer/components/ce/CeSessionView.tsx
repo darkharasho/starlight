@@ -16,6 +16,7 @@ import { ConnectStage, TableChecks, type ConnectPhase } from './ConnectStage.js'
 import { GameCover } from './GameCover.js';
 import { useCover } from '../../lib/use-cover.js';
 import { steamHeroUrl } from '../../types/catalog-game.js';
+import { useGameAccent } from '../../lib/accent.js';
 
 /**
  * Narrows the process list to likely game targets for the attach menu.
@@ -52,6 +53,7 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
   const [query, setQuery] = useState('');
   const cover = useCover(s.lastReq?.game ?? (s.title ? { name: s.title } : undefined));
   const hero = steamHeroUrl(s.lastReq?.game?.steamAppId);
+  useGameAccent(s.lastReq?.game?.steamAppId);
 
   const hasTable = s.tableId !== null || s.records.length > 0;
   const paused = s.mode === 'paused';
@@ -439,7 +441,7 @@ function CoverWash({ src }: { src: string | null }): JSX.Element {
          style={{ WebkitMaskImage: 'radial-gradient(70% 100% at 50% 0%, #000 0%, transparent 100%)' }}>
       {src
         ? <img src={src} alt="" className="absolute left-1/2 top-[-120px] w-[900px] max-w-none -translate-x-1/2 opacity-30 blur-3xl saturate-150" />
-        : <div className="absolute inset-0 bg-[radial-gradient(60%_100%_at_50%_0%,rgba(62,224,192,0.14),transparent_70%)]" />}
+        : <div className="absolute inset-0 bg-[radial-gradient(60%_100%_at_50%_0%,rgb(var(--accent)/0.14),transparent_70%)]" />}
     </div>
   );
 }
@@ -488,7 +490,7 @@ function PlayBar({ processes }: { processes: DetectedProcess[] }): JSX.Element {
   const primary = 'bg-neon-cyan text-[#06231d] font-bold transition-[filter,transform] hover:brightness-110 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80';
   return (
     <div className="flex w-full shrink-0 flex-col items-center gap-2">
-      <div ref={wrap} className="relative flex w-full rounded-full shadow-[0_0_28px_rgba(62,224,192,0.3)]">
+      <div ref={wrap} className="relative flex w-full rounded-full shadow-[0_0_28px_rgb(var(--accent)/0.3)]">
         {canLaunch ? (
           <>
             <button type="button" onClick={() => void s.play()} className={`${primary} flex-1 rounded-l-full py-2.5 pl-7 pr-4 text-[15px]`}>▶ Play</button>
@@ -561,7 +563,7 @@ function RecordRow({ item, attached, pending, error, hotkey, hotkeysOn }: {
       error ? 'bg-neon-pink/[0.05]' : r.isActive ? 'bg-gradient-to-r from-neon-cyan/[0.08] to-transparent to-60%' : ''
     }`}>
       <span aria-hidden="true"
-            className={`absolute bottom-1.5 left-0 top-1.5 w-[2.5px] origin-center rounded-full bg-neon-cyan shadow-[0_0_10px_#3ee0c0] transition-transform duration-300 ${r.isActive && !error ? 'scale-y-100' : 'scale-y-0'}`} />
+            className={`absolute bottom-1.5 left-0 top-1.5 w-[2.5px] origin-center rounded-full bg-neon-cyan shadow-[0_0_10px_rgb(var(--accent))] transition-transform duration-300 ${r.isActive && !error ? 'scale-y-100' : 'scale-y-0'}`} />
       <div className="flex min-h-[26px] items-center gap-2.5">
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13.5px]" title={r.name}>{item.label}</div>
@@ -585,7 +587,7 @@ function RecordRow({ item, attached, pending, error, hotkey, hotkeysOn }: {
           <button type="button" disabled={disabled} aria-pressed={r.isActive} aria-label={label} title={hint}
                   onClick={() => void setActive(r.id, !r.isActive)}
                   className={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-[background-color,box-shadow] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan focus-visible:ring-offset-2 focus-visible:ring-offset-panel ${
-                    r.isActive ? 'bg-neon-cyan/30 shadow-[0_0_14px_rgba(62,224,192,0.3)]' : 'bg-white/[0.08] hover:bg-white/[0.13]'
+                    r.isActive ? 'bg-neon-cyan/30 shadow-[0_0_14px_rgb(var(--accent)/0.3)]' : 'bg-white/[0.08] hover:bg-white/[0.13]'
                   } ${disabled && !pending ? 'opacity-40' : ''}`}>
             <span className={`absolute left-[3px] top-[3px] size-4 rounded-full transition-[transform,background-color] duration-200 ease-out ${
               r.isActive ? 'translate-x-[16px] bg-neon-cyan' : 'bg-muted'

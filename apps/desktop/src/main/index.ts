@@ -321,7 +321,8 @@ engineHost.onAttachStateChange((attached) => setEngineAttached(attached));
 // which main answers from Steam's local cache or the store. Must be
 // registered before ready.
 protocol.registerSchemesAsPrivileged([
-  { scheme: ART_SCHEME, privileges: { standard: true, secure: true } },
+  // corsEnabled + supportFetchAPI: the renderer reads cover pixels for the game's accent colour.
+  { scheme: ART_SCHEME, privileges: { standard: true, secure: true, corsEnabled: true, supportFetchAPI: true } },
 ]);
 
 app.whenReady().then(async () => {

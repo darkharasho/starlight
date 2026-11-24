@@ -11,7 +11,8 @@ const config: Config = {
         line:      '#363d52',
         ink:       '#f3f5fa',
         muted:     '#8e96ab',
-        'neon-cyan':  '#3ee0c0',
+        // The accent: a CSS variable so the open game's cover colour can replace it (lib/accent.ts).
+        'neon-cyan':  'rgb(var(--accent) / <alpha-value>)',
         'neon-pink':  '#ff6b8e',
         'neon-green': '#4ade80',
         'neon-amber': '#f6bd60',
@@ -45,7 +46,7 @@ const config: Config = {
         scan:  { from: { transform: 'translateX(-100%)' }, to: { transform: 'translateX(100%)' } },
         rise:  { from: { opacity: '0', transform: 'translateY(10px)' }, to: { opacity: '1', transform: 'none' } },
         pop:   { '0%': { opacity: '0', transform: 'scale(0.4)' }, '70%': { transform: 'scale(1.15)' }, '100%': { opacity: '1', transform: 'scale(1)' } },
-        lock:  { '0%': { boxShadow: '0 0 0 0 rgba(62,224,192,0.5)' }, '100%': { boxShadow: '0 0 0 14px rgba(62,224,192,0)' } },
+        lock:  { '0%': { boxShadow: '0 0 0 0 rgb(var(--accent) / 0.5)' }, '100%': { boxShadow: '0 0 0 14px rgb(var(--accent) / 0)' } },
       },
       animation: {
         'pulse-slow': 'pulse 1.4s ease-in-out infinite',

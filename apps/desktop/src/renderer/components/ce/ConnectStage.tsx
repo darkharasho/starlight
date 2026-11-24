@@ -46,11 +46,11 @@ export function ConnectStage({ title, cover, phase, launched, hasTable, progress
           <>
             <span className="absolute inset-0 rounded-full animate-orbit"
                   style={{
-                    background: 'conic-gradient(from 0deg, transparent 0 76%, rgba(62,224,192,0.6) 99%, transparent)',
+                    background: 'conic-gradient(from 0deg, transparent 0 76%, rgb(var(--accent) / 0.6) 99%, transparent)',
                     WebkitMask: 'radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 1px))',
                   }} />
             <span className="absolute inset-0 animate-orbit">
-              <span className="absolute -top-1 left-1/2 -ml-1 size-2 rounded-full bg-neon-cyan shadow-[0_0_14px_3px_rgba(62,224,192,0.7)]" />
+              <span className="absolute -top-1 left-1/2 -ml-1 size-2 rounded-full bg-neon-cyan shadow-[0_0_14px_3px_rgb(var(--accent)/0.7)]" />
             </span>
           </>
         )}
@@ -74,7 +74,7 @@ export function ConnectStage({ title, cover, phase, launched, hasTable, progress
                 )}
                 <span className={`absolute top-[3px] left-1/2 -ml-[4.5px] size-[9px] rounded-full border-[1.5px] transition-colors duration-300 ${
                   state === 'done' ? 'bg-neon-cyan border-neon-cyan'
-                    : state === 'current' ? 'bg-bg border-neon-cyan shadow-[0_0_0_4px_rgba(62,224,192,0.18)]'
+                    : state === 'current' ? 'bg-bg border-neon-cyan shadow-[0_0_0_4px_rgb(var(--accent)/0.18)]'
                     : 'bg-bg border-line'
                 }`} />
                 {n}
@@ -126,7 +126,7 @@ export function TableChecks({ steps, className = '' }: { steps: CePickStep[]; cl
           <span className={`shrink-0 text-xs ${t.state === 'works' ? 'text-neon-cyan' : 'text-muted'}`}>{VERDICT_TEXT[t.state]}</span>
           {t.state === 'checking' && (
             <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-scan"
-                  style={{ background: 'linear-gradient(100deg, transparent 30%, rgba(62,224,192,0.16) 50%, transparent 70%)' }} />
+                  style={{ background: 'linear-gradient(100deg, transparent 30%, rgb(var(--accent) / 0.16) 50%, transparent 70%)' }} />
           )}
         </li>
       ))}

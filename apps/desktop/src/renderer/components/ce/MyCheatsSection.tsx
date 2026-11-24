@@ -90,7 +90,7 @@ function CheatRow({ item, attached, pending, error }: {
         <button type="button" disabled={disabled} aria-pressed={item.active} aria-label={`${cheat.name}: ${item.active ? 'On' : 'Off'}`} title={hint}
                 onClick={toggle}
                 className={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-[background-color,box-shadow] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan ${
-                  item.active ? 'bg-neon-cyan/30 shadow-[0_0_14px_rgba(62,224,192,0.3)]' : 'bg-white/[0.08] hover:bg-white/[0.13]'
+                  item.active ? 'bg-neon-cyan/30 shadow-[0_0_14px_rgb(var(--accent)/0.3)]' : 'bg-white/[0.08] hover:bg-white/[0.13]'
                 } ${disabled && !pending ? 'opacity-40' : ''}`}>
           <span className={`absolute left-[3px] top-[3px] size-4 rounded-full transition-[transform,background-color] duration-200 ease-out ${
             item.active ? 'translate-x-[16px] bg-neon-cyan' : 'bg-muted'

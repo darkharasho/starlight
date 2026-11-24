@@ -35,6 +35,9 @@ const STORE_BATCH = 100;
 /** Tiles mount in a burst; their ids are collected this long into one request. */
 const BATCH_WINDOW_MS = 30;
 
+/** Lets the renderer read the pixels (for the game's accent colour). Only ever images. */
+const CORS = { 'access-control-allow-origin': '*' };
+
 const MIME: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
 
 export type ArtKind = 'cover' | 'hero';
@@ -244,7 +247,7 @@ export function createSteamArt(opts: SteamArtOpts): SteamArt {
       const type = file ? MIME[extname(file).toLowerCase()] : undefined;
       if (file && type) {
         const data = await readFile(file).catch(() => null);
-        if (data) return new Response(new Uint8Array(data), { status: 200, headers: { 'content-type': type } });
+        if (data) return new Response(new Uint8Array(data), { status: 200, headers: { 'content-type': type, ...CORS } });
       }
       const remote = await (t.kind === 'hero' ? remoteHero : remoteCover)(t.appId);
       if (remote) {
@@ -252,7 +255,7 @@ export function createSteamArt(opts: SteamArtOpts): SteamArt {
         if (res.ok) {
           return new Response(await res.arrayBuffer(), {
             status: 200,
-            headers: { 'content-type': res.headers.get('content-type') ?? 'image/jpeg' },
+            headers: { 'content-type': res.headers.get('content-type') ?? 'image/jpeg', ...CORS },
           });
         }
       }

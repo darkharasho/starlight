@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The accent as space-separated RGB; recoloured per game while a game page is open. */
+:root {
+  --accent: 62 224 192;
+}
+
 html, body, #root {
   height: 100%;
 }
