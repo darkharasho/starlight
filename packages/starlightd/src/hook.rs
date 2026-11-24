@@ -281,14 +281,19 @@ mod tests {
         let tracer = t.tracer().unwrap();
         let patches = Patches::new(Arc::new(Owner::default()));
         let counter = remote::alloc(&t, 8, Some(func), libc::PROT_READ | libc::PROT_WRITE).unwrap();
-        let original = mem::read_bytes(&t, func, 7).unwrap();
+        let original = mem::read_bytes(&t, func, 16).unwrap();
         let hook = install(&t, &tracer, &patches, 1, func, &|tramp| format!("inc qword [{counter:#x}]\njmp {tramp:#x}"))
             .unwrap_or_else(|e| panic!("install: {e:?}"));
-        assert_eq!(hook.displaced, original, "push rbp; mov rbp,rsp; mov [rbp-4],edi");
+        // Whole instructions covering the 5-byte jump: `push rbp; mov rbp,rsp; mov [rbp-4],edi`
+        // (7 bytes), or `endbr64; push rbp` (5) where gcc builds with -fcf-protection (Ubuntu's default).
+        let n = hook.displaced.len();
+        assert!(n == 5 || n == 7, "displaced {n} bytes: {:02x?}", hook.displaced);
+        assert_eq!(hook.displaced, original[..n], "the displaced bytes are the function's first instructions");
         assert!(hook.code.abs_diff(func) < 1 << 31 && hook.trampoline > hook.code);
-        let entry = mem::read_bytes(&t, func, 7).unwrap();
+        let entry = mem::read_bytes(&t, func, 16).unwrap();
         assert_eq!(entry[0], 0xE9);
-        assert_eq!(&entry[5..], [0x90, 0x90]);
+        assert!(entry[5..n].iter().all(|&b| b == 0x90), "the rest of the displaced range is nops");
+        assert_eq!(entry[n..], original[n..], "bytes past the displaced range are untouched");
         assert!(rises(&t, counter), "the hook body does not run");
         // spin_target still returns to its caller, which keeps counting.
         assert!(rises(&t, calls), "spin_target no longer returns through the trampoline");
@@ -300,7 +305,7 @@ mod tests {
         assert!(dc.abs_diff(dk) <= dk / 50 + 1000, "body ran {dc} times for {dk} calls");
 
         patches.revert(hook.patch_id, false).unwrap();
-        assert_eq!(mem::read_bytes(&t, func, 7).unwrap(), original, "revert did not restore the entry");
+        assert_eq!(mem::read_bytes(&t, func, 16).unwrap(), original, "revert did not restore the entry");
         std::thread::sleep(Duration::from_millis(20));
         let stopped = read_u64(&t, counter);
         assert!(rises(&t, calls), "spin_target broke after the revert");
