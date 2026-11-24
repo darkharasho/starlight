@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>0</ID>
+      <Description>"Player"</Description>
+      <Options moHideChildren="1"/>
+      <GroupHeader>1</GroupHeader>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>1</ID>
+          <Description>"Health"</Description>
+          <VariableType>4 Bytes</VariableType>
+          <Address>"target"+4030</Address>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>2</ID>
+          <Description>"Gold"</Description>
+          <VariableType>4 Bytes</VariableType>
+          <Address>"target"+403090</Address>
+          <Offsets>
+            <Offset>10</Offset>
+            <Offset>1E5</Offset>
+          </Offsets>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>5</ID>
+      <Description>"Infinite ammo"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+
+alloc(newmem,2048)
+label(returnhere)
+
+newmem:
+  mov dword ptr [rbx+20],#999
+  mov eax,[rbx+20]
+  jmp returnhere
+
+"target"+1234:
+  jmp newmem
+returnhere:
+
+[DISABLE]
+
+"target"+1234:
+  db 8B 43 20 89 C1
+
+dealloc(newmem)
+</AssemblerScript>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Toggle Activation</Action>
+          <Keys>
+            <Key>17</Key>
+            <Key>65</Key>
+          </Keys>
+          <ID>0</ID>
+        </Hotkey>
+      </Hotkeys>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>6</ID>
+      <Description>"Empty toggle"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+[DISABLE]
+</AssemblerScript>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+  <LuaScript>-- table notes only
+--[[ nothing
+runs here ]]
+</LuaScript>
+</CheatTable>

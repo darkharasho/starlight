@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Health"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"target"+4030</Address>
+    </CheatEntry>
+  </CheatEntries>
+  <LuaScript>-- open the process
+openProcess("target.exe")
+</LuaScript>
+</CheatTable>

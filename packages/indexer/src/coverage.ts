@@ -1,4 +1,4 @@
-import { importCt, listCtRecords, parseCt, type CtRecord } from '@starlight/ct-importer';
+import { compileTable, importCt, listCtRecords, parseCt, type CtRecord } from '@starlight/ct-importer';
 
 export type Compiler = 'baseline' | 'native';
 
@@ -109,9 +109,21 @@ export function baselineCompile(xml: string): { records: BaselineRecord[]; table
   return { records, tableCodes };
 }
 
+/** The native compiler's view: compileTable, with script-less headers not counted as records. */
+export function nativeCompile(xml: string): { records: BaselineRecord[]; tableCodes: string[] } {
+  const t = compileTable(xml);
+  const records: BaselineRecord[] = [];
+  for (const r of t.records) {
+    if (r.kind === 'header' && r.script === null) continue;
+    const native = r.kind !== 'unsupported';
+    records.push({ id: r.id, native, code: native ? null : r.code });
+  }
+  const tableCodes = t.reasons.filter((r) => r.recordId === null).map((r) => r.code as string);
+  return { records, tableCodes };
+}
+
 export function measureTable(id: string, xml: string, compiler: Compiler): TableCoverage {
-  if (compiler === 'native') throw new Error('native compiler not built yet');
-  const { records, tableCodes } = baselineCompile(xml);
+  const { records, tableCodes } = compiler === 'native' ? nativeCompile(xml) : baselineCompile(xml);
   const codes: Record<string, number> = {};
   for (const r of records) if (r.code) codes[r.code] = (codes[r.code] ?? 0) + 1;
   const nativeRecords = records.filter((r) => r.native).length;

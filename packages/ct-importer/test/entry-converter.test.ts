@@ -174,6 +174,7 @@ describe('convertEntry', () => {
     expect(r.cheat.name).toBe('Quoted');
   });
 
+  // R27: CE stores <Offsets> last-applied first; the importer reverses them to base-first.
   it('parses hex-string offsets correctly (regression: was producing 0xNaN)', () => {
     const entry: CtEntry = {
       ID: 99,
@@ -186,7 +187,7 @@ describe('convertEntry', () => {
     if (r.kind !== 'cheat' || r.cheat.unsupported) throw new Error('expected supported');
     expect(r.cheat.address).toMatchObject({
       kind: 'pointer',
-      offsets: ['0x10', '0xfffffffc', '0x0'],
+      offsets: ['0x0', '0xfffffffc', '0x10'],
     });
   });
 });

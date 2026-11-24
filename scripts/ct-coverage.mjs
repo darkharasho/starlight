@@ -17,7 +17,10 @@ const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] 
 const compiler = opt('--compiler', 'baseline');
 if (!['baseline', 'native'].includes(compiler)) { console.error(`unknown --compiler ${compiler}`); process.exit(2); }
 if (flag('--assemble')) {
-  console.error('--assemble is not available yet (arrives with the native assembler in Task 9).');
+  // --compiler native --assemble also assembles every native script with the engine's
+  // checkAssembles and counts failures as asm:error. That check arrives with the engine.
+  if (compiler !== 'native') { console.error('--assemble needs --compiler native'); process.exit(2); }
+  console.error("--assemble needs the engine's checkAssembles (Task 9)");
   process.exit(2);
 }
 const corpus = resolve(opt('--corpus', join(homedir(), '.cache', 'starlight', 'ct-coverage')));

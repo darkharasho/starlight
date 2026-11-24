@@ -16,7 +16,8 @@ function toHex(n: number | string): string {
   return '0x' + stripped;
 }
 
-export function parseAddress(addr: string | number, offsets?: number[]): ParsedAddress | null {
+/** `offsets` in application order: numbers are values, strings are hex literals. */
+export function parseAddress(addr: string | number, offsets?: ReadonlyArray<number | string>): ParsedAddress | null {
   // fast-xml-parser coerces pure-digit address strings like "18" or "100" to
   // numbers. CE always writes addresses as hex digits, so the digit string is
   // what we want — `.toString()` gives the same characters back.

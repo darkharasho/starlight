@@ -18,6 +18,15 @@ const aa = (id: number) =>
 nop
 [DISABLE]
 nop</AssemblerScript></CheatEntry>`;
+// An AA script the native compiler accepts (a fixed module-offset patch).
+const aaNative = (id: number) =>
+  `<CheatEntry><ID>${id}</ID><Description>"AA ok"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]
+"game.exe"+1234:
+  db 90 90
+[DISABLE]
+"game.exe"+1234:
+  db 8B 43
+</AssemblerScript></CheatEntry>`;
 const lua = (id: number) =>
   `<CheatEntry><ID>${id}</ID><Description>"Lua"</Description><LuaScript>print(1)</LuaScript></CheatEntry>`;
 const header = (id: number, kids = '') =>
@@ -103,7 +112,19 @@ describe('coverage', () => {
     expect(rep.tables.pct).toBe(100);
   });
 
-  it('native compiler is not available before Task 8', () => {
-    expect(() => measureTable('g', ct(value(1, 'v')), 'native')).toThrow('native compiler not built yet');
+  it('native compiler: a compiled-AA table is native', () => {
+    const t = measureTable('g', ct(header(1, value(2, 'v') + aaNative(3))), 'native');
+    expect(t).toMatchObject({ records: 2, nativeRecords: 2, native: true, tableCodes: [] });
+    expect(t.codes).toEqual({});
+    // The baseline still sends the same AA record to CE.
+    expect(measureTable('g', ct(header(1, value(2, 'v') + aaNative(3))), 'baseline').codes).toEqual({ 'aa:script': 1 });
+  });
+
+  it('native compiler: record and table codes come from compileTable', () => {
+    const t = measureTable('g', ct(aaLua(1) + lua(2) + value(3, 'v'), '<LuaScript>showMessage("x")</LuaScript>'), 'native');
+    expect(t.codes).toEqual({ 'lua:block': 1, 'lua:script': 1 });
+    expect(t.tableCodes).toEqual(['lua:table-script']);
+    expect(t).toMatchObject({ records: 3, nativeRecords: 1, native: false });
+    expect(measureTable('g', ct(header(1)), 'native')).toMatchObject({ records: 0, tableCodes: ['table:empty'], native: false });
   });
 });

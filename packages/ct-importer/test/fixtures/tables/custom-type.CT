@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Big endian"</Description>
+      <VariableType>Custom</VariableType>
+      <CustomType>4 Byte Big Endian</CustomType>
+      <Address>"target"+6000</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"Flags"</Description>
+      <VariableType>Binary</VariableType>
+      <BitStart>0</BitStart>
+      <BitLength>1</BitLength>
+      <Address>"target"+6004</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"Signature"</Description>
+      <VariableType>Array of byte</VariableType>
+      <ByteLength>8</ByteLength>
+      <Address>"target"+6008</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"Name"</Description>
+      <VariableType>String</VariableType>
+      <Length>16</Length>
+      <Unicode>0</Unicode>
+      <CodePage>0</CodePage>
+      <ZeroTerminate>1</ZeroTerminate>
+      <Address>"target"+6010</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>5</ID>
+      <Description>"Delta"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>"target"+6020</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>6</ID>
+      <Description>"Score"</Description>
+      <ShowAsHex>1</ShowAsHex>
+      <VariableType>8 Bytes</VariableType>
+      <Address>"target"+6028</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>7</ID>
+      <Description>"Computed"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>[[pPlayer]+8]*2+foo</Address>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
