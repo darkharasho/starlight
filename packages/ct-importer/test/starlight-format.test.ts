@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { REASON_CODES, reasonCopy } from '../src/reasons.js';
 import { StarlightTrainerSchema, isValueCheat, isPatchCheat, type StarlightTrainer, type StarlightCheat } from '../src/starlight-format.js';
 
 describe('StarlightTrainerSchema', () => {
@@ -145,6 +146,41 @@ describe('StarlightTrainerSchema', () => {
     const [v, p, u] = t.categories[0].cheats as StarlightCheat[];
     expect([isValueCheat(v), isValueCheat(p), isValueCheat(u)]).toEqual([true, false, false]);
     expect([isPatchCheat(v), isPatchCheat(p), isPatchCheat(u)]).toEqual([false, true, false]);
+  });
+
+  it('accepts a v2 value cheat with a symbol address and offsets', () => {
+    const c = { id: 's', name: 'S', type: 'freeze', valueType: 'int32', value: 1,
+      address: { kind: 'symbol', expr: 'player+10', offsets: ['0x4', '0x8'] } };
+    expect(() => StarlightTrainerSchema.parse(base([c]))).not.toThrow();
+  });
+
+  it('rejects a symbol address in a v1 file', () => {
+    const cats = [{ name: 'C', cheats: [{
+      id: 'a', name: 'A', type: 'freeze', valueType: 'int32', value: 1,
+      address: { kind: 'symbol', expr: 'player' },
+    }] }];
+    expect(() => StarlightTrainerSchema.parse(base([], { schemaVersion: 1, categories: cats }))).toThrow();
+  });
+
+  it('accepts a patch cheat without a site and with aobScan/unregisterSymbol steps', () => {
+    const c = { id: 'p', name: 'P', type: 'patch',
+      enable: [
+        { op: 'aobScan', name: 'hook', module: 'x.exe', pattern: '48 8B ??' },
+        { op: 'aobScan', name: 'hook2', pattern: '90 90' },
+      ],
+      disable: [{ op: 'unregisterSymbol', name: 'hook' }] };
+    expect(() => StarlightTrainerSchema.parse(base([c]))).not.toThrow();
+  });
+
+  it('every reason code has player copy', () => {
+    for (const c of REASON_CODES) expect(reasonCopy(c), c).not.toBe('This table needs Cheat Engine.');
+    expect(reasonCopy('lua:table-script')).toBe('This table runs Lua code when it loads.');
+    expect(reasonCopy('lua:block')).toBe('A script in this table runs Lua code.');
+    expect(reasonCopy('aa:createthread')).toBe('A script starts its own thread in the game.');
+    expect(reasonCopy('asm:error')).toBe("A script uses an instruction Starlight can't assemble yet.");
+    expect(reasonCopy('sym:mono')).toBe("A script uses Mono/IL2CPP names (needs Cheat Engine's Mono features).");
+    expect(reasonCopy('table:empty')).toBe('This table has no cheats to run.');
+    expect(reasonCopy('nope')).toBe('This table needs Cheat Engine.');
   });
 
   it('every catalog trainer in packages/catalog/trainers still parses', () => {

@@ -56,14 +56,19 @@ export function validateAgentCheat(
   const errors: string[] = [];
 
   if (cheat.type === 'patch') {
+    if (!cheat.site) errors.push('site: agent-made code cheats need an aob site');
     if (cheat.disable !== undefined) errors.push('disable: leave disable out; Starlight reverts the enable steps itself');
     if (cheat.enable.length > 32) errors.push('enable: at most 32 steps');
     cheat.enable.forEach((step, i) => {
+      if (step.op === 'aobScan') errors.push(`enable[${i}].op: agent-made cheats can't use aobScan; use site`);
+      if (step.op === 'unregisterSymbol') errors.push(`enable[${i}].op: unregisterSymbol only belongs in a table's disable steps`);
       if (step.op !== 'alloc' && step.op !== 'registerSymbol') return;
       if (step.name === 'site' || step.name === 'address') errors.push(`enable[${i}].name: "site" and "address" are reserved`);
     });
   } else {
-    if (cheat.address.kind === 'absolute') {
+    if (cheat.address.kind === 'symbol') {
+      errors.push("address: agent-made cheats can't use table symbols; use an aob, pointer or module address");
+    } else if (cheat.address.kind === 'absolute') {
       errors.push("address: agent-made cheats can't use absolute addresses; use an aob, pointer or module address");
     } else if (cheat.address.kind === 'pointer' && !cheat.address.module) {
       errors.push('address: a pointer needs a module base (module + offsets)');

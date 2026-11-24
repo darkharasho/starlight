@@ -119,6 +119,8 @@ function findCheat(cheatId: string): StarlightSupportedCheat | undefined {
 
 async function resolveAddress(s: Session, addr: StarlightAddress): Promise<string> {
   switch (addr.kind) {
+    case 'symbol':
+      throw new Error('table symbols need the table session');
     case 'absolute':
       return addr.address;
     case 'module':

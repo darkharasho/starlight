@@ -29,8 +29,17 @@ const AobAddress = z.object({
   offset: z.string().optional(),  // hex; bytes added to first match
 });
 
-const Address = z.discriminatedUnion('kind', [
+const SymbolAddress = z.object({
+  kind: z.literal('symbol'),
+  expr: z.string(),                  // symbol expression, e.g. "player+10"
+  offsets: z.array(z.string()).optional(),  // hex literals, application order
+});
+
+const AddressV1 = z.discriminatedUnion('kind', [
   AbsoluteAddress, ModuleRelativeAddress, PointerAddress, AobAddress,
+]);
+const Address = z.discriminatedUnion('kind', [
+  AbsoluteAddress, ModuleRelativeAddress, PointerAddress, AobAddress, SymbolAddress,
 ]);
 
 const Hotkeys = z.object({
@@ -66,6 +75,8 @@ const PatchStep = z.discriminatedUnion('op', [
   z.object({ op: z.literal('assemble'), at: z.string(), source: z.string().max(16384) }),
   z.object({ op: z.literal('writeBytes'), at: z.string(), bytes: Hex, original: Hex.optional() }),
   z.object({ op: z.literal('registerSymbol'), name: Ident, at: z.string() }),
+  z.object({ op: z.literal('aobScan'), name: Ident, module: z.string().optional(), pattern: z.string() }),
+  z.object({ op: z.literal('unregisterSymbol'), name: Ident }),
 ]);
 
 const SupportedCheat = z.object({
@@ -81,12 +92,13 @@ const SupportedCheat = z.object({
   step: z.number().optional(),
   min: z.number().optional(),
   max: z.number().optional(),
-  address: Address,
+  address: AddressV1,
   hotkeys: Hotkeys,
   unsupported: z.literal(false).optional(),
 });
 
 const ValueCheat = SupportedCheat.extend({
+  address: Address,
   verify: Verify.optional(),
   provenance: Provenance.optional(),
 });
@@ -96,7 +108,7 @@ const PatchCheat = z.object({
   name: z.string(),
   description: z.string().optional(),
   type: z.literal('patch'),
-  site: AobAddress,
+  site: AobAddress.optional(),
   enable: z.array(PatchStep).min(1),
   disable: z.array(PatchStep).optional(),
   verify: Verify.optional(),
@@ -181,6 +193,7 @@ export type StarlightPatchCheat = z.infer<typeof PatchCheat>;
 export type StarlightPatchStep = z.infer<typeof PatchStep>;
 export type StarlightVerify = z.infer<typeof Verify>;
 export type StarlightProvenance = z.infer<typeof Provenance>;
+export type StarlightSymbolAddress = z.infer<typeof SymbolAddress>;
 export type StarlightAobAddress = z.infer<typeof AobAddress>;
 
 export function isValueCheat(c: StarlightCheat): c is StarlightValueCheat {

@@ -62,6 +62,8 @@ function addOffset(address: string, offset: string | undefined): string {
 /** Resolves a cheat address. An AOB address uses the first match plus `offset`. */
 export async function resolveCheatAddress(s: Session, a: StarlightAddress): Promise<string> {
   switch (a.kind) {
+    case 'symbol':
+      throw new Error('table symbols are not supported yet');
     case 'absolute':
       return a.address;
     case 'module':
@@ -129,7 +131,8 @@ export async function verifyCheat(s: Session, cheat: StarlightCheat): Promise<Ve
   const verify: StarlightVerify | undefined = c.verify;
   if (!verify) return { status: 'unverified', reasons: [] };
   const patchCheat = c.type === 'patch';
-  const a: StarlightAddress = patchCheat ? (c as StarlightPatchCheat).site : (c as StarlightValueCheat).address;
+  const a: StarlightAddress | undefined = patchCheat ? (c as StarlightPatchCheat).site : (c as StarlightValueCheat).address;
+  if (!a) throw new Error('patches without a site are not supported yet');
   const reasons: string[] = [];
 
   let address: string | null = null;
@@ -202,6 +205,7 @@ function describeAddress(a: StarlightAddress): string {
     case 'module': return `${a.module}+${a.offset}`;
     case 'pointer': return `${a.module ?? ''}+${a.baseOffset}`;
     case 'aob': return `${a.module} AOB`;
+    case 'symbol': return a.expr;
   }
 }
 
@@ -274,6 +278,7 @@ async function enableValue(
 }
 
 async function enablePatch(s: Session, cheat: StarlightPatchCheat): Promise<RunningCheat> {
+  if (!cheat.site) throw new Error('patches without a site are not supported yet');
   const site = await resolveCheatAddress(s, cheat.site);
   const symbols: Symbols = { site };
   const applied: Array<{ revert(force?: boolean): Promise<void> }> = [];
