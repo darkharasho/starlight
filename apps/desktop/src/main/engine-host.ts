@@ -6,6 +6,7 @@ import {
   resolvePointerChain,
   aobScan,
   freeze,
+  resolveCheatAddress,
   type Session,
   type FreezeHandle,
   type ValueType,
@@ -120,7 +121,9 @@ function findCheat(cheatId: string): StarlightSupportedCheat | undefined {
 async function resolveAddress(s: Session, addr: StarlightAddress): Promise<string> {
   switch (addr.kind) {
     case 'symbol':
-      throw new Error('table symbols need the table session');
+      // No table registry on this path (CE tables run their own symbols): module names resolve,
+      // anything else is "symbol <name> isn't registered".
+      return resolveCheatAddress(s, addr);
     case 'absolute':
       return addr.address;
     case 'module':

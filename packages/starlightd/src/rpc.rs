@@ -13,8 +13,8 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
-pub const PROTOCOL: u64 = 2;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed"];
+pub const PROTOCOL: u64 = 3;
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed", "aob_exec"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -103,6 +103,7 @@ pub fn is_slow(method: &str) -> bool {
             | "pointer_scan"
             | "pointer_rescan"
             | "make_signature"
+            | "aob_scan"
             | "alloc"
             | "free"
             | "patch"
@@ -386,10 +387,11 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
         }
         "aob_scan" => {
             let t = handles.get(param_handle(params)?)?;
-            let module = params
-                .get("module")
-                .and_then(Value::as_str)
-                .ok_or_else(|| RpcError::invalid_params("module must be a string"))?;
+            // No module (protocol 3, `aob_exec`): every executable region (M4 D10).
+            let module = match params.get("module") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_str().ok_or_else(|| RpcError::invalid_params("module must be a string"))?),
+            };
             let pattern = params
                 .get("pattern")
                 .and_then(Value::as_str)
@@ -399,8 +401,11 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
                 Some(_) => param_u64(params, "max")?.min(usize::MAX as u64) as usize,
             };
             let pattern = aob::Pattern::parse(pattern)?;
-            let range = aob::module_range(&t, module)?;
-            let matches: Vec<String> = aob::scan(&t, range, &pattern, max)?.iter().map(|a| format!("{a:#x}")).collect();
+            let found = match module {
+                Some(module) => aob::scan(&t, aob::module_range(&t, module)?, &pattern, max)?,
+                None => aob::scan_exec(&t, &pattern, max)?,
+            };
+            let matches: Vec<String> = found.iter().map(|a| format!("{a:#x}")).collect();
             Ok(json!({ "matches": matches }))
         }
         "resolve_pointer" => {

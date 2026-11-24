@@ -58,7 +58,8 @@ export function libraryTools(deps: LibraryToolsDeps): ToolDef<any>[] { // eslint
   async function withOriginals(session: Session, cheat: Extract<AgentCheatDraft, { type: 'patch' }>): Promise<typeof cheat> {
     const todo = cheat.enable.some((st) => st.op === 'writeBytes' && st.original === undefined && SITE_EXPR.test(st.at.trim()));
     if (!todo) return cheat;
-    if (!cheat.site) throw new Error('patches without a site are not supported yet');
+    // Without a site there is no `site` to read originals at (save_cheat's validation requires one).
+    if (!cheat.site) return cheat;
     const site = BigInt(await resolveSite(session, cheat.site));
     const enable: StarlightPatchCheat['enable'] = [];
     for (const step of cheat.enable) {

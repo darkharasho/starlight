@@ -18,4 +18,5 @@ export { setSpeed, getSpeed } from './speed.js';
 export { moduleExports, resolveSymbol } from './symbols.js';
 export {
   parseAddressExpr, resolveAddressExpr, resolveCheatAddress, verifyCheat, enableCheat, type RunningCheat,
+  definedLabels, checkAssembles,
 } from './cheats.js';

@@ -5,7 +5,7 @@ import { read, write, readMany } from '../src/memory.js';
 import { assemble, disassemble, makeSignature } from '../src/code.js';
 import { listModules } from '../src/modules.js';
 import {
-  parseAddressExpr, resolveAddressExpr, verifyCheat, enableCheat,
+  parseAddressExpr, resolveAddressExpr, resolveCheatAddress, verifyCheat, enableCheat,
 } from '../src/cheats.js';
 import { NeedsUpdateError, EngineError, ScanError, RpcCode } from '../src/errors.js';
 import { startTestEngine } from './helpers/daemon.js';
@@ -200,7 +200,7 @@ describe('v2 cheats: verify and run', () => {
     await expect(enableCheat(s, patchCheat(site, [
       { op: 'writeBytes', at: 'site', bytes: 'c3' },
       { op: 'writeBytes', at: 'nowhere+4', bytes: 'c3' },
-    ]))).rejects.toThrow('unknown symbol nowhere');
+    ]))).rejects.toThrow("symbol nowhere isn't registered");
     expect((await bytesAt(s, siteAddr, 4)).equals(before)).toBe(true);
   });
 
@@ -237,12 +237,39 @@ describe('v2 cheats: verify and run', () => {
     await run.disable();
   });
 
-  it('refuses a cheat with disable steps', async () => {
+  it('runs a cheat with disable steps (revert, then checks)', async () => {
     const { s, t } = await setup(['--writer']);
     const { site } = await patchSite(s, t);
+    const siteAddr = hex(BigInt(t.addresses.bump_counter!));
+    const original = (await bytesAt(s, siteAddr, 1)).toString('hex');
+    const lines: string[] = [];
     const cheat = patchCheat(site, [{ op: 'writeBytes', at: 'site', bytes: 'c3' }], {
-      disable: [{ op: 'writeBytes', at: 'site', bytes: '90' }],
+      disable: [
+        { op: 'writeBytes', at: 'site', bytes: original },
+        { op: 'writeBytes', at: 'site', bytes: original === '90' ? 'cc' : '90' },
+      ],
     });
-    await expect(enableCheat(s, cheat)).rejects.toThrow('needs the native table runner');
+    const run = await enableCheat(s, cheat, { log: (l) => lines.push(l) });
+    expect((await bytesAt(s, siteAddr, 1)).toString('hex')).toBe('c3');
+    await run.disable();
+    // The recorded original is restored; the matching disable write is fine, the other one is only logged.
+    expect((await bytesAt(s, siteAddr, 1)).toString('hex')).toBe(original);
+    expect(lines).toEqual(["disable bytes at site differ from the game's original; kept the original"]);
+    await run.disable();
+    expect(lines).toHaveLength(1);
+  });
+
+  it('a symbol address with several terms and negative offsets resolves (--heap-chain)', async () => {
+    const { s, t } = await setup(['--heap-chain']);
+    const symbols = new Map([['proot', hex(BigInt(t.addresses.g_root!) - 0x18n)]]);
+    const o = { symbols };
+    // pRoot+8+10 (and PROOT+20-8) = g_root; [g_root]+18 = A+18; [A+18]+10 = B+10 (777).
+    const at = (expr: string, offsets: string[]) => resolveCheatAddress(s, { kind: 'symbol', expr, offsets }, o);
+    expect(await read(s, await at('pRoot+8+10', ['0x18', '0x10']), 'int32')).toBe(777);
+    expect(await read(s, await at('PROOT+20-8', ['0x18', '0x10']), 'int32')).toBe(777);
+    const b = BigInt(await at('pRoot+8+10', ['0x18', '0x0']));
+    expect(BigInt(await at('pRoot+8+10', ['0x18', '-0x10']))).toBe(b - 0x10n);
+    expect(await resolveCheatAddress(s, { kind: 'symbol', expr: 'pRoot-0x8' }, o)).toBe(hex(BigInt(t.addresses.g_root!) - 0x20n));
+    await expect(resolveCheatAddress(s, { kind: 'symbol', expr: 'nobody+8' }, o)).rejects.toThrow("symbol nobody isn't registered");
   });
 });

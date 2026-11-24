@@ -3,6 +3,7 @@ use crate::maps;
 use crate::mem;
 use crate::modules;
 use crate::process::Target;
+use crate::remote;
 use crate::rpc::RpcError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +130,52 @@ pub fn scan(t: &Target, range: (u64, u64), p: &Pattern, max: usize) -> Result<Ve
     Ok(out)
 }
 
+/// `[start, end)` without the `holes` (sorted, possibly overlapping), as ascending ranges.
+fn subtract(start: u64, end: u64, holes: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut out = vec![];
+    let mut at = start;
+    for &(hs, he) in holes {
+        if he <= at || hs >= end {
+            continue;
+        }
+        if hs > at {
+            out.push((at, hs));
+        }
+        at = at.max(he);
+    }
+    if at < end {
+        out.push((at, end));
+    }
+    out
+}
+
+/// Scan every readable, executable region in address order for `p`, skipping this daemon's own
+/// hook and state pages (M4 D10: AA `aobscan` covers code, including JIT code in anonymous
+/// memory). At most `max` ascending matches.
+pub fn scan_exec(t: &Target, p: &Pattern, max: usize) -> Result<Vec<u64>, RpcError> {
+    let regions = maps::read(t.pid).map_err(|e| match e.raw_os_error() {
+        Some(libc::ENOENT) | Some(libc::ESRCH) => RpcError::process_not_found(format!("pid {} has exited", t.pid)),
+        _ => RpcError::read_failed(format!("cannot read maps of pid {}: {e}", t.pid)),
+    })?;
+    let own = remote::own_ranges(t.pid);
+    let mut out = vec![];
+    for r in regions.iter().filter(|r| r.perms.read && r.perms.exec) {
+        for range in subtract(r.start, r.end, &own) {
+            scan_range(|a, n| mem::read_bytes(t, a, n).ok(), range, p, max, &mut out);
+            if out.len() >= max {
+                break;
+            }
+        }
+        if out.len() >= max {
+            break;
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(max);
+    Ok(out)
+}
+
 /// Resolve a module name to its (start, end) range.
 pub fn module_range(t: &Target, name: &str) -> Result<(u64, u64), RpcError> {
     let mods = modules::list(t)?;
@@ -139,6 +186,14 @@ pub fn module_range(t: &Target, name: &str) -> Result<(u64, u64), RpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtract_removes_holes() {
+        assert_eq!(subtract(0, 100, &[]), vec![(0, 100)]);
+        assert_eq!(subtract(0, 100, &[(10, 20), (15, 30), (90, 200)]), vec![(0, 10), (30, 90)]);
+        assert_eq!(subtract(10, 20, &[(0, 10), (20, 30)]), vec![(10, 20)]);
+        assert_eq!(subtract(10, 20, &[(0, 50)]), vec![]);
+    }
 
     #[test]
     fn parses_wildcards() {

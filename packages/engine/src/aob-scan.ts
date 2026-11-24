@@ -4,7 +4,7 @@ import type { AobScanSpec } from './types.js';
 export async function aobScan(session: Session, spec: AobScanSpec): Promise<string[]> {
   const { matches } = await session.client.call<{ matches: string[] }>('aob_scan', {
     handle: session.handle,
-    module: spec.module,
+    ...(spec.module !== undefined ? { module: spec.module } : {}),
     pattern: spec.pattern,
   });
   if (spec.resultOffset === undefined) return matches;

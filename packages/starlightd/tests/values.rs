@@ -180,7 +180,7 @@ fn scan_next_after_target_exit_is_32002() {
     let e = c.call_timeout("scan_next", json!({"scan": scan, "mode": "unchanged"}), SCAN_TIMEOUT).unwrap_err();
     assert_eq!(e.0, -32002);
     assert_eq!(c.call("scan_results", json!({"scan": scan})).unwrap_err().0, -32002);
-    assert_eq!(c.call("hello", json!({})).unwrap()["protocol"], 2);
+    assert_eq!(c.call("hello", json!({})).unwrap()["protocol"], 3);
     // The session stays registered until it is ended.
     c.call("scan_end", json!({"scan": scan})).unwrap();
     assert_eq!(c.call("scan_results", json!({"scan": scan})).unwrap_err().0, -32009);

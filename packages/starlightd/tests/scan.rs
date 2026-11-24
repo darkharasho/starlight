@@ -90,3 +90,64 @@ fn unreadable_chain_step_is_32003() {
     assert_eq!(e.0, -32003);
     assert!(e.1.contains("step 0"), "{}", e.1);
 }
+
+#[test]
+fn aob_scan_without_module_finds_code_in_executable_memory() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let sig = c.call("make_signature", json!({"handle": h, "address": t.addr("bump_counter")})).unwrap();
+    assert_eq!(sig["unique"], true);
+    let r = c.call("aob_scan", json!({"handle": h, "pattern": sig["pattern"]})).unwrap();
+    assert_eq!(r["matches"][0], t.addr("bump_counter").as_str());
+    // Address order across every executable region.
+    let all: Vec<u64> = r["matches"].as_array().unwrap().iter()
+        .map(|m| u64::from_str_radix(m.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()).collect();
+    assert!(all.windows(2).all(|w| w[0] < w[1]), "{all:x?}");
+}
+
+#[test]
+fn aob_scan_without_module_skips_data() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = c.call("aob_scan", json!({"handle": h, "pattern": "DE AD BE EF CA FE BA BE 12 34 56 78"})).unwrap();
+    assert_eq!(r["matches"], json!([]));
+    // The same pattern is found in the module (data included).
+    let r = c.call("aob_scan", json!({"handle": h, "module": "target", "pattern": "DE AD BE EF CA FE BA BE 12 34 56 78"})).unwrap();
+    assert_eq!(r["matches"][0], t.addr("g_aob_marker").as_str());
+}
+
+#[test]
+fn aob_scan_without_module_skips_the_daemons_hook_pages() {
+    let t = Target::spawn(&["--clocks"]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let func = t.addr("clock_wrapper");
+    let targets = json!([{"name": "clock_wrapper", "address": func, "abi": "sysv", "kind": "clock_gettime"}]);
+    c.call_timeout("speed_set", json!({"handle": h, "speed": 2.0, "targets": targets}), std::time::Duration::from_secs(15)).unwrap();
+    // The hooked entry is `jmp <hook page>`; a pattern of the page's own bytes must not match there.
+    let ins = c.call("disassemble", json!({"handle": h, "address": func, "count": 1})).unwrap();
+    let page = ins["instructions"][0]["target"]["address"].as_str().expect("entry jmp target").to_string();
+    let hex = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
+    let bytes = c.call("read", json!({"handle": h, "address": page, "length": 24})).unwrap()["bytes"].as_str().unwrap().to_string();
+    let pattern: Vec<String> = (0..bytes.len()).step_by(2).map(|i| bytes[i..i + 2].to_string()).collect();
+    let r = c.call("aob_scan", json!({"handle": h, "pattern": pattern.join(" ")})).unwrap();
+    let p = hex(&page);
+    for m in r["matches"].as_array().unwrap() {
+        let a = hex(m.as_str().unwrap());
+        assert!(!(p..p + 0x1000).contains(&a), "matched inside the daemon's hook page at {a:#x}");
+    }
+}
+
+#[test]
+fn hello_reports_protocol_3_and_aob_exec() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let v = c.call("hello", json!({})).unwrap();
+    assert_eq!(v["protocol"], 3);
+    assert!(v["capabilities"].as_array().unwrap().iter().any(|x| x == "aob_exec"), "{v}");
+}

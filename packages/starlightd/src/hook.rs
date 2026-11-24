@@ -68,7 +68,7 @@ pub fn install(
     let instrs = displaced(&code, func).map_err(HookError::Skipped)?;
     let len: usize = instrs.iter().map(Instruction::len).sum();
     let original = code[..len].to_vec();
-    let page = remote::alloc(t, PAGE, Some(func), libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC)?;
+    let page = remote::alloc_own(t, PAGE, Some(func), libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC)?;
     // Until the entry jump is written nothing can run in the page, so it can still be freed.
     let release = |e: HookError| {
         let _ = remote::free(t, page, PAGE);

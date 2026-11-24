@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Measures how many catalog .CT tables could run without Cheat Engine.
 // Usage: node scripts/ct-coverage.mjs [--sample 400 | --all] [--fetch] [--compiler baseline|native]
-//        [--assemble] [--json <file>] [--corpus <dir>]
+//        [--assemble [--daemon <starlightd>]] [--json <file>] [--corpus <dir>]
 // Without --fetch it makes no network requests and measures what is cached.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,13 +16,10 @@ const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] 
 
 const compiler = opt('--compiler', 'baseline');
 if (!['baseline', 'native'].includes(compiler)) { console.error(`unknown --compiler ${compiler}`); process.exit(2); }
-if (flag('--assemble')) {
-  // --compiler native --assemble also assembles every native script with the engine's
-  // checkAssembles and counts failures as asm:error. That check arrives with the engine.
-  if (compiler !== 'native') { console.error('--assemble needs --compiler native'); process.exit(2); }
-  console.error("--assemble needs the engine's checkAssembles (Task 9)");
-  process.exit(2);
-}
+// --compiler native --assemble also assembles every native script with the engine's game-less
+// checkAssembles (a local starlightd, no game) and counts failures as asm:error.
+const assembleFlag = flag('--assemble');
+if (assembleFlag && compiler !== 'native') { console.error('--assemble needs --compiler native'); process.exit(2); }
 const corpus = resolve(opt('--corpus', join(homedir(), '.cache', 'starlight', 'ct-coverage')));
 const sample = flag('--all') ? Infinity : Number(opt('--sample', '400'));
 const jsonOut = opt('--json', null);
@@ -97,18 +94,67 @@ if (flag('--fetch')) {
   saveManifest();
 }
 
+/** Starts a local starlightd for checkAssembles; it never attaches to anything. */
+async function startAssembler() {
+  const { startEngine, checkAssembles } = await import(join(root, 'packages/engine/dist/index.js'));
+  const { compileTable } = await import(join(root, 'packages/ct-importer/dist/index.js'));
+  // --daemon wins; else the newer of the release and debug builds.
+  const builds = ['release', 'debug'].map((p) => join(root, 'packages/starlightd/target', p, 'starlightd'))
+    .filter((p) => existsSync(p))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  const binary = opt('--daemon', null) ?? builds[0];
+  if (!binary) { console.error('--assemble needs a built starlightd (cargo build in packages/starlightd, or --daemon <path>)'); process.exit(2); }
+  const dir = mkdtempSync(join(tmpdir(), 'starlight-coverage-'));
+  const engine = await startEngine({ binary, socketPath: join(dir, 'sock') });
+  let checked = 0;
+  let failedScripts = 0;
+  return {
+    /** Turns every native script record of `row` whose code doesn't assemble into asm:error. */
+    async check(row, xml) {
+      const t = compileTable(xml);
+      const known = Object.keys(t.registeredBy);
+      for (const r of t.records) {
+        if ((r.kind !== 'script' && r.kind !== 'header') || !r.script?.cheat) continue;
+        checked += 1;
+        const res = await checkAssembles(engine.client, r.script.cheat, { known });
+        if (res.ok) continue;
+        failedScripts += 1;
+        row.nativeRecords -= 1;
+        row.native = false;
+        row.codes['asm:error'] = (row.codes['asm:error'] ?? 0) + 1;
+      }
+    },
+    async stop() {
+      await engine.stop();
+      rmSync(dir, { recursive: true, force: true });
+      console.error(`assembled ${checked} native scripts, ${failedScripts} asm:error`);
+    },
+  };
+}
+
+const assembler = assembleFlag ? await startAssembler() : null;
 const rows = [];
 let failed = 0;
 let missing = 0;
-for (const g of selected) {
-  const m = manifest[g.id];
-  if (!m) { missing += 1; continue; }
-  if (m.error || !existsSync(ctPath(g.id))) { failed += 1; continue; }
-  try {
-    rows.push(measureTable(g.id, readFileSync(ctPath(g.id), 'utf8'), compiler));
-  } catch {
-    failed += 1; // unparseable
+try {
+  for (const g of selected) {
+    const m = manifest[g.id];
+    if (!m) { missing += 1; continue; }
+    if (m.error || !existsSync(ctPath(g.id))) { failed += 1; continue; }
+    let xml;
+    let row;
+    try {
+      xml = readFileSync(ctPath(g.id), 'utf8');
+      row = measureTable(g.id, xml, compiler);
+    } catch {
+      failed += 1; // unparseable
+      continue;
+    }
+    if (assembler) await assembler.check(row, xml);
+    rows.push(row);
   }
+} finally {
+  await assembler?.stop();
 }
 
 const report = summarize(rows, failed, compiler);

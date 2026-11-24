@@ -389,7 +389,7 @@ impl Speeds {
         if tg.got_slots.is_empty() {
             return Err(HookError::Skipped(format!("no loaded module calls {} through its GOT", tg.name)));
         }
-        let page = remote::alloc(t, PAGE, None, RWX)?;
+        let page = remote::alloc_own(t, PAGE, None, RWX)?;
         let src = tpl::hook_source(tg.kind, tg.abi, state, tg.slot, original);
         let code = asm::assemble(&src, page, &|_| None).map_err(|err| RpcError::assemble_failed(err.to_string()))?;
         mem::write_bytes(t, page, &code.bytes)?;
@@ -538,7 +538,7 @@ fn write_speed(t: &Target, tracer: &Tracer, state: u64, speed: f64, gen: u32) ->
 
 /// A new state page: magic, zeroed state (an empty record), the shared routines.
 fn new_state_page(t: &Target) -> Result<u64, RpcError> {
-    let page = remote::alloc(t, STATE_PAGE_SIZE, None, RWX)?;
+    let page = remote::alloc_own(t, STATE_PAGE_SIZE, None, RWX)?;
     let image = state_image(page).and_then(|img| mem::write_bytes(t, page, &img));
     if let Err(err) = image {
         // Nothing can have run in it yet.

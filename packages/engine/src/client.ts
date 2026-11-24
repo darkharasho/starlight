@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createConnection, type Socket } from 'node:net';
 import { AttachError, EngineError, PermissionError, ReadError, RpcCode, ScanError, WriteError } from './errors.js';
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export interface EngineClient {
   call<T>(method: string, params: object): Promise<T>;
