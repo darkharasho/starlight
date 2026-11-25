@@ -42,6 +42,13 @@ describe('exeNameFromCmdline', () => {
     expect(exeNameFromCmdline(cmdline, 'pressure-vessel')).toBeNull();
   });
 
+  it('names a game whose engine renamed its main thread after argv[0]', () => {
+    // Unity renames the main thread, so comm reads "Unity Main Thre" and matches
+    // no exe token; argv[0] is still the game exe (real Bamboo Ronin cmdline).
+    const cmdline = `S:\\steamapps\\common\\Bamboo Ronin The Last Cut\\Bamboo Ronin.exe${NUL}`;
+    expect(exeNameFromCmdline(cmdline, 'Unity Main Thre')).toBe('Bamboo Ronin.exe');
+  });
+
   it('handles a Unix path exe', () => {
     expect(exeNameFromCmdline(`/opt/games/Foo.exe${NUL}`, 'Foo.exe')).toBe('Foo.exe');
   });

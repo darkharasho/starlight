@@ -35,9 +35,11 @@ function basename(p: string): string {
  * token whose 15-char-truncated basename equals it counts — that pins the exact
  * argument belonging to this process even when argv contains several exes (e.g.
  * a launcher exe followed by the game exe). A process whose comm matches no
- * token is not that exe: Proton's wrappers (`_v2-entry-point`,
- * `pressure-vessel-wrap`, …) carry the game exe as an argument while the game
- * starts, and naming them after it latches the wrong process. Without a comm we
+ * token is named after argv[0] only when argv[0] is itself an exe (a game whose
+ * engine renamed its main thread); otherwise it is not that exe: Proton's
+ * wrappers (`_v2-entry-point`, `pressure-vessel-wrap`, …) carry the game exe as
+ * an argument while the game starts, and naming them after it latches the wrong
+ * process. Without a comm we
  * fall back to the last `.exe` token, which for a game process is normally argv[0].
  */
 export function exeNameFromCmdline(cmdline: string, comm?: string): string | null {
@@ -46,7 +48,13 @@ export function exeNameFromCmdline(cmdline: string, comm?: string): string | nul
   if (exes.length === 0) return null;
   if (comm) {
     const c = comm.toLowerCase();
-    return exes.find((b) => b.slice(0, COMM_MAX).toLowerCase() === c) ?? null;
+    const match = exes.find((b) => b.slice(0, COMM_MAX).toLowerCase() === c);
+    if (match) return match;
+    // An engine may rename its main thread, which renames comm (Unity:
+    // "Unity Main Thre"). The process is still its argv[0] when that is an exe;
+    // the Proton wrappers' argv[0] never is (sh, python3, _v2-entry-point, …).
+    const argv0 = basename(tokens[0] ?? '');
+    return /\.exe$/i.test(argv0) ? argv0 : null;
   }
   return exes[exes.length - 1]!;
 }
