@@ -615,10 +615,12 @@ fn many_waiting_threads_do_not_exhaust_the_nesting_table() {
     assert_eq!(hook_status(&r, "pthread_cond_timedwait").as_deref(), Some("hooked"), "{r}");
     settle();
     assert_rate(t.pid, hex(&t.addr("g_mono_ns")), 1e9, 1.7, 2.3, "CLOCK_MONOTONIC at 2x with 80 waiting threads");
-    // And the waiters keep waking (80 threads × 100/s at 2x; a stall would be near 0).
+    // And the waiters keep waking (80 threads × 100/s at 2x; a stall would be near 0). This is a
+    // stall check only: 8000 wakeups/s is CPU-bound on a busy 2-core CI runner (5734/s seen), and
+    // the abstime_wait_* tests check that deadlines follow the speed.
     let waits = rate(t.pid, hex(&t.addr("g_abs_conds")), 1.0);
     eprintln!("measured rate of g_abs_conds (80 threads) at 2x: {waits:.1}/s");
-    assert!(waits > 6000.0, "80 waiting threads wake {waits:.1}/s at 2x, expected about 8000");
+    assert!(waits > 2000.0, "80 waiting threads wake {waits:.1}/s at 2x, expected about 8000 (a stall is near 0)");
 }
 
 #[test]
