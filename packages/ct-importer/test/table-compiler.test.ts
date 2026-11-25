@@ -40,17 +40,32 @@ describe('compileTable', () => {
     expect(s.hotkeys).toEqual([{ action: 'toggle', accelerator: 'Ctrl+A' }]);
   });
 
-  it('one Lua record sends the whole table to CE with lua:block', () => {
+  it('an AA script with supported {$lua} compiles to a deferred script; the table stays native', () => {
     const t = compileTable(table('with-lua-record.CT'));
-    expect(t.native).toBe(false);
+    expect(t.reasons).toEqual([]);
+    expect(t.native).toBe(true);
     expect(byId(t.records, 1).kind).toBe('value');
-    expect(byId(t.records, 2)).toMatchObject({ kind: 'unsupported', code: 'lua:block' });
-    expect(t.reasons).toEqual([expect.objectContaining({ recordId: 2, name: 'Lua inside AA', code: 'lua:block' })]);
+    const r = byId(t.records, 2);
+    if (r.kind !== 'script') throw new Error('expected a script');
+    expect(r.script.cheat).toBeNull();
+    expect(r.script.deferred).toContain('{$lua}');
   });
 
-  it('a per-record Lua script is lua:script', () => {
-    const t = compileTable(ct('<CheatEntry><ID>4</ID><Description>"L"</Description><LuaScript>writeInteger("x",1)</LuaScript></CheatEntry>'));
-    expect(t.records[0]).toMatchObject({ kind: 'unsupported', code: 'lua:script' });
+  it('{$lua} with something the runtime lacks is lua:unsupported with the function', () => {
+    const aa = (body: string) => ct('<CheatEntry><ID>3</ID><Description>"S"</Description><VariableType>Auto Assembler Script</VariableType>'
+      + `<AssemblerScript>[ENABLE]\n{$lua}\n${body}\n{$asm}\n[DISABLE]\n</AssemblerScript></CheatEntry>`);
+    expect(compileTable(aa('createThread(f)')).reasons).toEqual([{ recordId: 3, name: 'S', code: 'lua:unsupported', detail: 'createthread' }]);
+    expect(compileTable(aa('local m = createMenuItem(x)\nm.OnClick = function() end')).reasons.map((r) => r.detail)).toEqual(['ui-callback']);
+    // luacall lines are Lua too.
+    const call = ct('<CheatEntry><ID>4</ID><Description>"C"</Description><VariableType>Auto Assembler Script</VariableType>'
+      + '<AssemblerScript>[ENABLE]\nluacall(speedhack_setSpeed(2))\n[DISABLE]\n</AssemblerScript></CheatEntry>');
+    expect(compileTable(call).reasons.map((r) => [r.code, r.detail])).toEqual([['lua:unsupported', 'speedhack_setspeed']]);
+  });
+
+  it('a per-record Lua script is a lua record, or lua:unsupported', () => {
+    const rec = (lua: string) => ct(`<CheatEntry><ID>4</ID><Description>"L"</Description><LuaScript>${lua}</LuaScript></CheatEntry>`);
+    expect(compileTable(rec('writeInteger("x",1)')).records[0]).toMatchObject({ kind: 'lua', lua: 'writeInteger("x",1)' });
+    expect(compileTable(rec('injectDLL("x")')).records[0]).toMatchObject({ kind: 'unsupported', code: 'lua:unsupported', detail: 'injectdll' });
   });
 
   it('Lua that only opens links or shows messages is ignored, in the table and in records', () => {
@@ -64,16 +79,27 @@ end`;
     expect(t.reasons).toEqual([]);
     expect(byId(t.records, 2)).toMatchObject({ kind: 'script', script: { cheat: null } });
     // An assignment is real code.
-    expect(compileTable(ct(value, '<LuaScript>x = 1\nshowMessage("hi")</LuaScript>')).reasons.map((r) => r.code)).toEqual(['lua:table-script']);
+    expect(compileTable(ct(value, '<LuaScript>x = 1\nshowMessage("hi")</LuaScript>')).tableLua).toContain('x = 1');
   });
 
-  it('a table-level Lua script is lua:table-script; comment-only Lua is ignored', () => {
+  it('a supported table script becomes tableLua; an unsupported one is lua:unsupported', () => {
     const t = compileTable(table('table-lua.CT'));
-    expect(t.native).toBe(false);
-    expect(t.reasons).toEqual([expect.objectContaining({ recordId: null, code: 'lua:table-script' })]);
+    expect(t.reasons).toEqual([]);
+    expect(t.native).toBe(true);
+    expect(t.tableLua).toContain('openProcess("target.exe")');
     expect(t.records[0]!.kind).toBe('value');
+    const value = '<CheatEntry><ID>1</ID><Description>"Gold"</Description><VariableType>4 Bytes</VariableType><Address>target.exe+10</Address></CheatEntry>';
+    expect(compileTable(ct(value, '<LuaScript>createThread(f)</LuaScript>')).reasons)
+      .toEqual([{ recordId: null, name: '', code: 'lua:unsupported', detail: 'createthread' }]);
     // native-ok.CT has a comment-only table script.
-    expect(compileTable(table('native-ok.CT')).native).toBe(true);
+    expect(compileTable(table('native-ok.CT'))).toMatchObject({ native: true, tableLua: null });
+  });
+
+  it('a literal registerSymbol in the table script registers the name for the table', () => {
+    const value = '<CheatEntry><ID>1</ID><Description>"HP"</Description><VariableType>4 Bytes</VariableType><Address>[pPlayer]+10</Address></CheatEntry>';
+    const t = compileTable(ct(value, '<LuaScript>registerSymbol("pPlayer", getAddress("target.exe+100"))</LuaScript>'));
+    expect(t.reasons).toEqual([]);
+    expect(t.registeredBy).toEqual({ pplayer: -1 });
   });
 
   it('a header-only table is table:empty', () => {

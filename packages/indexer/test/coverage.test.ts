@@ -120,10 +120,13 @@ describe('coverage', () => {
     expect(measureTable('g', ct(header(1, value(2, 'v') + aaNative(3))), 'baseline').codes).toEqual({ 'aa:script': 1 });
   });
 
-  it('native compiler: record and table codes come from compileTable', () => {
-    const t = measureTable('g', ct(aaLua(1) + lua(2) + value(3, 'v'), '<LuaScript>openProcess("x")</LuaScript>'), 'native');
-    expect(t.codes).toEqual({ 'lua:block': 1, 'lua:script': 1 });
-    expect(t.tableCodes).toEqual(['lua:table-script']);
+  it('native compiler: supported Lua is native; record and table codes come from compileTable', () => {
+    const ok = measureTable('g', ct(aaLua(1) + lua(2) + value(3, 'v'), '<LuaScript>openProcess("x")</LuaScript>'), 'native');
+    expect(ok).toMatchObject({ records: 3, nativeRecords: 3, native: true, codes: {}, tableCodes: [] });
+    const unsupported = (x: string) => x.replace(/writeInteger\("x",1\)/g, 'createThread(f)');
+    const t = measureTable('g', ct(unsupported(aaLua(1) + lua(2)) + value(3, 'v'), '<LuaScript>createThread(f)</LuaScript>'), 'native');
+    expect(t.codes).toEqual({ 'lua:unsupported': 2 });
+    expect(t.tableCodes).toEqual(['lua:unsupported']);
     expect(t).toMatchObject({ records: 3, nativeRecords: 1, native: false });
     expect(measureTable('g', ct(header(1)), 'native')).toMatchObject({ records: 0, tableCodes: ['table:empty'], native: false });
   });

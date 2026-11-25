@@ -7,6 +7,8 @@
 import { parseCt, listCtRecords, type CtEntry, type CtHotkey } from './xml-parser.js';
 import { compileAaScript } from './aa-compiler.js';
 import { isCosmeticLua } from './lua-cosmetic.js';
+import { scanLua } from './lua-scan.js';
+import { luaBlocks, stripLuaBlocks } from './lua-blocks.js';
 import { parseCtAddress } from './ct-address.js';
 import { mapCtType } from './type-mapper.js';
 import { vkKeysToAccelerator } from './hotkey-parser.js';
@@ -20,10 +22,15 @@ export interface CompiledHotkey {
 }
 
 export type CompiledScript = {
-  /** null = the script compiles to nothing (a no-op toggle). */
+  /** null = the script compiles to nothing (a no-op toggle), or is deferred. */
   cheat: StarlightPatchCheat | null;
   registers: string[];
   uses: string[];
+  /**
+   * The full AA source when it has `{$lua}` blocks or `luacall` lines: they run on enable and
+   * their returned text is spliced in before compiling (`expandLuaBlocks`). `cheat` is null then.
+   */
+  deferred?: string;
 };
 
 export type CompiledRecord = { id: number; name: string; depth: number; opts?: string; hotkeys: CompiledHotkey[] } & (
@@ -38,6 +45,8 @@ export type CompiledRecord = { id: number; name: string; depth: number; opts?: s
       showAsSigned: boolean;
       options?: { value: string; label: string }[];
     }
+  /** A record whose own LuaScript runs on enable ([ENABLE] part) and disable ([DISABLE] part). */
+  | { kind: 'lua'; lua: string }
   | { kind: 'unsupported'; code: ReasonCode; detail: string });
 
 export interface CompiledTable {
@@ -45,8 +54,10 @@ export interface CompiledTable {
   /** True when nothing in the table needs Cheat Engine (no reasons). */
   native: boolean;
   reasons: Array<{ recordId: number | null; name: string; code: ReasonCode; detail: string }>;
-  /** Lowercased symbol -> id of the first record that registers it. */
+  /** Lowercased symbol -> id of the first record that registers it (-1: the table script). */
   registeredBy: Record<string, number>;
+  /** The table's own Lua script, run once after attaching; null when it has none (or only cosmetic Lua). */
+  tableLua: string | null;
 }
 
 /** CE's hotkey actions. Its bridge treats `action <= 2` (the first three) as toggles. */
@@ -140,6 +151,8 @@ export function compileTable(xml: string): CompiledTable {
   const records: CompiledRecord[] = [];
   const entries: CtEntry[] = [];
   const dropdownByName = new Map<string, string>();
+  /** Literal registerSymbol names in record Lua scripts, by record id. */
+  const luaRegisters = new Map<number, string[]>();
 
   // Pass 1: records in listCtRecords order, addresses folded into ancestors.
   let i = 0;
@@ -166,16 +179,26 @@ export function compileTable(xml: string): CompiledTable {
       const aa = e.AssemblerScript !== undefined ? text(e.AssemblerScript) : null;
       let compiled: CompiledRecord;
       if (hasLuaCode(lua)) {
-        compiled = unsupported('lua:script', 'Lua script');
+        const scan = scanLua(lua);
+        compiled = scan.unsupported.length ? unsupported('lua:unsupported', scan.unsupported[0]!) : { ...base, kind: 'lua', lua };
+        if (scan.registers.length) luaRegisters.set(rec.id, scan.registers);
       } else if (rec.kind === 'header' || rec.kind === 'script') {
         if (aa === null || (rec.kind === 'header' && !aa.trim())) {
           compiled = rec.kind === 'header' ? { ...base, kind: 'header', script: null } : unsupported('aa:no-enable', 'no script');
         } else {
-          const r = compileAaScript(aa, { id: `cheat-${rec.id}`, name: rec.name });
-          if (!r.ok) {
+          // {$lua} blocks and luacall lines run on enable: check them, compile the AA around them.
+          const blocks = luaBlocks(aa);
+          const bad = blocks.flatMap((b) => scanLua(b.code).unsupported)[0];
+          const r = compileAaScript(blocks.length ? stripLuaBlocks(aa) : aa, { id: `cheat-${rec.id}`, name: rec.name });
+          if (bad !== undefined) {
+            compiled = unsupported('lua:unsupported', bad);
+          } else if (!r.ok) {
             compiled = unsupported(r.code, r.line !== null ? `line ${r.line}: ${r.detail}` : r.detail);
           } else {
-            const script: CompiledScript = { cheat: r.cheat, registers: r.registers, uses: r.uses };
+            const luaRegs = blocks.flatMap((b) => scanLua(b.code).registers);
+            const script: CompiledScript = blocks.length
+              ? { cheat: null, registers: [...new Set([...r.registers, ...luaRegs])], uses: r.uses, deferred: aa }
+              : { cheat: r.cheat, registers: r.registers, uses: r.uses };
             compiled = rec.kind === 'header' ? { ...base, kind: 'header', script } : { ...base, kind: 'script', script };
           }
         }
@@ -210,8 +233,14 @@ export function compileTable(xml: string): CompiledTable {
     if (options.length > 0) r.options = options;
   });
 
+  // The table script: run once after attaching when the runtime supports all of it.
+  const tableLuaSrc = text((root.CheatTable as { LuaScript?: unknown }).LuaScript);
+  const tableScan = hasLuaCode(tableLuaSrc) ? scanLua(tableLuaSrc) : null;
+
   // Pass 3: the table-wide symbol registry, then every record's needed names against it (R16: lowercased).
   const registeredBy: Record<string, number> = {};
+  for (const name of tableScan?.registers ?? []) registeredBy[name] ??= -1;
+  for (const [id, names] of luaRegisters) for (const name of names) registeredBy[name] ??= id;
   for (const r of records) {
     const script = r.kind === 'script' || r.kind === 'header' ? r.script : null;
     for (const name of script?.registers ?? []) {
@@ -240,8 +269,9 @@ export function compileTable(xml: string): CompiledTable {
 
   // Reasons: table rules (D13) first, then records.
   const reasons: CompiledTable['reasons'] = [];
-  const tableLua = text((root.CheatTable as { LuaScript?: unknown }).LuaScript);
-  if (hasLuaCode(tableLua)) reasons.push({ recordId: null, name: '', code: 'lua:table-script', detail: 'table Lua script' });
+  if (tableScan?.unsupported.length) {
+    reasons.push({ recordId: null, name: '', code: 'lua:unsupported', detail: tableScan.unsupported[0]! });
+  }
   if (!records.some((r) => !(r.kind === 'header' && r.script === null))) {
     reasons.push({ recordId: null, name: '', code: 'table:empty', detail: 'no records besides headers' });
   }
@@ -249,5 +279,6 @@ export function compileTable(xml: string): CompiledTable {
     if (r.kind === 'unsupported') reasons.push({ recordId: r.id, name: r.name, code: r.code, detail: r.detail });
   }
 
-  return { records, native: reasons.length === 0, reasons, registeredBy };
+  const tableLua = tableScan && tableScan.unsupported.length === 0 ? tableLuaSrc : null;
+  return { records, native: reasons.length === 0, reasons, registeredBy, tableLua };
 }
