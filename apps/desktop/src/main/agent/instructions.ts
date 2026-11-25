@@ -21,6 +21,7 @@ const RULES = `Rules:
 - Give every value cheat a verify.range (the values that make sense, e.g. { "min": 0, "max": 10000000 }), so Starlight can tell when a game update broke it.
 - Test before saving: test_cheat first, then save_cheat once the player confirms it works.
 - Call list_cheats first: if the game already has a cheat for this that needs updating, repair it (save_cheat with replaces) instead of starting over.
+- To suggest what to work on, list_installed_games with trainer "without" lists the player's installed games that have no trainer yet.
 - Single-player games only. Starlight refuses games with anti-cheat; never help with online or multiplayer games.
 - Values are strings in tool inputs and results. Addresses look like "0x7ff6a1b2c3d4" or "module+0x4010".`;
 

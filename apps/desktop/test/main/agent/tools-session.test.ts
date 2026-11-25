@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
-import { attachTool, detachTool, gameInfoTool, listGamesTool, type ListGamesDeps } from '../../../src/main/agent/tools-session.js';
+import { attachTool, detachTool, gameInfoTool, listGamesTool, listInstalledGamesTool, type ListGamesDeps } from '../../../src/main/agent/tools-session.js';
 import type { AttachedContext, ToolContext } from '../../../src/main/agent/tools.js';
 import type { Session } from '@starlight/engine';
 import type { GameIdentity } from '../../../src/main/game-identity.js';
@@ -154,5 +154,66 @@ describe('attach, detach and game_info', () => {
     const page = await def.run({ modules_offset: 40, modules_limit: 10 }, c) as { modules: { count: number; items: Array<{ name: string }> } };
     expect(page.modules.count).toBe(45);
     expect(page.modules.items.map((m) => m.name)).toEqual(['m40.dll', 'm41.dll', 'm42.dll', 'm43.dll', 'm44.dll']);
+  });
+});
+
+describe('list_installed_games', () => {
+  const installed = [
+    { source: 'steam' as const, appId: '440', name: 'Team Fortress 2', installDir: '/s/tf2' },
+    { source: 'steam' as const, appId: '999', name: 'Zebra Quest', installDir: '/s/zq' },
+    { source: 'manual' as const, appId: 'm1', name: 'Hand Added', installDir: '/m/ha', boxartSteamAppId: 777 },
+    { source: 'heroic' as const, appId: 'h1', name: 'Apple Farm: Deluxe', installDir: '/h/af' },
+  ];
+  const catalog = [
+    { name: 'Team Fortress 2 v1.0 CT', steamAppId: 440 },
+    { name: 'Some Other Title', steamAppId: 777 },
+    { name: 'Apple Farm Deluxe', steamAppId: null },
+  ];
+  const tool = (o: Partial<Parameters<typeof listInstalledGamesTool>[0]> = {}) => listInstalledGamesTool({
+    installedGames: async () => installed,
+    catalog: async () => catalog,
+    ...o,
+  });
+
+  it('is an open, read-only tool that lists installed games sorted by name with trainer status', async () => {
+    const def = tool();
+    expect(def.name).toBe('list_installed_games');
+    expect(def.tier).toBe('open');
+    expect(def.readOnly).toBe(true);
+    const r = await def.run({}, ctx);
+    expect(r).toEqual({
+      total: 4, installed: 4, withTrainer: 3,
+      games: [
+        { name: 'Apple Farm: Deluxe', source: 'heroic', steamAppId: null, hasTrainer: true },
+        { name: 'Hand Added', source: 'manual', steamAppId: 777, hasTrainer: true },
+        { name: 'Team Fortress 2', source: 'steam', steamAppId: 440, hasTrainer: true },
+        { name: 'Zebra Quest', source: 'steam', steamAppId: 999, hasTrainer: false },
+      ],
+    });
+  });
+
+  it('trainer "without" and "with" filter the list', async () => {
+    const without = await tool().run({ trainer: 'without' }, ctx) as { total: number; games: Array<{ name: string }> };
+    expect(without.total).toBe(1);
+    expect(without.games.map((g) => g.name)).toEqual(['Zebra Quest']);
+    const withT = await tool().run({ trainer: 'with' }, ctx) as { total: number };
+    expect(withT.total).toBe(3);
+  });
+
+  it('pages with limit and offset', async () => {
+    const r = await tool().run({ limit: 2, offset: 1 }, ctx) as { total: number; games: Array<{ name: string }> };
+    expect(r.total).toBe(4);
+    expect(r.games.map((g) => g.name)).toEqual(['Hand Added', 'Team Fortress 2']);
+  });
+
+  it('refuses when the catalog can\'t be loaded instead of calling every game trainer-less', async () => {
+    await expect(tool({ catalog: async () => { throw new Error('offline'); } }).run({}, ctx)).rejects.toThrow(/catalog isn't loaded/);
+    await expect(tool({ catalog: async () => null }).run({}, ctx)).rejects.toThrow(/catalog isn't loaded/);
+  });
+
+  it('summarizes with the filter', async () => {
+    const def = tool();
+    expect(def.summarize!({ trainer: 'without' }, { total: 1 })).toBe('Found 1 installed game without a trainer');
+    expect(def.summarize!({}, { total: 4 })).toBe('Found 4 installed games');
   });
 });

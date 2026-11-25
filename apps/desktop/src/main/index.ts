@@ -34,7 +34,7 @@ import { loadOrCreateToken, rotateToken } from './agent/token.js';
 import { buildConnectInfo } from './agent/connect-info.js';
 import { createAgentServer } from './agent/server.js';
 import type { ToolDef } from './agent/tools.js';
-import { attachTool, detachTool, gameInfoTool, listGamesTool } from './agent/tools-session.js';
+import { attachTool, detachTool, gameInfoTool, listGamesTool, listInstalledGamesTool } from './agent/tools-session.js';
 import { createActivityLog } from './agent/activity.js';
 import { createPlayerPrompts } from './agent/player-prompt.js';
 import { electronNotifier } from './agent/notifier.js';
@@ -146,6 +146,11 @@ const agentTools: ToolDef<any>[] = [
     identify: (pid) => identifyGame(pid, { catalogIndex: () => catalogIndex, detectedGames: () => lastDetectedGames }, { hash: false }),
     detectAntiCheatFn: (pid) => detectAntiCheat(pid),
     attachedPid: () => agentSession.attachedPid(),
+  }),
+  listInstalledGamesTool({
+    // A fresh scan (it takes well under a second), so games installed since launch show up.
+    installedGames: async () => (lastDetectedGames = await scanLibrary()),
+    catalog: async () => (getCachedIndex() ?? await fetchCatalog()).games,
   }),
   attachTool(agentSession),
   detachTool(agentSession),

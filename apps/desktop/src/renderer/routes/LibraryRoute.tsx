@@ -5,7 +5,7 @@ import { useLibraryStore } from '../stores/library-store.js';
 import { useProcessStore, attachProcessEvents } from '../stores/process-store.js';
 import { useCatalogStore } from '../stores/catalog-store.js';
 import { openCatalogGame, openToolsOnly } from '../lib/open-game.js';
-import { gameKey } from '../lib/dedupe-games.js';
+import { catalogMatcher } from '../../shared/catalog-match.js';
 import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 import { starlight } from '../ipc-client.js';
@@ -160,24 +160,7 @@ export function LibraryRoute(): JSX.Element {
   const loadCatalog = useCatalogStore((s) => s.load);
   useEffect(() => { if (!catalogIndex) void loadCatalog(); }, [catalogIndex, loadCatalog]);
 
-  const catalogNameIndex = useMemo(() => {
-    const m = new Map<string, NonNullable<typeof catalogIndex>['games'][number]>();
-    for (const g of catalogIndex?.games ?? []) {
-      const k = gameKey(g.name);
-      if (k && !m.has(k)) m.set(k, g);
-    }
-    return m;
-  }, [catalogIndex]);
-
-  function findCatalogEntry(g: DetectedGame): NonNullable<typeof catalogIndex>['games'][number] | undefined {
-    if (!catalogIndex) return undefined;
-    const steamId = g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : NaN);
-    if (!Number.isNaN(steamId)) {
-      const byId = catalogIndex.games.find(e => e.steamAppId === steamId);
-      if (byId) return byId;
-    }
-    return catalogNameIndex.get(gameKey(g.name));
-  }
+  const findCatalogEntry = useMemo(() => catalogMatcher(catalogIndex?.games ?? []), [catalogIndex]);
 
   async function openTrainerForGame(g: DetectedGame): Promise<void> {
     const entry = findCatalogEntry(g);

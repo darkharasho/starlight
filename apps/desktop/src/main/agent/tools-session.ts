@@ -1,15 +1,16 @@
 // apps/desktop/src/main/agent/tools-session.ts
 //
-// Session tools: list_games, attach, detach and game_info.
+// Session tools: list_games, list_installed_games, attach, detach and game_info.
 import { sep } from 'node:path';
 import { z } from 'zod';
-import type { DetectedProcess } from '../../shared/ipc.js';
+import type { DetectedGame, DetectedProcess } from '../../shared/ipc.js';
+import { catalogMatcher, installedSteamAppId, type MatchableEntry } from '../../shared/catalog-match.js';
 import type { AntiCheatHit } from '../anti-cheat.js';
 import type { GameIdentity } from '../game-identity.js';
 import { isNoiseProcess } from '../process-host.js';
 import { EXE_SUFFIX } from '../proc-exe-name.js';
 import type { ModuleInfo, Session } from '@starlight/engine';
-import type { AgentClient, ToolDef } from './tools.js';
+import { ToolError, type AgentClient, type ToolDef } from './tools.js';
 
 /** What attach/detach need from the agent session (kept here so tool files don't import session.ts). */
 export interface SessionControl {
@@ -102,6 +103,67 @@ export function listGamesTool(deps: ListGamesDeps): ToolDef<typeof input> {
     summarize(args, result) {
       const n = (result as { games?: unknown[] } | null)?.games?.length ?? 0;
       return args.all ? `Listed ${n} running process${n === 1 ? '' : 'es'}` : `Found ${n} running game${n === 1 ? '' : 's'}`;
+    },
+  };
+}
+
+export const INSTALLED_PAGE = 200;
+
+export interface ListInstalledGamesDeps {
+  /** The games the library scan found (Steam, Epic, Heroic, Lutris and manual). */
+  installedGames(): Promise<DetectedGame[]>;
+  /** The trainer catalog's entries, or null when it can't be loaded. */
+  catalog(): Promise<readonly MatchableEntry[] | null>;
+}
+
+export interface InstalledGame {
+  name: string;
+  source: DetectedGame['source'];
+  steamAppId: number | null;
+  hasTrainer: boolean;
+}
+
+const installedInput = {
+  trainer: z.enum(['all', 'with', 'without']).optional()
+    .describe('"without" lists only games with no trainer in the catalog yet, "with" only games that have one; default all.'),
+  limit: z.number().int().min(1).max(INSTALLED_PAGE).optional().describe(`Games per page, 1–${INSTALLED_PAGE} (default ${INSTALLED_PAGE}).`),
+  offset: z.number().int().min(0).optional().describe('Paging offset; default 0.'),
+};
+
+export function listInstalledGamesTool(deps: ListInstalledGamesDeps): ToolDef<typeof installedInput> {
+  return {
+    name: 'list_installed_games',
+    title: 'List installed games',
+    description:
+      "Lists the games installed on the player's computer and whether Starlight's catalog has a trainer for each. " +
+      'Use trainer: "without" to find games nobody has made cheats for yet. The games are not running; ' +
+      'ask the player to start one, then use list_games and attach.',
+    tier: 'open',
+    readOnly: true,
+    input: installedInput,
+    async run(args) {
+      const [games, entries] = await Promise.all([deps.installedGames(), deps.catalog().catch(() => null)]);
+      if (!entries) throw new ToolError("Starlight's trainer catalog isn't loaded, so it can't tell which games have a trainer. Try again in a moment.");
+      const match = catalogMatcher(entries);
+      const all: InstalledGame[] = games
+        .map((g) => ({ name: g.name, source: g.source, steamAppId: installedSteamAppId(g), hasTrainer: !!match(g) }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
+      const filter = args.trainer ?? 'all';
+      const picked = filter === 'all' ? all : all.filter((g) => g.hasTrainer === (filter === 'with'));
+      const offset = args.offset ?? 0;
+      const limit = args.limit ?? INSTALLED_PAGE;
+      return {
+        total: picked.length,
+        installed: all.length,
+        withTrainer: all.filter((g) => g.hasTrainer).length,
+        games: picked.slice(offset, offset + limit),
+      };
+    },
+    summarize(args, result) {
+      const r = result as { total?: number } | null;
+      const n = r?.total ?? 0;
+      const what = args.trainer === 'without' ? ' without a trainer' : args.trainer === 'with' ? ' with a trainer' : '';
+      return `Found ${n} installed game${n === 1 ? '' : 's'}${what}`;
     },
   };
 }
