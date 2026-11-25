@@ -28,6 +28,10 @@
 //!     are never chosen);
 //!   - multi-byte `nop` is `dword` (the disassembler prints `nop [rax+rax]` without a size);
 //!   - anything else (`inc [rax]`, `cvtsi2sd xmm0,[rax]`, `movzx eax,[rdi]`) is an error.
+//! - CE leniencies: `push`/`pop` of a 32-bit register is the 64-bit register (`push eax` =
+//!   `push rax`), `pushf`/`popf` are `pushfq`/`popfq`, `#-N` is a negative decimal, and a bare
+//!   `db`/`dw`/`dd`/`dq` is one zero value.
+//! - `align N [fill]` pads with `fill` (default `90`) up to the next multiple of `N`.
 //! - Operand size: 16-bit (`66`-prefixed) forms are only chosen when a 16-bit register or `word`
 //!   is written, so `push 1234` is the 8-byte `push` (`68 34 12 00 00`).
 //! - Prefixes are rejected on instructions that can't take them (`lock` also needs a memory
@@ -258,6 +262,31 @@ mod tests {
         assert_eq!(asm("lock cmpxchg [rdx],rcx"), [0xF0, 0x48, 0x0F, 0xB1, 0x0A]);
         assert_eq!(asm("pause"), [0xF3, 0x90]);
         assert_eq!(asm("movss xmm15,dword ptr [r8+4]"), [0xF3, 0x45, 0x0F, 0x10, 0x78, 0x04]);
+    }
+
+    #[test]
+    fn align_pads_to_the_boundary() {
+        // 3 bytes, then cc up to 0x1010, then the dd.
+        let a = assemble("mov eax,ebx\nnop\nalign 10 cc\nv:\ndd 1", 0x1000, &no_syms).unwrap();
+        let mut want = vec![0x89, 0xD8, 0x90];
+        want.extend([0xCC; 13]);
+        want.extend([1, 0, 0, 0]);
+        assert_eq!(a.bytes, want);
+        // Default fill is nop; already aligned is no padding.
+        assert_eq!(asm("align 4\nret"), [0xC3]);
+        // No labels at all still pads from the real line address.
+        assert_eq!(assemble("ret\nalign 4\nret", 0x2000, &no_syms).unwrap().bytes, [0xC3, 0x90, 0x90, 0x90, 0xC3]);
+        assert!(assemble("align 0", 0, &no_syms).is_err());
+    }
+
+    #[test]
+    fn ce_leniencies() {
+        assert_eq!(asm("dd"), [0, 0, 0, 0]);
+        assert_eq!(asm("dq"), [0; 8]);
+        assert_eq!(asm("dd #-2"), [0xFE, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(asm("mov eax,#-1"), asm("mov eax,FFFFFFFF"));
+        assert_eq!(asm("pushf\npopf"), [0x9C, 0x9D]);
+        assert_eq!(asm("push eax\npop r8d"), asm("push rax\npop r8"));
     }
 
     #[test]

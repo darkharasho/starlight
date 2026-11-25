@@ -49,8 +49,22 @@ describe('compileTable', () => {
   });
 
   it('a per-record Lua script is lua:script', () => {
-    const t = compileTable(ct('<CheatEntry><ID>4</ID><Description>"L"</Description><LuaScript>print(1)</LuaScript></CheatEntry>'));
+    const t = compileTable(ct('<CheatEntry><ID>4</ID><Description>"L"</Description><LuaScript>writeInteger("x",1)</LuaScript></CheatEntry>'));
     expect(t.records[0]).toMatchObject({ kind: 'unsupported', code: 'lua:script' });
+  });
+
+  it('Lua that only opens links or shows messages is ignored, in the table and in records', () => {
+    const nag = `if messageDialog("More cheats here! Open?", mtConfirmation, mbYes, mbNo) == mrYes then
+  shellExecute("https://example.com/t/1")
+end`;
+    const link = '<CheatEntry><ID>2</ID><Description>"Donate"</Description><VariableType>Auto Assembler Script</VariableType>'
+      + '<AssemblerScript>{$lua}\nif syntaxcheck then return end\n[ENABLE]\nShellExecute(\'https://example.com\')\n[DISABLE]\n</AssemblerScript></CheatEntry>';
+    const value = '<CheatEntry><ID>1</ID><Description>"Gold"</Description><VariableType>4 Bytes</VariableType><Address>target.exe+10</Address></CheatEntry>';
+    const t = compileTable(ct(value + link, `<LuaScript>${nag}</LuaScript>`));
+    expect(t.reasons).toEqual([]);
+    expect(byId(t.records, 2)).toMatchObject({ kind: 'script', script: { cheat: null } });
+    // An assignment is real code.
+    expect(compileTable(ct(value, '<LuaScript>x = 1\nshowMessage("hi")</LuaScript>')).reasons.map((r) => r.code)).toEqual(['lua:table-script']);
   });
 
   it('a table-level Lua script is lua:table-script; comment-only Lua is ignored', () => {

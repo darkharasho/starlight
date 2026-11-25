@@ -6,6 +6,7 @@
  */
 import { parseCt, listCtRecords, type CtEntry, type CtHotkey } from './xml-parser.js';
 import { compileAaScript } from './aa-compiler.js';
+import { isCosmeticLua } from './lua-cosmetic.js';
 import { parseCtAddress } from './ct-address.js';
 import { mapCtType } from './type-mapper.js';
 import { vkKeysToAccelerator } from './hotkey-parser.js';
@@ -72,9 +73,9 @@ function text(v: unknown): string {
 
 const flag = (v: unknown) => text(v).trim() === '1';
 
-/** True when Lua source holds anything besides comments and whitespace. */
+/** True when Lua source does something besides talk to the player (see isCosmeticLua). */
 function hasLuaCode(src: string): boolean {
-  return src.replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, '').replace(/--[^\n]*/g, '').trim().length > 0;
+  return !isCosmeticLua(src);
 }
 
 function compileHotkeys(e: CtEntry): CompiledHotkey[] {
@@ -164,7 +165,7 @@ export function compileTable(xml: string): CompiledTable {
       const lua = text(e.LuaScript);
       const aa = e.AssemblerScript !== undefined ? text(e.AssemblerScript) : null;
       let compiled: CompiledRecord;
-      if (lua.trim()) {
+      if (hasLuaCode(lua)) {
         compiled = unsupported('lua:script', 'Lua script');
       } else if (rec.kind === 'header' || rec.kind === 'script') {
         if (aa === null || (rec.kind === 'header' && !aa.trim())) {

@@ -5,6 +5,7 @@
  */
 import type { StarlightPatchCheat, StarlightPatchStep } from './starlight-format.js';
 import type { ReasonCode } from './reasons.js';
+import { isCosmeticLua } from './lua-cosmetic.js';
 
 export type AaResult =
   | { ok: true; cheat: StarlightPatchCheat | null; registers: string[]; uses: string[] }
@@ -82,6 +83,18 @@ function stripComments(script: string): Cleaned {
   return { lines: out.split('\n'), unterminatedAt };
 }
 
+/**
+ * Blanks `{$lua}…{$asm}` blocks that are only cosmetic (open a link, show a
+ * message), keeping their [ENABLE]/[DISABLE] markers and the line count. Any
+ * other Lua stays, and is reported as lua:block.
+ */
+function dropCosmeticLua(script: string): string {
+  return script.replace(/\{\$lua\}([\s\S]*?)(\{\$asm\}|$)/gi, (whole, body: string) => {
+    if (!isCosmeticLua(body)) return whole;
+    return body.split('\n').map((l) => (/^\s*\[(?:enable|disable)\]\s*$/i.test(l) ? l.trim() : '')).join('\n');
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Small parsers
 
@@ -114,9 +127,9 @@ function parseSize(s: string): number | null {
   return null;
 }
 
-/** Space-separated byte tokens; `?`/`*` become `??`; an unspaced pattern is split into pairs. */
+/** Space-separated byte tokens; `?`/`*`/`x` wildcards become `??`; an unspaced pattern is split into pairs. */
 function normalizePattern(p: string): string | null {
-  let t = p.trim();
+  let t = p.trim().replace(/[xX]/g, '?');
   if (t === '') return null;
   if (!/\s/.test(t) && t.length > 2 && t.length % 2 === 0) t = t.match(/../g)!.join(' ');
   const toks = t.split(/\s+/).map((x) => (x === '?' || x === '*' ? '??' : x));
@@ -195,7 +208,6 @@ const UNSUPPORTED: Record<string, ReasonCode> = {
   createthread: 'aa:createthread',
   createthreadandwait: 'aa:createthread',
   loadlibrary: 'aa:loadlibrary',
-  readmem: 'aa:readmem',
   struct: 'aa:struct',
   endstruct: 'aa:struct',
   aobscanregion: 'aa:aobscanregion',
@@ -234,19 +246,22 @@ function substitute(text: string, defines: Map<string, string>): string {
   });
 }
 
+/** The names of a `label`/`registersymbol`-style statement: CE accepts commas or spaces between them. */
+const nameList = (args: string[]) => args.flatMap((a) => a.split(/\s+/)).filter(Boolean);
+
 /** Every valid name declared by a `label(…)` statement anywhere in the script (lowercased). */
 function declaredLabels(lines: string[]): Set<string> {
   const out = new Set<string>();
   for (const l of lines) {
     const m = l.replace(/\{\$[^}]*\}/g, '').trim().match(/^label\s*\((.*)\)$/i);
     if (!m) continue;
-    for (const a of splitArgs(m[1]!)) if (IDENT.test(a)) out.add(a.toLowerCase());
+    for (const a of nameList(splitArgs(m[1]!))) if (IDENT.test(a)) out.add(a.toLowerCase());
   }
   return out;
 }
 
 function compile(script: string, o: { id: string; name: string }): AaResult {
-  const { lines, unterminatedAt } = stripComments(script);
+  const { lines, unterminatedAt } = stripComments(dropCosmeticLua(script));
 
   if (!lines.some((l) => /^\s*\[enable\]\s*$/i.test(l))) {
     throw new AaError('aa:no-enable', 'no [ENABLE] section', null);
@@ -262,6 +277,7 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
   const aobs: Aob[] = [];
   const registered: Array<{ name: string }> = [];
   const unregistered: string[] = [];
+  let unregisterAll = false;
   const nearTokens: string[] = [];
   const enableSegs: Segment[] = [];
   const disableSegs: Segment[] = [];
@@ -363,19 +379,33 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
           break;
         }
         case 'label':
-          for (const a of args) { needIdent(a, line, statement); labels.add(a.toLowerCase()); }
+          for (const a of nameList(args)) { needIdent(a, line, statement); labels.add(a.toLowerCase()); }
           break;
         case 'registersymbol':
           enableOnly();
-          for (const a of args) { needIdent(a, line, statement); registered.push({ name: a }); }
+          for (const a of nameList(args)) { needIdent(a, line, statement); registered.push({ name: a }); }
           break;
         case 'unregistersymbol':
           if (section === 'disable') {
-            for (const a of args) { needIdent(a, line, statement); unregistered.push(a); }
+            // `*`: everything this script registered
+            for (const a of nameList(args)) {
+              if (a === '*') { unregisterAll = true; continue; }
+              needIdent(a, line, statement);
+              unregistered.push(a);
+            }
           }
           break;
         case 'dealloc':
           break;
+        case 'readmem': {
+          // The engine copies the bytes when it assembles: the line stays in the segment.
+          const size = args.length === 2 ? args[1]!.trim() : '';
+          if (!/^(?:\d+|\$[0-9a-f]+|0x[0-9a-f]+)$/i.test(size)) throw new AaError('aa:readmem', statement, line);
+          if (!current) throw new AaError('aa:parse', statement, line);
+          current.lines.push(statement);
+          current.lineNos.push(line);
+          break;
+        }
         default:
           throw new AaError('aa:unknown-command', statement, line);
       }
@@ -385,7 +415,8 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
     // origin:  (a declared label stays in the source)
     if (text.endsWith(':')) {
       const body = text.slice(0, -1).trim();
-      if (!labels.has(body.toLowerCase())) {
+      // `@@:` is an anonymous label (for @f/@b): it stays in the source.
+      if (body !== '@@' && !labels.has(body.toLowerCase())) {
         const origin = parseOrigin(body, line, text);
         if (section === 'pre') throw new AaError('aa:parse', text, line);
         current = { origin, line, text, lines: [], lineNos: [] };
@@ -457,7 +488,7 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
       : { op: 'assemble', at: s.origin.at, source: segSource(s) });
   }
   const seenUnreg = new Set<string>();
-  for (const n of unregistered) {
+  for (const n of unregisterAll ? [...registered.map((r) => r.name), ...unregistered] : unregistered) {
     if (seenUnreg.has(lc(n))) continue;
     seenUnreg.add(lc(n));
     disable.push({ op: 'unregisterSymbol', name: n });

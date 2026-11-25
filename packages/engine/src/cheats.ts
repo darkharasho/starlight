@@ -410,6 +410,39 @@ export function definedLabels(source: string): string[] {
 
 const MAX_LAYOUT_PASSES = 4;
 
+/** CE's `readmem(address,size)` line: the size is decimal unless written `$hex` or `0xhex`. */
+const READMEM = /^[ \t]*readmem[ \t]*\((.+),[ \t]*(\$[0-9a-f]+|0x[0-9a-f]+|\d+)[ \t]*\)[ \t]*$/gim;
+const MAX_READMEM = 4096;
+
+/**
+ * Replaces every `readmem(address,size)` line with a `db` of the `size` bytes `read` returns —
+ * CE copies the game's bytes at assemble time, usually the original code a hook overwrites.
+ */
+export async function expandReadmem(source: string, read: (expr: string, size: number) => Promise<Buffer>): Promise<string> {
+  const found = [...source.matchAll(READMEM)];
+  if (found.length === 0) return source;
+  let out = '';
+  let last = 0;
+  for (const m of found) {
+    const t = m[2]!;
+    const size = t.startsWith('$') ? parseInt(t.slice(1), 16) : t.toLowerCase().startsWith('0x') ? parseInt(t.slice(2), 16) : Number(t);
+    if (!(size >= 1 && size <= MAX_READMEM)) throw new EngineError(`readmem size ${t} is out of range`);
+    const bytes = await read(m[1]!.trim(), size);
+    out += source.slice(last, m.index) + 'db ' + [...bytes].map((b) => b.toString(16).padStart(2, '0')).join(' ');
+    last = m.index! + m[0].length;
+  }
+  return out + source.slice(last);
+}
+
+/** `steps` with readmem expanded in every assemble step (the same array when there is none). */
+async function withReadmem(
+  steps: readonly StarlightPatchStep[],
+  read: (expr: string, size: number) => Promise<Buffer>,
+): Promise<StarlightPatchStep[]> {
+  if (!steps.some((st) => st.op === 'assemble' && /readmem/i.test(st.source))) return [...steps];
+  return Promise.all(steps.map(async (st) => (st.op === 'assemble' ? { ...st, source: await expandReadmem(st.source, read) } : st)));
+}
+
 interface Layout {
   /** Every label at its final address. */
   labels: Map<string, string>;
@@ -505,6 +538,13 @@ async function enablePatch(s: Session, cheat: StarlightPatchCheat, o: EnableOpti
     }
   };
 
+  const readAt = async (expr: string, size: number, n: Names): Promise<Buffer> => {
+    const at = await resolveExpr(s, expr, n);
+    const got = (await readMany(s, [{ address: at, length: size }]))[0];
+    if (!got || got.length !== size) throw new EngineError(`readmem: can't read ${size} bytes at ${expr}`);
+    return got;
+  };
+
   let site: string | undefined;
   let labels = new Map<string, string>();
   try {
@@ -559,14 +599,16 @@ async function enablePatch(s: Session, cheat: StarlightPatchCheat, o: EnableOpti
     }
 
     // Phase B: lay out every assemble step, and find every write's address, before writing anything.
+    // readmem copies the game's bytes as they are now, before any write.
+    const steps = await withReadmem(cheat.enable, (expr, size) => readAt(expr, size, names()));
     const symbolsFor = (extra: ReadonlyMap<string, string>) => merge(registry, locals, extra);
-    const lay = await layout(cheat.enable, merge(registry, locals), {
+    const lay = await layout(steps, merge(registry, locals), {
       resolveAt: (expr, known) => resolveExpr(s, expr, { locals: known, mainModule: o.mainModule }),
       assemble: (at, source, symbols) => assemble(s, { address: at, source, symbols }),
     }).catch((err) => { throw unwrap(err); });
     labels = lay.labels;
     const writes: Array<{ at: string; bytes: Buffer }> = [];
-    for (const [i, step] of cheat.enable.entries()) {
+    for (const [i, step] of steps.entries()) {
       if (step.op === 'assemble') writes.push(lay.code.get(i)!);
       else if (step.op === 'writeBytes') {
         writes.push({ at: await resolveExpr(s, step.at, { locals: symbolsFor(labels), mainModule: o.mainModule }), bytes: Buffer.from(step.bytes, 'hex') });
@@ -598,9 +640,12 @@ async function enablePatch(s: Session, cheat: StarlightPatchCheat, o: EnableOpti
       let same = false;
       try {
         const at = await resolveExpr(s, step.at, { locals: known, mainModule: o.mainModule });
+        const source = step.op === 'assemble'
+          ? await expandReadmem(step.source, (expr, size) => readAt(expr, size, { locals: known, mainModule: o.mainModule }))
+          : '';
         const bytes = step.op === 'writeBytes'
           ? Buffer.from(step.bytes, 'hex')
-          : (await assemble(s, { address: at, source: step.source, symbols: Object.fromEntries(known) })).bytes;
+          : (await assemble(s, { address: at, source, symbols: Object.fromEntries(known) })).bytes;
         const got = bytes.length > 0 ? (await readMany(s, [{ address: at, length: bytes.length }]))[0] : Buffer.alloc(0);
         same = !!got && got.equals(bytes);
       } catch { /* can't check it: the original stays either way */ }
@@ -681,7 +726,11 @@ export async function checkAssembles(
     if (st.op === 'aobScan') { place(st.name); if (st.module) place(st.module); }
   }
   for (const k of o.known ?? []) place(k);
-  const steps = [...cheat.enable, ...(cheat.disable ?? [])];
+  // No game to read from: readmem becomes that many placeholder bytes.
+  const filler = async (_expr: string, size: number) => Buffer.alloc(size, 0x90);
+  const enable = await withReadmem(cheat.enable, filler);
+  const disable = await withReadmem(cheat.disable ?? [], filler);
+  const steps = [...enable, ...disable];
   for (const st of steps) {
     if (st.op !== 'assemble') continue;
     for (const m of st.source.matchAll(MODULE_TOKEN)) place(m[1] ?? m[2]!);
@@ -699,13 +748,13 @@ export async function checkAssembles(
 
   let labels: Map<string, string>;
   try {
-    labels = (await layout(cheat.enable, names, { resolveAt, assemble: asm })).labels;
+    labels = (await layout(enable, names, { resolveAt, assemble: asm })).labels;
   } catch (err) {
     if (err instanceof StepFailure && !c.closed) return { ok: false, step: err.step, message: err.message };
     throw unwrap(err);
   }
   const known = merge(names, labels);
-  for (const [k, st] of (cheat.disable ?? []).entries()) {
+  for (const [k, st] of disable.entries()) {
     if (st.op !== 'assemble') continue;
     try {
       await asm(await resolveAt(st.at, known), st.source, Object.fromEntries(known));

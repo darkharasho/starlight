@@ -218,14 +218,10 @@ describe('compileAaScript', () => {
     expect(r).toEqual({ ok: false, code: 'lua:block', detail: '{$lua}', line: lineOf(script, '{$lua}') });
   });
 
-  it('createthread is aa:createthread; readmem is aa:readmem', () => {
+  it('createthread is aa:createthread', () => {
     const ct = fixture('createthread.cea');
     expect(fail(compileAaScript(ct, O))).toEqual({
       ok: false, code: 'aa:createthread', detail: 'createthread(newmem)', line: lineOf(ct, 'createthread('),
-    });
-    const rm = fixture('readmem.cea');
-    expect(fail(compileAaScript(rm, O))).toEqual({
-      ok: false, code: 'aa:readmem', detail: 'readmem(INJECT,9)', line: lineOf(rm, 'readmem('),
     });
     expect(fail(compileAaScript('[ENABLE]\ncreatethreadandwait(x)\n', O)).code).toBe('aa:createthread');
     expect(fail(compileAaScript('[ENABLE]\nstruct Player\nhp: dd ?\nendstruct\n', O)).code).toBe('aa:struct');
@@ -300,6 +296,54 @@ describe('compileAaScript', () => {
     expect(fail(compileAaScript('[ENABLE]\nregistersymbol(9lives)\n', O)).code).toBe('aa:name');
   });
 
+  it('name lists may be separated by spaces as well as commas', () => {
+    const r = ok(compileAaScript('[ENABLE]\nalloc(newmem,$100)\nlabel(code return)\nregistersymbol(a b,c)\nnewmem:\ncode:\njmp return\nreturn:\na:\nb:\nc:\n', O));
+    expect(r.registers).toEqual(['a', 'b', 'c']);
+    expect(r.uses).toEqual([]);
+  });
+
+  it('unregistersymbol(*) unregisters everything the script registered', () => {
+    const r = ok(compileAaScript('[ENABLE]\nglobalalloc(pBase,8)\nalloc(m,$10)\nlabel(x)\nregistersymbol(x)\nm:\nx:\ndq 0\n[DISABLE]\nunregistersymbol(*)\ndealloc(m)\n', O));
+    expect(r.cheat!.disable).toEqual([
+      { op: 'unregisterSymbol', name: 'pBase' },
+      { op: 'unregisterSymbol', name: 'x' },
+    ]);
+  });
+
+  it('@@: stays in the code as an anonymous label', () => {
+    const r = ok(compileAaScript('[ENABLE]\nalloc(newmem,$100)\nnewmem:\ncmp eax,1\njne @f\nmov eax,2\n@@:\nret\n', O));
+    expect(r.cheat!.enable[1]).toEqual({ op: 'assemble', at: 'newmem', source: 'cmp eax,1\njne @f\nmov eax,2\n@@:\nret' });
+    expect(r.uses).toEqual([]);
+  });
+
+  it('cosmetic {$lua} blocks are skipped; their [ENABLE]/[DISABLE] still count', () => {
+    const script = '{$lua}\nif syntaxcheck then return end\n[ENABLE]\nshellExecute("https://x.y")\n[DISABLE]\n{$asm}\n';
+    expect(ok(compileAaScript(script, O)).cheat).toBeNull();
+    const mixed = '[ENABLE]\nalloc(m,$10)\n{$lua}\nshowMessage("on")\n{$asm}\nm:\nret\n';
+    expect(ok(compileAaScript(mixed, O)).cheat!.enable).toEqual([
+      { op: 'alloc', name: 'm', size: 16 },
+      { op: 'assemble', at: 'm', source: 'ret' },
+    ]);
+    expect(fail(compileAaScript('[ENABLE]\n{$lua}\nwriteInteger("x",1)\n{$asm}\n', O))).toMatchObject({ code: 'lua:block', line: 2 });
+  });
+
+  it('readmem stays in the segment for the engine to fill in', () => {
+    const r = ok(compileAaScript(fixture('readmem.cea'), O));
+    expect(r.cheat!.enable).toEqual([
+      { op: 'aobScan', name: 'INJECT', module: 'target', pattern: PATTERN },
+      { op: 'alloc', name: 'newmem', size: 4096, near: 'INJECT' },
+      { op: 'assemble', at: 'newmem', source: 'readmem(INJECT,9)\njmp return' },
+      { op: 'assemble', at: 'INJECT', source: 'jmp newmem\nnop 4\nreturn:' },
+    ]);
+    expect(r.cheat!.disable).toEqual([{ op: 'assemble', at: 'INJECT', source: 'readmem(newmem,9)' }]);
+    expect(fail(compileAaScript('[ENABLE]\nalloc(m,$10)\nm:\nreadmem(m,%d)\n', O)).code).toBe('aa:readmem');
+  });
+
+  it('x is a wildcard in AOB patterns', () => {
+    const r = ok(compileAaScript('[ENABLE]\naobscanmodule(a,game.exe,74xxe8xxxxxxxx48)\na:\nnop\n', O));
+    expect(r.cheat!.enable[0]).toEqual({ op: 'aobScan', name: 'a', module: 'game.exe', pattern: '74 ?? e8 ?? ?? ?? ?? 48' });
+  });
+
   it('code before any origin is aa:parse', () => {
     const r = fail(compileAaScript('[ENABLE]\nalloc(newmem,$100)\n  mov eax,1\nnewmem:\n', O));
     expect(r).toEqual({ ok: false, code: 'aa:parse', detail: 'mov eax,1', line: 3 });
@@ -320,7 +364,7 @@ describe('compileAaScript', () => {
       "  db 'a//b{c}' // text in quotes is kept",   // 8
       '  ret',                                      // 9
       '{$asm}',                                     // 10: ignored
-      '{ unterminated? no: } {$lua}',               // 11: the directive after a comment is seen
+      '{ unterminated? no: } {$lua} openProcess(1)', // 11: the directive after a comment is seen
     ].join('\n');
     const r = fail(compileAaScript(script, O));
     expect(r).toEqual({ ok: false, code: 'lua:block', detail: '{$lua}', line: 11 });

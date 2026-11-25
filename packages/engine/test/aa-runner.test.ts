@@ -3,7 +3,7 @@ import { compileAaScript, type StarlightPatchCheat } from '@starlight/ct-importe
 import { attach, type Session } from '../src/session.js';
 import { read, readMany } from '../src/memory.js';
 import { disassemble, makeSignature } from '../src/code.js';
-import { enableCheat, resolveCheatAddress, checkAssembles, definedLabels } from '../src/cheats.js';
+import { enableCheat, resolveCheatAddress, checkAssembles, definedLabels, expandReadmem } from '../src/cheats.js';
 import { EngineError, ScanError, RpcCode } from '../src/errors.js';
 import type { SymbolRegistry } from '../src/types.js';
 import { startTestEngine } from './helpers/daemon.js';
@@ -252,6 +252,31 @@ describe('compiled Auto Assembler cheats', () => {
     expect(registry.get('inject')).toBe(site.address);
     await run.disable();
     expect((await bytesAt(s, site.address, site.length)).equals(site.original)).toBe(true);
+  });
+
+  it('readmem copies the original bytes, read before the hook is written', async () => {
+    const { s, t, site } = await setup();
+    const registry: SymbolRegistry = new Map();
+    const script = template(t, site, {
+      extraEnable: ['alloc(copy,$100,INJECT)', 'copy:', `  readmem(INJECT,${site.length})`, '  db 90', 'registersymbol(copy)'],
+    });
+    const cheat = compile(script);
+    expect(await checkAssembles(engine.client, cheat)).toEqual({ ok: true });
+    const run = await enableCheat(s, cheat, { symbols: registry });
+    const copy = registry.get('copy')!;
+    expect((await bytesAt(s, copy, site.length + 1)).equals(Buffer.concat([site.original, Buffer.from([0x90])]))).toBe(true);
+    expect((await bytesAt(s, site.address, 1))[0]).toBe(0xe9); // the hook is in
+    await run.disable();
+    expect((await bytesAt(s, site.address, site.length)).equals(site.original)).toBe(true);
+  });
+
+  it('expandReadmem turns readmem lines into db, with a decimal size by default', async () => {
+    const seen: Array<[string, number]> = [];
+    const read = async (expr: string, n: number) => { seen.push([expr, n]); return Buffer.alloc(n, 0xab); };
+    expect(await expandReadmem('mov eax,1\n  readmem(INJECT+2, 3)\nREADMEM(x,$2)\njmp return', read))
+      .toBe('mov eax,1\ndb ab ab ab\ndb ab ab\njmp return');
+    expect(seen).toEqual([['INJECT+2', 3], ['x', 2]]);
+    await expect(expandReadmem('readmem(x,0)', read)).rejects.toThrow(/out of range/);
   });
 
   it('checkAssembles passes the template and reports a bad instruction with its step', async () => {

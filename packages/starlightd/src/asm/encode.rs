@@ -90,6 +90,8 @@ struct Item<'a> {
 enum Body<'a> {
     Insn { prefixes: &'a [Prefix], mnemonic: &'a str, operands: &'a [Operand] },
     Data(u8, &'a [DataItem]),
+    /// Padding for `align`, sized from the previous pass's address of this line.
+    Pad(Vec<u8>),
 }
 
 pub fn encode(stmts: &[Stmt], address: u64, resolve: &dyn Fn(&str) -> Option<u64>) -> Result<Assembled, AsmError> {
@@ -104,12 +106,14 @@ pub fn encode(stmts: &[Stmt], address: u64, resolve: &dyn Fn(&str) -> Option<u64
     }
     let mut est: HashMap<String, u64> = names.keys().map(|k| (k.clone(), address)).collect();
     let mut item_ips: Vec<u64> = vec![];
+    // `align` pads from each line's address, so those must settle too.
+    let has_align = stmts.iter().any(|s| matches!(s.kind, Line::Align { .. }));
     for _ in 0..MAX_PASSES {
         let out = pass(stmts, address, resolve, &est, &item_ips)?;
-        let stable = out.labels == est;
+        let stable = out.labels == est && (!has_align || out.item_ips == item_ips);
         est = out.labels;
         item_ips = out.item_ips;
-        if stable || est.is_empty() {
+        if stable || (est.is_empty() && !has_align) {
             let labels = names.iter().map(|(k, name)| (name.clone(), est[k])).collect();
             return Ok(Assembled { bytes: out.bytes, labels });
         }
@@ -145,6 +149,11 @@ fn pass(
             }
             Line::Insn { prefixes, mnemonic, operands } => (Body::Insn { prefixes, mnemonic, operands }, 1),
             Line::Data { width, items: d } => (Body::Data(*width, d), data_len(d, *width).div_ceil(16)),
+            Line::Align { n, fill } => {
+                let ip = item_ips.get(items.len()).copied().unwrap_or(address);
+                let pad = ((n - ip % n) % n) as usize;
+                (Body::Pad(vec![*fill; pad]), pad.div_ceil(16))
+            }
         };
         for l in pending.drain(..) {
             label_entry.insert(l, entries);
@@ -174,6 +183,14 @@ fn pass(
                 }
                 block.push(ins);
                 entry_item.push(i);
+            }
+            Body::Pad(bytes) => {
+                for chunk in bytes.chunks(16) {
+                    let mut ins = Instruction::with_declare_byte(chunk).map_err(|e| err(e.to_string()))?;
+                    ins.set_ip(placeholder(block.len()));
+                    block.push(ins);
+                    entry_item.push(i);
+                }
             }
             Body::Data(width, d) => {
                 for chunk in data_bytes(&env, d, *width).map_err(err)?.chunks(16) {

@@ -7,7 +7,7 @@ function ct(entries: string, tableLua = ''): string {
 const aaLua = (id: number) =>
   `<CheatEntry><ID>${id}</ID><Description>"AL"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]
 {$lua}
-print("x")
+writeInteger("x",1)
 {$asm}
 [DISABLE]
 nop</AssemblerScript></CheatEntry>`;
@@ -28,7 +28,7 @@ const aaNative = (id: number) =>
   db 8B 43
 </AssemblerScript></CheatEntry>`;
 const lua = (id: number) =>
-  `<CheatEntry><ID>${id}</ID><Description>"Lua"</Description><LuaScript>print(1)</LuaScript></CheatEntry>`;
+  `<CheatEntry><ID>${id}</ID><Description>"Lua"</Description><LuaScript>writeInteger("x",1)</LuaScript></CheatEntry>`;
 const header = (id: number, kids = '') =>
   `<CheatEntry><ID>${id}</ID><Description>"H"</Description><GroupHeader>1</GroupHeader>${kids ? `<CheatEntries>${kids}</CheatEntries>` : ''}</CheatEntry>`;
 
@@ -121,7 +121,7 @@ describe('coverage', () => {
   });
 
   it('native compiler: record and table codes come from compileTable', () => {
-    const t = measureTable('g', ct(aaLua(1) + lua(2) + value(3, 'v'), '<LuaScript>showMessage("x")</LuaScript>'), 'native');
+    const t = measureTable('g', ct(aaLua(1) + lua(2) + value(3, 'v'), '<LuaScript>openProcess("x")</LuaScript>'), 'native');
     expect(t.codes).toEqual({ 'lua:block': 1, 'lua:script': 1 });
     expect(t.tableCodes).toEqual(['lua:table-script']);
     expect(t).toMatchObject({ records: 3, nativeRecords: 1, native: false });

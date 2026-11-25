@@ -70,6 +70,8 @@ pub enum Line {
     Insn { prefixes: Vec<Prefix>, mnemonic: String, operands: Vec<Operand> },
     /// `width` is 1, 2, 4 or 8.
     Data { width: u8, items: Vec<DataItem> },
+    /// `align N [fill]`: `fill` bytes up to the next multiple of `n`.
+    Align { n: u64, fill: u8 },
 }
 
 /// One statement and the 1-based source line it came from.
@@ -266,6 +268,22 @@ impl Parser<'_> {
             out.push(Stmt { line, kind: Line::Data { width, items } });
             return Ok(());
         }
+        if lower == "align" {
+            if !prefixes.is_empty() {
+                return Err("prefix before align".into());
+            }
+            let mut args = rest.split([' ', '\t', ',']).filter(|a| !a.is_empty());
+            let n = args.next().and_then(number).filter(|n| (1..=0x1000).contains(n)).ok_or("align needs a size of 1–1000")?;
+            let fill = match args.next() {
+                Some(f) => number(f).filter(|f| (0..=0xff).contains(f)).ok_or(format!("bad align fill {f:?}"))?,
+                None => 0x90,
+            };
+            if args.next().is_some() {
+                return Err("align takes a size and a fill byte".into());
+            }
+            out.push(Stmt { line, kind: Line::Align { n: n as u64, fill: fill as u8 } });
+            return Ok(());
+        }
         if !word.chars().all(|c| c.is_ascii_alphanumeric()) {
             return Err(format!("expected an instruction, found {word:?}"));
         }
@@ -278,6 +296,18 @@ impl Parser<'_> {
                 .collect::<PResult<Vec<_>>>()?
         };
         let mnemonic = alias(&lower).unwrap_or(lower);
+        // CE assembles `push eax` / `pop r8d` as the full 64-bit register.
+        let operands = if matches!(mnemonic.as_str(), "push" | "pop") {
+            operands
+                .into_iter()
+                .map(|o| match o {
+                    Operand::Reg(r) if r.is_gpr32() => Operand::Reg(r.full_register()),
+                    o => o,
+                })
+                .collect()
+        } else {
+            operands
+        };
         // `nop N` is N single-byte nops (CE's injection templates); a memory operand is the long form.
         if mnemonic == "nop" {
             if let [Operand::Imm(e)] = &operands[..] {
@@ -333,7 +363,8 @@ impl Parser<'_> {
             items.push(DataItem::Value(self.expr(&tok)?));
         }
         if items.is_empty() {
-            return Err("data directive without items".into());
+            // A bare `dd` reserves one zero value, as in CE.
+            items.push(DataItem::Value(Expr::Num(0)));
         }
         Ok(items)
     }
@@ -452,7 +483,9 @@ impl Parser<'_> {
     fn expr(&self, s: &str) -> PResult<Expr> {
         let mut num: i128 = 0;
         let mut sym = None;
-        for (neg, term) in terms(s)? {
+        // `#-45000` is a negative decimal.
+        let s = s.replace("#-", "-#").replace("#+", "+#");
+        for (neg, term) in terms(&s)? {
             if register(&term.to_ascii_lowercase()).is_some() {
                 return Err(format!("register {term} not allowed here"));
             }
@@ -679,8 +712,11 @@ pub fn register(lower: &str) -> Option<Register> {
 
 /// CE / Intel alternative mnemonics → iced's name.
 fn alias(m: &str) -> Option<String> {
-    if m == "retn" {
-        return Some("ret".into());
+    match m {
+        "retn" => return Some("ret".into()),
+        "pushf" => return Some("pushfq".into()),
+        "popf" => return Some("popfq".into()),
+        _ => {}
     }
     let (head, cc) = ["cmov", "set", "j"].iter().find_map(|h| m.strip_prefix(h).map(|cc| (*h, cc)))?;
     let canon = match cc {
