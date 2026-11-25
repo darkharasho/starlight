@@ -82,7 +82,7 @@ pub struct Stmt {
 /// Parse `source`. `is_symbol` tells whether a name is a supplied symbol, which decides whether a
 /// hex-looking identifier like `ab` is a number or a symbol (D2).
 pub fn parse(source: &str, is_symbol: &dyn Fn(&str) -> bool) -> Result<Vec<Stmt>, AsmError> {
-    let lines = strip_comments(source)?;
+    let lines = anonymous_labels(strip_comments(source)?)?;
     let labels = defined_labels(&lines);
     let p = Parser { labels: &labels, is_symbol };
     let mut out = vec![];
@@ -143,6 +143,54 @@ fn strip_comments(source: &str) -> Result<Vec<String>, AsmError> {
     }
     if quote.is_some() {
         return Err(AsmError::new(lines.len(), "unterminated string"));
+    }
+    Ok(lines)
+}
+
+/// CE's anonymous labels: each `@@:` gets a unique name; `@f` names the next label of any kind
+/// after the current line and `@b` the closest one before it (or on it).
+fn anonymous_labels(mut lines: Vec<String>) -> Result<Vec<String>, AsmError> {
+    let mut anon = 0;
+    let mut defs: Vec<(usize, String)> = vec![];
+    for (i, line) in lines.iter_mut().enumerate() {
+        let Some((n, _)) = split_label(line.trim()) else { continue };
+        let n = n.to_string();
+        if n == "@@" {
+            let name = format!("__anon{anon}");
+            anon += 1;
+            let t = line.trim_start();
+            *line = format!("{name}{}", &t[2..]);
+            defs.push((i, name));
+        } else {
+            defs.push((i, n));
+        }
+    }
+    for (i, line) in lines.iter_mut().enumerate() {
+        if !line.contains('@') {
+            continue;
+        }
+        let mut out = String::with_capacity(line.len());
+        let mut rest = line.as_str();
+        while let Some(at) = rest.find('@') {
+            let (before, tail) = rest.split_at(at);
+            out.push_str(before);
+            let word_end = tail[1..].find(|c: char| !is_ident_char(c)).map_or(tail.len(), |e| e + 1);
+            let word = &tail[..word_end];
+            let free = !before.ends_with(is_ident_char);
+            let target = match word.to_ascii_lowercase().as_str() {
+                "@f" if free => Some(
+                    defs.iter().find(|(l, _)| *l > i).ok_or_else(|| AsmError::new(i + 1, "@f without a later label"))?,
+                ),
+                "@b" if free => Some(
+                    defs.iter().rev().find(|(l, _)| *l <= i).ok_or_else(|| AsmError::new(i + 1, "@b without an earlier label"))?,
+                ),
+                _ => None,
+            };
+            out.push_str(target.map_or(word, |(_, n)| n.as_str()));
+            rest = &tail[word_end..];
+        }
+        out.push_str(rest);
+        *line = out;
     }
     Ok(lines)
 }
@@ -261,6 +309,11 @@ impl Parser<'_> {
                 continue;
             }
             let lower = tok.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("(int)") {
+                let n: i128 = v.parse().map_err(|_| format!("bad int {v:?}"))?;
+                items.push(DataItem::Value(Expr::Num(n)));
+                continue;
+            }
             if let Some(v) = lower.strip_prefix("(float)") {
                 let f: f32 = v.parse().map_err(|_| format!("bad float {v:?}"))?;
                 if width != 4 {
@@ -293,21 +346,21 @@ impl Parser<'_> {
         // Size keyword, optional `ptr`.
         let mut size = None;
         let mut rest = s;
-        let (word, after) = split_word(&lower);
-        let kw = match word {
-            "byte" => Some(MemSize::Byte),
-            "word" => Some(MemSize::Word),
-            "dword" => Some(MemSize::Dword),
-            "qword" => Some(MemSize::Qword),
-            "xmmword" => Some(MemSize::Xmmword),
-            _ => None,
-        };
-        if let Some(k) = kw {
-            size = Some(k);
-            rest = &s[s.len() - after.len()..];
-            let (w, a) = split_word(rest);
-            if w.eq_ignore_ascii_case("ptr") {
-                rest = a;
+        // CE also takes the keyword glued to the bracket: `byte[rdi]`, `byte ptr[rcx]`.
+        let kw = [
+            ("xmmword", MemSize::Xmmword),
+            ("qword", MemSize::Qword),
+            ("dword", MemSize::Dword),
+            ("byte", MemSize::Byte),
+            ("word", MemSize::Word),
+        ]
+        .into_iter()
+        .find(|(k, _)| lower.strip_prefix(k).is_some_and(|r| r.starts_with(|c: char| c.is_whitespace() || c == '[')));
+        if let Some((k, m)) = kw {
+            size = Some(m);
+            rest = s[k.len()..].trim_start();
+            if rest.len() >= 3 && rest[..3].eq_ignore_ascii_case("ptr") && rest[3..].starts_with(|c: char| c.is_whitespace() || c == '[') {
+                rest = &rest[3..];
             }
             rest = rest.trim();
         }
@@ -328,6 +381,9 @@ impl Parser<'_> {
         }
         if let Some(r) = register(&lower) {
             return Ok(Operand::Reg(r));
+        }
+        if let Some(v) = cast_value(s)? {
+            return Ok(Operand::Imm(Expr::Num(v)));
         }
         Ok(Operand::Imm(self.expr(s)?))
     }
@@ -432,6 +488,25 @@ impl Parser<'_> {
         }
         Ok(Expr::Sym { name: term.to_string(), addend: 0 })
     }
+}
+
+/// CE's typed immediates: `(float)1.5` is the IEEE single's bits, `(int)100` is decimal and
+/// `(double)1.5` the IEEE double's bits. None when `s` isn't a cast.
+fn cast_value(s: &str) -> PResult<Option<i128>> {
+    let t = s.trim();
+    let Some(close) = t.find(')') else { return Ok(None) };
+    if !t.starts_with('(') {
+        return Ok(None);
+    }
+    let kind = t[1..close].trim().to_ascii_lowercase();
+    let v = t[close + 1..].trim();
+    let bad = |what: &str| format!("bad {what} {v:?}");
+    Ok(Some(match kind.as_str() {
+        "float" => v.parse::<f32>().map_err(|_| bad("float"))?.to_bits() as i128,
+        "double" => v.parse::<f64>().map_err(|_| bad("double"))?.to_bits() as i128,
+        "int" => v.parse::<i128>().map_err(|_| bad("int"))?,
+        _ => return Ok(None),
+    }))
 }
 
 fn to_addend(n: i128) -> PResult<i64> {

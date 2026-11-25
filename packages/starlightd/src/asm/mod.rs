@@ -17,7 +17,7 @@
 //!   leading `-` negates. An identifier that is a valid hex number is a number unless it is a
 //!   register, a label in the source, or a symbol `resolve` knows.
 //! - Memory: `[base + index*scale ± disp]` with any subset of the parts, an optional size keyword
-//!   `byte|word|dword|qword|xmmword` with an optional `ptr`, and `fs:`/`gs:` overrides written as
+//!   `byte|word|dword|qword|xmmword` with an optional `ptr` (also glued to the bracket: `byte[rdi]`), and `fs:`/`gs:` overrides written as
 //!   `gs:[30]` or `[gs:30]`. A displacement from `80000000` to `FFFFFFFF` wraps as signed 32-bit
 //!   (`[rax+FFFFFFFF]` = `[rax-1]`), as in CE.
 //! - Size-less memory operands: when no register or keyword fixes the size and the instruction
@@ -56,6 +56,10 @@
 //!   operands (`rep movsb`, `repne scasd`) or as the disassembler prints them (`movsb [rdi],[rsi]`,
 //!   `stosq [rdi]`, `cmpsb [rsi],[rdi]`). `movsd`/`cmpsd` with any other operands stay SSE. `rep ret` /
 //!   `repz ret` (no immediate) is `F3 C3`.
+//! - Typed immediates, as in CE: `(float)1.5` and `(double)1.5` are the IEEE value's bits and
+//!   `(int)100` is decimal, in operands (`mov [rax],(float)100`) and data items (`db (int)242`).
+//! - Anonymous labels: `@@:` defines one; `@f` is the next label of any kind after the line and `@b`
+//!   the closest one at or before it (CE's rule, so `jge @f` may land on a named label).
 //! - `cbw`, `cwde`, `cdqe`, `cwd`, `cdq`, `cqo`; `nop N` (N hex by default, `1`–`40`) is N single-byte
 //!   `90`s.
 //! - A displacement may be written from `-80000000` to `FFFFFFFF`; anything else is an error
@@ -517,5 +521,40 @@ mod tests {
                 assert_eq!(&out[..], *bytes, "{text}");
             }
         }
+    }
+
+    #[test]
+    fn typed_immediates() {
+        // (float) is the IEEE single's bits, (int) is decimal, as in CE.
+        assert_eq!(asm("mov [rax+10],(float)100"), [0xC7, 0x40, 0x10, 0x00, 0x00, 0xC8, 0x42]);
+        assert_eq!(asm("mov [rax+10],(float)-1"), [0xC7, 0x40, 0x10, 0x00, 0x00, 0x80, 0xBF]);
+        assert_eq!(asm("mov eax,(float)1.5"), [0xB8, 0x00, 0x00, 0xC0, 0x3F]);
+        assert_eq!(asm("mov [rcx],(int)99"), [0xC7, 0x01, 0x63, 0, 0, 0]);
+        assert_eq!(asm("cmp [rcx+54],( float )200"), asm("cmp [rcx+54],43480000"));
+        assert_eq!(asm("push (float)100"), [0x68, 0x00, 0x00, 0xC8, 0x42]);
+        assert_eq!(asm("db (int)242"), [0xF2]);
+        assert!(assemble("mov eax,(float)abc", 0x1000, &no_syms).is_err());
+    }
+
+    #[test]
+    fn size_keyword_glued_to_bracket() {
+        assert_eq!(asm("mov byte ptr[rcx+rdx],1"), asm("mov byte ptr [rcx+rdx],1"));
+        assert_eq!(asm("CMP BYTE[RDI+C0],2"), asm("cmp byte ptr [rdi+C0],2"));
+        assert_eq!(asm("ADD dword[rdi+00000E08],#100"), asm("add dword ptr [rdi+E08],#100"));
+        // A symbol that merely starts with a keyword is still a symbol.
+        let r = assemble("mov rax,[wordcount]", 0x1000, &|n| (n == "wordcount").then_some(0x2000));
+        assert_eq!(r.unwrap().bytes, asm_at("mov rax,[2000]", 0x1000));
+    }
+
+    #[test]
+    fn anonymous_labels() {
+        let src = "cmp eax,1\nje @f\nmov eax,2\n@@:\nret";
+        assert_eq!(asm(src), [0x83, 0xF8, 0x01, 0x74, 0x05, 0xB8, 0x02, 0, 0, 0, 0xC3]);
+        let back = "@@:\ndec ecx\njnz @b\n@@:\njmp @B";
+        assert_eq!(asm(back), [0xFF, 0xC9, 0x75, 0xFC, 0xEB, 0xFE]);
+        // Like CE, @f is the next label of any kind.
+        let named = "cmp eax,1\njge @f\nmov eax,2\ncode:\nret";
+        assert_eq!(asm(named), [0x83, 0xF8, 0x01, 0x7D, 0x05, 0xB8, 0x02, 0, 0, 0, 0xC3]);
+        assert!(assemble("jmp @f\nret", 0x1000, &no_syms).is_err());
     }
 }

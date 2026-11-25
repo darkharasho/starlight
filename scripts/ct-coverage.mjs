@@ -4,7 +4,7 @@
 //        [--assemble [--daemon <starlightd>]] [--json <file>] [--corpus <dir>]
 // Without --fetch it makes no network requests and measures what is cached.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,8 @@ if (assembleFlag && compiler !== 'native') { console.error('--assemble needs --c
 const corpus = resolve(opt('--corpus', join(homedir(), '.cache', 'starlight', 'ct-coverage')));
 const sample = flag('--all') ? Infinity : Number(opt('--sample', '400'));
 const jsonOut = opt('--json', null);
+// --asm-log <file>: one JSON line per script that doesn't assemble (table, record, message, line text).
+const asmLog = opt('--asm-log', null);
 
 const { measureTable, summarize } = await import(join(root, 'packages/indexer/dist/coverage.js'));
 
@@ -118,6 +120,12 @@ async function startAssembler() {
         checked += 1;
         const res = await checkAssembles(engine.client, r.script.cheat, { known });
         if (res.ok) continue;
+        if (asmLog) {
+          const st = [...r.script.cheat.enable, ...(r.script.cheat.disable ?? [])][res.step];
+          const n = /line (\d+)/.exec(res.message)?.[1];
+          const text = st?.op === 'assemble' && n ? st.source.split('\n')[Number(n) - 1]?.trim() : undefined;
+          appendFileSync(asmLog, JSON.stringify({ table: row.id, record: r.description ?? r.name ?? r.id, message: res.message, text }) + '\n');
+        }
         failedScripts += 1;
         row.nativeRecords -= 1;
         row.native = false;
