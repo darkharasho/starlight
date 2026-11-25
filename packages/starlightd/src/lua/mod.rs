@@ -9,7 +9,7 @@
 //! `utf8`, and `os.clock`/`time`/`date`. No `io`, `package`/`require` or `debug`. Every run
 //! stops after [`RUN_LIMIT`]; a state can use at most [`MEMORY_LIMIT`].
 
-// mod addr; (Task 3)
+mod addr;
 mod api;
 
 use crate::process::Target;
@@ -40,9 +40,6 @@ pub struct RunCtx {
 impl RunCtx {
     fn idle(process: String) -> Self {
         RunCtx { target: None, symbols: HashMap::new(), effects: vec![], notices: vec![], deadline: Instant::now(), process }
-    }
-    pub fn target(&self) -> Result<Arc<Target>, mlua::Error> {
-        self.target.clone().ok_or_else(|| mlua::Error::runtime("no process is opened"))
     }
     pub fn time_left(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())

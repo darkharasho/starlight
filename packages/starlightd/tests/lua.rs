@@ -163,3 +163,127 @@ fn close_and_unknown_id() {
     l.c.call("lua_close", json!({"id": id})).unwrap();
     assert!(l.c.call("lua_run", json!({"id": id, "chunk": "return 1"})).is_err());
 }
+
+fn syms(t: &Target, names: &[&str]) -> Value {
+    let mut m = serde_json::Map::new();
+    for n in names {
+        m.insert(n.to_string(), Value::String(t.addr(n)));
+    }
+    json!({ "symbols": m })
+}
+
+#[test]
+fn read_write_numbers() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let s = syms(&t, &["g_health", "g_speed", "g_pi", "g_souls", "g_name"]);
+    assert_eq!(l.run_with("return tostring(readInteger('g_health'))", s.clone())["returned"], "100");
+    assert_eq!(l.run_with("writeInteger('g_health', 1234) return tostring(readInteger('g_health'))", s.clone())["returned"], "1234");
+    assert_eq!(l.run_with("return tostring(readFloat('g_speed'))", s.clone())["returned"], "1.5");
+    assert_eq!(l.run_with("writeFloat('g_speed', 2.25) return tostring(readFloat('g_speed'))", s.clone())["returned"], "2.25");
+    assert_eq!(l.run_with("return string.format('%.5f', readDouble('g_pi'))", s.clone())["returned"], "3.14159");
+    assert_eq!(l.run_with("return tostring(readQword('g_souls'))", s.clone())["returned"], "50000");
+    assert_eq!(
+        l.run_with("writeInteger('g_health', -1) return readInteger('g_health') .. ' ' .. readInteger('g_health', true)", s.clone())["returned"],
+        "4294967295 -1"
+    );
+    assert_eq!(l.run_with("return tostring(readSmallInteger('g_health'))", s.clone())["returned"], "65535");
+    assert_eq!(l.run_with("local b = readBytes('g_name', 4, true) return #b .. ':' .. b[1]", s.clone())["returned"], "4:72");
+    assert_eq!(l.run_with("local a, b = readBytes('g_name', 2) return a .. ',' .. b", s.clone())["returned"], "72,101");
+    assert_eq!(l.run_with("return readString('g_name')", s.clone())["returned"], "Hero");
+    assert_eq!(l.run_with("writeString('g_name', 'Zed') writeBytes('g_name+3', 0) return readString('g_name', 16)", s.clone())["returned"], "Zed");
+    assert_eq!(l.run_with("writeBytes('g_name', {0x41, 0x42}) return readString('g_name', 2)", s.clone())["returned"], "AB");
+}
+
+#[test]
+fn bad_addresses() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    assert_eq!(l.ret("return tostring(readInteger(0))"), "nil");
+    assert_eq!(l.ret("return tostring(writeInteger(0, 1))"), "false");
+    assert_eq!(l.ret("return tostring(readInteger('nosuch+10'))"), "nil");
+    assert_eq!(l.ret("return tostring(getAddressSafe('nosuch+10'))"), "nil");
+    let r = l.run("return getAddress('nosuch+10')");
+    assert_eq!(r["ok"], false);
+    assert!(r["error"].as_str().unwrap().contains("nosuch"), "{r}");
+}
+
+#[test]
+fn expressions() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let health = u64::from_str_radix(t.addr("g_health").trim_start_matches("0x"), 16).unwrap();
+    // pbase holds a pointer to g_health: write it into g_souls.
+    let s = json!({ "symbols": { "pBase": t.addr("g_souls"), "hp": t.addr("g_health") } });
+    l.run_with(&format!("writeQword('pBase', {health})"), s.clone());
+    let got = |l: &mut L, e: &str| -> u64 {
+        let r = l.run_with(&format!("return string.format('%x', getAddress('{e}'))"), s.clone());
+        u64::from_str_radix(r["returned"].as_str().unwrap_or_else(|| panic!("{e}: {r}")), 16).unwrap()
+    };
+    assert_eq!(got(&mut l, "hp+4"), health + 4);
+    assert_eq!(got(&mut l, "HP-0x10"), health - 0x10);
+    assert_eq!(got(&mut l, "[pBase]"), health);
+    assert_eq!(got(&mut l, "[pBase]+#16"), health + 16);
+    let base = got(&mut l, "target");
+    assert_eq!(got(&mut l, "target+10"), base + 0x10);
+    assert_eq!(got(&mut l, "\"target\"+10"), base + 0x10);
+    assert_eq!(l.run_with("return tostring(readInteger('[pBase]'))", s.clone())["returned"], "100");
+    assert_eq!(l.run_with(&format!("return tostring(readInteger({health}))"), s.clone())["returned"], "100");
+    assert_eq!(l.run_with("return getNameFromAddress(getAddress('target+10'))", s.clone())["returned"], "target+10");
+}
+
+#[test]
+fn register_effects() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let r = l.run("registerSymbol('foo', 0x1234) return string.format('%x', getAddress('FOO'))");
+    assert_eq!(r["returned"], "1234");
+    assert_eq!(r["effects"], json!([{ "op": "registerSymbol", "name": "foo", "address": "0x1234" }]));
+    // Each run gets the table's symbols from the app, which applied the first run's effect.
+    let r = l.run_with("registerSymbol('bar', 'foo+2') unregisterSymbol('foo') error('later')", json!({"symbols": {"foo": "0x1234"}}));
+    assert_eq!(r["ok"], false);
+    assert_eq!(
+        r["effects"],
+        json!([{ "op": "registerSymbol", "name": "bar", "address": "0x1236" }, { "op": "unregisterSymbol", "name": "foo" }])
+    );
+}
+
+#[test]
+fn open_process() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    assert_eq!(l.ret("return tostring(openProcess('target'))"), "true");
+    assert_eq!(l.ret("return tostring(openProcess('TARGET'))"), "true");
+    assert_eq!(l.ret("return tostring(openProcess('other.exe'))"), "false");
+    assert_eq!(l.ret("return tostring(getOpenedProcessID())"), t.pid.to_string());
+    assert_eq!(l.ret("return tostring(targetIs64Bit())"), "true");
+}
+
+#[test]
+fn aob() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let marker = t.addr("g_aob_marker").trim_start_matches("0x").to_uppercase();
+    let want = format!("{:X}", u64::from_str_radix(&marker, 16).unwrap());
+    let r = l.ret("local r = aobScanModule('target', 'DEADBEEFCAFEBABE12345678') return r.Count .. ' ' .. r[0]");
+    assert_eq!(r, format!("1 {want}"));
+    let r = l.ret("local r = AOBScanModule('target', 'DE AD BE EF ?? ?? BA BE 12 34 56 78') return r.getString(0)");
+    assert_eq!(r, want);
+    assert_eq!(l.ret("return string.format('%X', aobScanModuleUnique('target', 'DE AD BE EF CA FE BA BE 12 34 56 78'))"), want);
+    assert_eq!(l.ret("return tostring(aobScanModule('target', 'DE AD 01 02 03 04 05 06 07 08 09 0A'))"), "nil");
+    // aobScan without a module looks at executable memory only (like the AA compiler's aobscan); the marker is data.
+    assert_eq!(l.ret("return tostring(aobScan('DE AD BE EF CA FE BA BE 12 34 56 78'))"), "nil");
+}
+
+#[test]
+fn api_list_matches() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let api: Value = serde_json::from_str(include_str!("../../ct-importer/src/lua-api.json")).unwrap();
+    for k in ["real", "inert"] {
+        for name in api[k].as_array().unwrap() {
+            let name = name.as_str().unwrap();
+            assert_eq!(l.ret(&format!("return type({name})")), "function", "{name} is missing");
+        }
+    }
+}

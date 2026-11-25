@@ -4,7 +4,7 @@
     "readbytes", "readsmallinteger", "readinteger", "readqword", "readpointer", "readfloat", "readdouble", "readstring",
     "writebytes", "writesmallinteger", "writeinteger", "writeqword", "writepointer", "writefloat", "writedouble", "writestring",
     "getaddress", "getaddresssafe", "registersymbol", "unregistersymbol", "getnamefromaddress",
-    "aobscan", "aobscanmodule", "sleep", "gettickcount",
+    "aobscan", "aobscanmodule", "aobscanunique", "aobscanmoduleunique", "sleep", "gettickcount",
     "showmessage", "messagedialog", "shellexecute"
   ],
   "inert": [
