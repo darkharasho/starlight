@@ -270,6 +270,23 @@ describe('compiled Auto Assembler cheats', () => {
     expect((await bytesAt(s, site.address, site.length)).equals(site.original)).toBe(true);
   });
 
+  it('assert lets a matching site through and stops a mismatch before any write', async () => {
+    const { s, t, site } = await setup();
+    const good = compile(template(t, site, { extraEnable: [`assert(INJECT,${spaced(site.original)})`] }));
+    expect(good.enable.some((st) => st.op === 'assert')).toBe(true);
+    expect(await checkAssembles(engine.client, good)).toEqual({ ok: true });
+    const run = await enableCheat(s, good, { symbols: new Map() });
+    await run.disable();
+
+    const wrong = Buffer.from(site.original);
+    wrong[0] = wrong[0]! ^ 0xff;
+    const bad = compile(template(t, site, { extraEnable: [`assert(INJECT,${spaced(wrong)})`] }));
+    const err = await enableCheat(s, bad, { symbols: new Map() }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ScanError);
+    expect(String((err as Error).message)).toMatch(STALE);
+    expect((await bytesAt(s, site.address, site.length)).equals(site.original)).toBe(true);
+  });
+
   it('expandReadmem turns readmem lines into db, with a decimal size by default', async () => {
     const seen: Array<[string, number]> = [];
     const read = async (expr: string, n: number) => { seen.push([expr, n]); return Buffer.alloc(n, 0xab); };

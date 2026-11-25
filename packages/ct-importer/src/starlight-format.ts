@@ -77,6 +77,8 @@ const PatchStep = z.discriminatedUnion('op', [
   z.object({ op: z.literal('registerSymbol'), name: Ident, at: z.string() }),
   z.object({ op: z.literal('aobScan'), name: Ident, module: z.string().optional(), pattern: z.string() }),
   z.object({ op: z.literal('unregisterSymbol'), name: Ident }),
+  /** CE's assert(at, bytes): enabling stops, before any write, unless the bytes at `at` match. */
+  z.object({ op: z.literal('assert'), at: z.string(), pattern: z.string() }),
 ]);
 
 const SupportedCheat = z.object({

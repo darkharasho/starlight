@@ -225,7 +225,6 @@ describe('compileAaScript', () => {
     });
     expect(fail(compileAaScript('[ENABLE]\ncreatethreadandwait(x)\n', O)).code).toBe('aa:createthread');
     expect(fail(compileAaScript('[ENABLE]\nstruct Player\nhp: dd ?\nendstruct\n', O)).code).toBe('aa:struct');
-    expect(fail(compileAaScript('[ENABLE]\nassert("target"+10,8B 05)\n', O)).code).toBe('aa:assert');
     expect(fail(compileAaScript('[ENABLE]\n{$try}\n', O)).code).toBe('aa:try');
     expect(fail(compileAaScript('[ENABLE]\n{$ccode x=eax}\n', O)).code).toBe('aa:c-code');
     expect(fail(compileAaScript('[ENABLE]\n{$foo}\n', O)).code).toBe('aa:directive');
@@ -337,6 +336,28 @@ describe('compileAaScript', () => {
     ]);
     expect(r.cheat!.disable).toEqual([{ op: 'assemble', at: 'INJECT', source: 'readmem(newmem,9)' }]);
     expect(fail(compileAaScript('[ENABLE]\nalloc(m,$10)\nm:\nreadmem(m,%d)\n', O)).code).toBe('aa:readmem');
+  });
+
+  it('a nop with no origin is ignored (link-only records)', () => {
+    const script = "{$lua}\nif syntaxcheck then return end\n[ENABLE]\nShellExecute('https://x.y')\n{$asm}\nnop\n[DISABLE]\n";
+    expect(ok(compileAaScript(script, O)).cheat).toBeNull();
+    expect(fail(compileAaScript('[ENABLE]\nnop 2\n', O)).code).toBe('aa:parse');
+  });
+
+  it('luacall of cosmetic Lua is skipped; other luacall is aa:luacall', () => {
+    expect(ok(compileAaScript("[ENABLE]\nluacall(showMessage('hi'))\n[DISABLE]\n", O)).cheat).toBeNull();
+    expect(fail(compileAaScript('[ENABLE]\nluacall(speedhack_setSpeed(2))\n', O)).code).toBe('aa:luacall');
+  });
+
+  it('assert becomes an assert step before the allocs; a [DISABLE] assert is dropped', () => {
+    const r = ok(compileAaScript('[ENABLE]\nalloc(m,$10)\nassert("target.exe"+10,8B 05 ??)\nm:\nret\n[DISABLE]\nassert("target.exe"+10,8B)\n', O));
+    expect(r.cheat!.enable.slice(0, 2)).toEqual([
+      { op: 'assert', at: '"target.exe"+10', pattern: '8B 05 ??' },
+      { op: 'alloc', name: 'm', size: 16 },
+    ]);
+    expect(r.cheat!.disable).toBeUndefined();
+    expect(ok(compileAaScript('[ENABLE]\nassert(pPlayer+4,90)\n', O)).uses).toEqual(['pplayer']);
+    expect(fail(compileAaScript('[ENABLE]\nassert(x)\n', O)).code).toBe('aa:assert');
   });
 
   it('x is a wildcard in AOB patterns', () => {

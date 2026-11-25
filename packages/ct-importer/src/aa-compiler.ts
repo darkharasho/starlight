@@ -211,10 +211,8 @@ const UNSUPPORTED: Record<string, ReasonCode> = {
   struct: 'aa:struct',
   endstruct: 'aa:struct',
   aobscanregion: 'aa:aobscanregion',
-  assert: 'aa:assert',
   fullaccess: 'aa:fullaccess',
   include: 'aa:include',
-  luacall: 'aa:luacall',
   reassemble: 'aa:reassemble',
   loadbinary: 'aa:loadbinary',
 };
@@ -235,6 +233,7 @@ type Section = 'pre' | 'enable' | 'disable';
 interface Segment { origin: Origin; line: number; text: string; lines: string[]; lineNos: number[] }
 interface Alloc { name: string; size: number; near: string | null; line: number }
 interface Aob { name: string; module?: string; pattern: string }
+interface Assert { at: string; pattern: string }
 
 function substitute(text: string, defines: Map<string, string>): string {
   if (defines.size === 0) return text;
@@ -275,6 +274,7 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
   const labels = declaredLabels(lines);
   const allocs: Alloc[] = [];
   const aobs: Aob[] = [];
+  const asserts: Assert[] = [];
   const registered: Array<{ name: string }> = [];
   const unregistered: string[] = [];
   let unregisterAll = false;
@@ -397,6 +397,19 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
           break;
         case 'dealloc':
           break;
+        case 'assert': {
+          if (args.length !== 2) throw new AaError('aa:assert', statement, line);
+          const pattern = normalizePattern(args[1]!);
+          if (!pattern || !args[0]) throw new AaError('aa:assert', statement, line);
+          // Checked when enabling; a [DISABLE] assert has nothing left to protect.
+          if (section !== 'disable') asserts.push({ at: args[0]!, pattern });
+          nearTokens.push(...symbolTokens(args[0]!));
+          break;
+        }
+        case 'luacall':
+          // Only Lua that touches nothing but CE's window or the player (see isCosmeticLua) can be skipped.
+          if (!isCosmeticLua(st[2]!)) throw new AaError('aa:luacall', statement, line);
+          break;
         case 'readmem': {
           // The engine copies the bytes when it assembles: the line stays in the segment.
           const size = args.length === 2 ? args[1]!.trim() : '';
@@ -429,7 +442,9 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
       if (inline && !labels.has(inline[1]!.toLowerCase())) throw new AaError('aa:parse', text, line);
     }
 
-    // instruction / data line
+    // instruction / data line. A `nop` with no origin can't patch anything: link-only
+    // records put one after their {$lua} block.
+    if (!current && /^nop$/i.test(text)) continue;
     if (!current) throw new AaError('aa:parse', text, line);
     current.lines.push(text);
     current.lineNos.push(line);
@@ -451,6 +466,7 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
       ? { op: 'aobScan', name: a.name, module: a.module, pattern: a.pattern }
       : { op: 'aobScan', name: a.name, pattern: a.pattern });
   }
+  for (const a of asserts) enable.push({ op: 'assert', at: a.at, pattern: a.pattern });
   for (const a of allocs) {
     const near = a.near ?? defaultNear;
     enable.push(near !== undefined

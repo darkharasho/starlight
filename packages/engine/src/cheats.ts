@@ -592,6 +592,14 @@ async function enablePatch(s: Session, cheat: StarlightPatchCheat, o: EnableOpti
         case 'unregisterSymbol':
           deferred.push(step);
           break;
+        case 'assert': {
+          const at = await resolveExpr(s, step.at, names());
+          const got = (await readMany(s, [{ address: at, length: patternLength(step.pattern) }]))[0];
+          if (!got || !matchesPattern(got, step.pattern)) {
+            throw new ScanError(`expected bytes not found at ${step.at} (the table is probably for another game version)`);
+          }
+          break;
+        }
         case 'assemble':
         case 'writeBytes':
           break;
