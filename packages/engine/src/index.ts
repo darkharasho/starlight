@@ -20,3 +20,4 @@ export {
   parseAddressExpr, resolveAddressExpr, resolveCheatAddress, verifyCheat, enableCheat, type RunningCheat,
   definedLabels, checkAssembles,
 } from './cheats.js';
+export { luaOpen, type LuaState, type LuaRunResult, type LuaRunOptions, type LuaEffect, type LuaNotice } from './lua.js';
