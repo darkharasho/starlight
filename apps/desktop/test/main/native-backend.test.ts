@@ -500,3 +500,18 @@ describe('native table backend: deferred scripts and symbols', () => {
       .toEqual({ ok: false, active: false, error: 'symbol pplayer isn\'t registered; switch on "Get player" first' });
   });
 });
+
+describe('native table backend: a Lua state that stops answering', () => {
+  it('start() fails, so the session can fall back to Cheat Engine', async () => {
+    const g = fakeGame();
+    const luaOpen = vi.fn(async () => ({
+      id: 1,
+      run: async () => { throw new EngineError("a Lua run didn't finish in time; the table's Lua can't run here"); },
+      close: async () => {},
+    }));
+    Object.assign(g.engine as object, { luaOpen });
+    const xml = '<?xml version="1.0" encoding="utf-8"?><CheatTable><CheatEntries></CheatEntries><LuaScript>writeInteger("x",1)</LuaScript></CheatTable>';
+    const { b } = backendFor(compileTable(xml), g);
+    expect(await b.start!()).toEqual({ ok: false, error: "table script: a Lua run didn't finish in time; the table's Lua can't run here" });
+  });
+});

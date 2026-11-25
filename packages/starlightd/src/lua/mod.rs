@@ -11,6 +11,7 @@
 
 mod addr;
 mod api;
+mod guards;
 
 use crate::process::Target;
 use crate::rpc::RpcError;
@@ -33,13 +34,15 @@ pub struct RunCtx {
     pub effects: Vec<Value>,
     pub notices: Vec<Value>,
     pub deadline: Instant,
+    /// Set once the run is past its deadline: pcall/xpcall then re-raise instead of catching.
+    pub timed_out: bool,
     /// The game's executable name (CE's `process`).
     pub process: String,
 }
 
 impl RunCtx {
     fn idle(process: String) -> Self {
-        RunCtx { target: None, symbols: HashMap::new(), effects: vec![], notices: vec![], deadline: Instant::now(), process }
+        RunCtx { target: None, symbols: HashMap::new(), effects: vec![], notices: vec![], deadline: Instant::now(), timed_out: false, process }
     }
     pub fn time_left(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
@@ -93,6 +96,7 @@ fn new_state(ctx: Ctx) -> mlua::Result<Lua> {
         })?,
     )?;
 
+    guards::install(&lua, ctx.clone())?;
     let api = lua.create_table()?;
     api::register(&lua, &api, ctx.clone())?;
     let (_, inert) = api_names();
@@ -102,8 +106,10 @@ fn new_state(ctx: Ctx) -> mlua::Result<Lua> {
 
     let hook_ctx = ctx;
     lua.set_hook(HookTriggers::new().every_nth_instruction(1000), move |_, _| {
-        if Instant::now() >= hook_ctx.lock().unwrap().deadline {
-            Err(mlua::Error::runtime(format!("Lua time limit ({} s) exceeded", RUN_LIMIT.as_secs())))
+        let mut c = hook_ctx.lock().unwrap();
+        if c.timed_out || Instant::now() >= c.deadline {
+            c.timed_out = true;
+            Err(guards::time_limit_error())
         } else {
             Ok(VmState::Continue)
         }
@@ -177,6 +183,7 @@ impl Luas {
             c.effects.clear();
             c.notices.clear();
             c.deadline = Instant::now() + RUN_LIMIT;
+            c.timed_out = false;
             c.process.clone()
         };
         let result = (|| -> mlua::Result<MultiValue> {
@@ -184,7 +191,7 @@ impl Luas {
             g.raw_set("syntaxcheck", syntaxcheck)?;
             g.raw_set("process", process)?;
             g.raw_set("memrec", memrec(&lua, req.get("memrec"))?)?;
-            lua.load(chunk).set_name(name).call::<MultiValue>(())
+            lua.load(chunk).set_name(name).set_mode(mlua::chunk::ChunkMode::Text).call::<MultiValue>(())
         })();
         let (effects, notices) = {
             let mut c = state.ctx.lock().unwrap();

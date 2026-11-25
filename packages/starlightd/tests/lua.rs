@@ -287,3 +287,81 @@ fn api_list_matches() {
         }
     }
 }
+
+/// Each of these would hang a run or flood memory without the budget's guards.
+fn ends_in_time(l: &mut L, chunk: &str) -> Value {
+    let start = Instant::now();
+    let r = l.run(chunk);
+    assert!(start.elapsed() < Duration::from_secs(4), "{chunk} took {:?}", start.elapsed());
+    assert_eq!(r["ok"], false, "{chunk}: {r}");
+    r
+}
+
+#[test]
+fn pcall_cannot_swallow_the_time_limit() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let r = ends_in_time(&mut l, "while true do pcall(function() while true do end end) end");
+    assert!(r["error"].as_str().unwrap().contains("time limit"), "{r}");
+    ends_in_time(&mut l, "while true do xpcall(function() while true do end end, function(e) return e end) end");
+    // pcall still works for ordinary errors.
+    assert_eq!(l.ret("local ok = pcall(error, 'x') return tostring(ok)"), "false");
+}
+
+#[test]
+fn c_functions_are_bounded() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    ends_in_time(&mut l, "return string.rep('', 1 << 62)");
+    ends_in_time(&mut l, "return string.rep('ab', 1 << 40)");
+    ends_in_time(&mut l, "return ('x'):rep(1 << 62)");
+    ends_in_time(&mut l, "table.move({}, 1, math.maxinteger - 10, 1)");
+    ends_in_time(&mut l, "return string.find(string.rep('a', 20000), '.-.-.-.-.-.-.-b')");
+    ends_in_time(&mut l, "return ('a'):rep(20000):match('.-.-.-.-.-.-.-b')");
+    // Ordinary use still works.
+    assert_eq!(l.ret("return string.rep('ab', 3, '-') .. #string.rep('x', 1000)"), "ab-ab-ab1000");
+    assert_eq!(l.ret("return tostring(string.find('player hp 100', '%d+'))"), "11");
+    assert_eq!(l.ret("local t = table.move({1,2,3}, 1, 3, 2) return tostring(t[4])"), "3");
+}
+
+#[test]
+fn notices_and_effects_are_capped() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let r = l.run("local s = string.rep('x', 100000) for i = 1, 500 do print(s) end return 'done'");
+    assert_eq!(r["returned"], "done");
+    let n = r["notices"].as_array().unwrap();
+    assert!(n.len() <= 21, "{} notices", n.len());
+    assert!(n.iter().all(|x| x["text"].as_str().unwrap().len() <= 4100));
+    let r = l.run("for i = 1, 5000 do registerSymbol('s' .. i, i) end");
+    assert_eq!(r["ok"], false);
+    assert!(r["effects"].as_array().unwrap().len() <= 1000);
+}
+
+#[test]
+fn binary_chunks_are_refused() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let r = l.run("\u{1b}LuaS\u{0}");
+    assert_eq!(r["ok"], false, "{r}");
+}
+
+#[test]
+fn std_list_matches() {
+    let t = Target::spawn(&[]);
+    let (_d, mut l) = open(&t);
+    let api: Value = serde_json::from_str(include_str!("../../ct-importer/src/lua-api.json")).unwrap();
+    for name in api["base"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        assert_eq!(l.ret(&format!("return type({name})")), "function", "{name} is missing");
+    }
+    for (lib, members) in api["libs"].as_object().unwrap() {
+        for m in members.as_array().unwrap() {
+            let m = m.as_str().unwrap();
+            assert_ne!(l.ret(&format!("return type({lib}.{m})")), "nil", "{lib}.{m} is missing");
+        }
+    }
+    assert_eq!(l.ret("return tostring(coroutine)"), "nil");
+    assert_eq!(l.ret("return select('#', unpack({1, 2, 3}))"), Value::Null);
+    assert_eq!(l.ret("return tostring(select('#', unpack({1, 2, 3})))"), "3");
+}

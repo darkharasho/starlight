@@ -48,6 +48,8 @@ api.synchronize = function(f, ...) if type(f) == "function" then return f(...) e
 api.createstringlist = function() return stringlist() end
 api.stringlist_add = function(list, s) return list.add(s) end
 api.beep = function() end
+-- CE's Lua 5.3 keeps 5.1's unpack.
+unpack = table.unpack
 
 -- MessageDialog constants (Lazarus values).
 api.mtwarning, api.mterror, api.mtinformation, api.mtconfirmation, api.mtcustom = 0, 1, 2, 3, 4

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWebLink } from '../../src/shared/web-link.js';
+import { isWebLink, webLink } from '../../src/shared/web-link.js';
 
 describe('isWebLink', () => {
   it('accepts http(s) only', () => {
@@ -9,5 +9,13 @@ describe('isWebLink', () => {
     expect(isWebLink('cmd.exe /c calc')).toBe(false);
     expect(isWebLink('javascript:alert(1)')).toBe(false);
     expect(isWebLink('C:\\\\Windows\\\\notepad.exe')).toBe(false);
+  });
+});
+
+describe('webLink', () => {
+  it('returns the normalized URL that was checked, or null', () => {
+    expect(webLink(' https://example.com/a b ')).toBe('https://example.com/a%20b');
+    expect(webLink('https:\\\\example.com\\x')).toBe('https://example.com/x');
+    expect(webLink('file:///etc/passwd')).toBeNull();
   });
 });

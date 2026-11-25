@@ -50,7 +50,7 @@ import { listModules as engineListModules } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
 import { detectAntiCheat } from './anti-cheat.js';
 import { createUpdater, type AutoUpdaterLike } from './updater.js';
-import { isWebLink } from '../shared/web-link.js';
+import { webLink } from '../shared/web-link.js';
 
 // Before anything logs: a closed stdout must not crash Starlight (see stdio-guard.ts).
 guardStdio();
@@ -635,8 +635,9 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle(CHANNELS.openLink, async (_evt, url: unknown) => {
-    if (typeof url !== 'string' || !isWebLink(url)) return { ok: false };
-    await shell.openExternal(url);
+    const link = typeof url === 'string' ? webLink(url) : null;
+    if (!link) return { ok: false };
+    await shell.openExternal(link);
     return { ok: true };
   });
 

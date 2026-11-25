@@ -1,5 +1,9 @@
 import type { Session } from './session.js';
 import type { SymbolRegistry } from './types.js';
+import { EngineError } from './errors.js';
+
+/** starlightd stops a run after 2 s; past this the run is treated as stuck. */
+const RUN_TIMEOUT_MS = 5000;
 
 /** What a Lua run asked the app to change, in order. */
 export type LuaEffect =
@@ -35,15 +39,21 @@ export interface LuaState {
  * table script defines are visible to its records' scripts, as in Cheat Engine. `process` is the
  * game's executable name for CE's `process` and `openProcess` (default: the process's comm).
  */
-export async function luaOpen(s: Session, o: { process?: string } = {}): Promise<LuaState> {
+export async function luaOpen(s: Session, o: { process?: string; timeoutMs?: number } = {}): Promise<LuaState> {
   const { id } = await s.client.call<{ id: number }>('lua_open', {
     handle: s.handle,
     ...(o.process ? { process: o.process } : {}),
   });
+  const timeoutMs = o.timeoutMs ?? RUN_TIMEOUT_MS;
+  // A run that doesn't answer still holds the state in starlightd: every later run would queue
+  // behind it, so the state is given up.
+  let stuck = false;
+  const stuckError = () => new EngineError("a Lua run didn't finish in time; the table's Lua can't run here");
   return {
     id,
     async run(chunk, r) {
-      return s.client.call<LuaRunResult>('lua_run', {
+      if (stuck) throw stuckError();
+      const call = s.client.call<LuaRunResult>('lua_run', {
         id,
         chunk,
         name: r.name,
@@ -51,6 +61,16 @@ export async function luaOpen(s: Session, o: { process?: string } = {}): Promise
         symbols: Object.fromEntries(r.symbols),
         ...(r.memrec ? { memrec: r.memrec } : {}),
       });
+      call.catch(() => {}); // if it answers after the timeout, nobody is waiting
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { stuck = true; reject(stuckError()); }, timeoutMs);
+      });
+      try {
+        return await Promise.race([call, late]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
     async close() {
       await s.client.call('lua_close', { id });

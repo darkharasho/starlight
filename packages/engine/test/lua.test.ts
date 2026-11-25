@@ -42,3 +42,23 @@ describe('Lua states', () => {
     await expect(lua.run('return 1', { name: 't', symbols: new Map() })).rejects.toBeInstanceOf(EngineError);
   });
 });
+
+describe('Lua runs that never answer', () => {
+  it('reject after the timeout, and the state refuses later runs', async () => {
+    const calls: string[] = [];
+    const s = {
+      handle: 1,
+      client: {
+        call: async (method: string) => {
+          calls.push(method);
+          if (method === 'lua_open') return { id: 7 };
+          return new Promise(() => {}); // a stuck daemon thread
+        },
+      },
+    } as unknown as Session;
+    const lua = await luaOpen(s, { timeoutMs: 50 });
+    await expect(lua.run('while true do end', { name: 't', symbols: new Map() })).rejects.toThrow(/didn't finish/);
+    await expect(lua.run('return 1', { name: 't', symbols: new Map() })).rejects.toThrow(/didn't finish/);
+    expect(calls).toEqual(['lua_open', 'lua_run']);
+  });
+});

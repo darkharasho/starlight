@@ -9,13 +9,9 @@ import { stripLua } from './lua-cosmetic.js';
 
 const API = new Set([...api.real, ...api.inert]);
 
-/** Lua 5.3 base functions the sandbox keeps. `load`/`loadstring`/`dofile`/`require` are not here. */
-const BASE = new Set([
-  'assert', 'error', 'ipairs', 'next', 'pairs', 'pcall', 'print', 'rawequal', 'rawget', 'rawlen', 'rawset',
-  'select', 'setmetatable', 'getmetatable', 'tonumber', 'tostring', 'type', 'xpcall', 'unpack', 'collectgarbage',
-]);
-const LIBS = new Set(['string', 'table', 'math', 'utf8', 'coroutine']);
-const OS_OK = new Set(['clock', 'time', 'date']);
+/** Lua 5.3 base functions and library members the sandbox keeps (`load` is text-only there). */
+const BASE = new Set(api.base.filter((n) => n !== 'load'));
+const LIBS: Record<string, Set<string>> = Object.fromEntries(Object.entries(api.libs).map(([k, v]) => [k, new Set(v)]));
 /** CE globals that are objects (methods on them are inert or provided). */
 const OBJECTS = new Set(['memrec', 'addresslist', 'mainform']);
 const KEYWORDS = new Set([
@@ -61,9 +57,13 @@ export function scanLua(src: string): LuaScan {
       hits.push({ at: m.index!, name: base });
       continue;
     }
-    if (LIBS.has(base) || OBJECTS.has(base) || API.has(base)) continue;
-    if (base === 'os' && OS_OK.has(members[0]!)) continue;
-    hits.push({ at: m.index!, name: ['os', 'io', 'debug', 'package'].includes(base) ? `${base}.${members[0]}` : base });
+    if (OBJECTS.has(base) || API.has(base)) continue;
+    const lib = LIBS[base];
+    if (lib) {
+      if (!lib.has(members[0]!)) hits.push({ at: m.index!, name: `${base}.${members[0]}` });
+      continue;
+    }
+    hits.push({ at: m.index!, name: ['io', 'debug', 'package', 'coroutine'].includes(base) ? `${base}.${members[0]}` : base });
   }
 
   const rule = (re: RegExp, name: string) => {

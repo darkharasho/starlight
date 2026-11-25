@@ -10,6 +10,31 @@ use std::time::{Duration, Instant};
 
 /// At most this many matches from aobScan.
 const MAX_AOB: usize = 1000;
+/// Per run: notices kept, their length, and symbol changes (they live outside Lua's memory limit).
+const MAX_NOTICES: usize = 20;
+const MAX_NOTICE_CHARS: usize = 4096;
+const MAX_EFFECTS: usize = 1000;
+
+fn push_notice(ctx: &Ctx, kind: &str, text: String) {
+    let mut c = ctx.lock().unwrap();
+    if c.notices.len() > MAX_NOTICES {
+        return;
+    }
+    if c.notices.len() == MAX_NOTICES {
+        c.notices.push(json!({ "kind": "message", "text": "(more messages from this table were hidden)" }));
+        return;
+    }
+    let text = if text.chars().count() > MAX_NOTICE_CHARS { text.chars().take(MAX_NOTICE_CHARS).collect::<String>() + "…" } else { text };
+    c.notices.push(json!({ "kind": kind, "text": text }));
+}
+
+fn push_effect(c: &mut super::RunCtx, e: serde_json::Value) -> mlua::Result<()> {
+    if c.effects.len() >= MAX_EFFECTS {
+        return Err(mlua::Error::runtime("too many symbol changes in one run"));
+    }
+    c.effects.push(e);
+    Ok(())
+}
 const MAX_STRING: usize = 4096;
 
 fn text(args: &MultiValue) -> String {
@@ -30,7 +55,7 @@ pub fn register(lua: &Lua, api: &Table, ctx: Ctx) -> mlua::Result<()> {
     let notice = |kind: &'static str| {
         let ctx = ctx.clone();
         move |_: &Lua, args: MultiValue| {
-            ctx.lock().unwrap().notices.push(json!({ "kind": kind, "text": text(&args) }));
+            push_notice(&ctx, kind, text(&args));
             Ok(())
         }
     };
@@ -45,7 +70,7 @@ pub fn register(lua: &Lua, api: &Table, ctx: Ctx) -> mlua::Result<()> {
         "messagedialog",
         lua.create_function(move |_, args: Variadic<LuaValue>| {
             let msg = args.first().map(|v| text(&MultiValue::from_iter([v.clone()]))).unwrap_or_default();
-            c.lock().unwrap().notices.push(json!({ "kind": "message", "text": msg }));
+            push_notice(&c, "message", msg);
             // mbYes = 0 among the button arguments (after text and type).
             let yes = args.iter().skip(2).any(|v| matches!(v, LuaValue::Integer(0)) || matches!(v, LuaValue::Number(n) if *n == 0.0));
             Ok(if yes { 6 } else { 1 })
@@ -61,7 +86,8 @@ pub fn register(lua: &Lua, api: &Table, ctx: Ctx) -> mlua::Result<()> {
             let want = Duration::from_millis(ms.max(0.0) as u64);
             std::thread::sleep(want.min(left));
             if want > left {
-                return Err(mlua::Error::runtime(format!("Lua time limit ({} s) exceeded", super::RUN_LIMIT.as_secs())));
+                c.lock().unwrap().timed_out = true;
+                return Err(super::guards::time_limit_error());
             }
             Ok(())
         })?,
@@ -276,7 +302,7 @@ fn addresses(lua: &Lua, api: &Table, ctx: &Ctx) -> mlua::Result<()> {
             let at = address(&c, &a).map_err(mlua::Error::runtime)?;
             let mut g = c.lock().unwrap();
             g.symbols.insert(name.to_lowercase(), at);
-            g.effects.push(json!({ "op": "registerSymbol", "name": name, "address": format!("{at:#x}") }));
+            push_effect(&mut g, json!({ "op": "registerSymbol", "name": name, "address": format!("{at:#x}") }))?;
             Ok(())
         })?,
     )?;
@@ -286,7 +312,7 @@ fn addresses(lua: &Lua, api: &Table, ctx: &Ctx) -> mlua::Result<()> {
         lua.create_function(move |_, name: String| {
             let mut g = c.lock().unwrap();
             g.symbols.remove(&name.to_lowercase());
-            g.effects.push(json!({ "op": "unregisterSymbol", "name": name }));
+            push_effect(&mut g, json!({ "op": "unregisterSymbol", "name": name }))?;
             Ok(())
         })?,
     )?;

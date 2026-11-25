@@ -39,3 +39,14 @@ describe('scanLua', () => {
     expect(new Set(all).size).toBe(all.length);
   });
 });
+
+describe('scanLua: Lua std', () => {
+  it('only library members the sandbox has pass; coroutine is not there', () => {
+    expect(scanLua('local x = math.floor(1.5) + table.unpack({1})').unsupported).toEqual([]);
+    expect(scanLua('local x = math.pow(2, 3)').unsupported).toEqual(['math.pow']);
+    expect(scanLua('local n = table.getn(t)').unsupported).toEqual(['table.getn']);
+    expect(scanLua('local co = coroutine.wrap(f)').unsupported).toEqual(['coroutine.wrap']);
+    expect(scanLua('local a, b = unpack({1, 2})').unsupported).toEqual([]);
+    expect(scanLua('load("return 1")()').unsupported).toEqual(['load']);
+  });
+});
