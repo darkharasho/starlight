@@ -406,3 +406,30 @@ describe('helpers', () => {
     expect(looksStale('Cheat Engine did not respond (timed out)')).toBe(false);
   });
 });
+
+describe('Lua notices', () => {
+  it('shows messages, offers http(s) links behind an Open button, and dismisses', async () => {
+    const openLink = vi.fn().mockResolvedValue({ ok: true });
+    setStarlightApi({
+      ceSessionCall: call, ceSessionSetActive: setActive, ceSessionStart: start, ceSessionRetry: retry,
+      launchGame, findGameProcess, updateConfig, openLink,
+      ceSessionEnd: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as StarlightApi);
+    seed({ luaNotices: [] });
+    useCeSessionStore.getState().addLuaNotice({ kind: 'message', text: 'Table loaded!' });
+    useCeSessionStore.getState().addLuaNotice({ kind: 'message', text: 'Table loaded!' });
+    useCeSessionStore.getState().addLuaNotice({ kind: 'link', text: 'https://example.com/t/1' });
+    useCeSessionStore.getState().addLuaNotice({ kind: 'link', text: 'file:///etc/passwd' });
+    expect(useCeSessionStore.getState().luaNotices).toHaveLength(3);
+    render(<CeSessionView />);
+    expect(screen.getByText('Table loaded!')).toBeTruthy();
+    const opens = screen.getAllByRole('button', { name: 'Open' });
+    expect(opens).toHaveLength(1);
+    expect(openLink).not.toHaveBeenCalled();
+    await userEvent.click(opens[0]!);
+    expect(openLink).toHaveBeenCalledWith('https://example.com/t/1');
+    expect(screen.queryByText('https://example.com/t/1')).toBeNull();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Dismiss' })[0]!);
+    expect(screen.queryByText('Table loaded!')).toBeNull();
+  });
+});

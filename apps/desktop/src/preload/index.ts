@@ -26,6 +26,7 @@ const api: StarlightApi = {
   ceSessionCall:      (req) => ipcRenderer.invoke(CHANNELS.ceSessionCall, req),
   ceSessionRetry:     (req) => ipcRenderer.invoke(CHANNELS.ceSessionRetry, req),
   launchGame:         (req) => ipcRenderer.invoke(CHANNELS.launchGame, req),
+  openLink:           (url) => ipcRenderer.invoke(CHANNELS.openLink, url),
   allowMemoryAccess:  () => ipcRenderer.invoke(CHANNELS.allowMemoryAccess),
   findGameProcess:    (req) => ipcRenderer.invoke(CHANNELS.findGameProcess, req),
   userCheatsList:       (req) => ipcRenderer.invoke(CHANNELS.userCheatsList, req),

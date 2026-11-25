@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Health"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"target"+4030</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"Lua inside AA"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+{$lua}
+if syntaxcheck then return end
+createThread(getAddress("target") + 0x1234)
+{$asm}
+[DISABLE]
+</AssemblerScript>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

@@ -36,6 +36,7 @@ export function attachProcessEvents(): void {
     else if (e.type === 'session:progress') useCeSessionStore.setState({ progress: e.message });
     else if (e.type === 'session:tables') useCeSessionStore.setState({ pickSteps: e.tables });
     else if (e.type === 'ce:hotkey') useCeSessionStore.getState().applyHotkey(e);
+    else if (e.type === 'session:notice') useCeSessionStore.getState().addLuaNotice(e);
     else if (e.type === 'session:game-exited') void useCeSessionStore.getState().gameExited(e.sessionId);
     else if (e.type === 'session:engine') useCeSessionStore.getState().setEngine(e.sessionId, e.engine, e.holders, e.mode);
     else if (e.type === 'userCheats:changed') {

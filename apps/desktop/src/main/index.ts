@@ -50,6 +50,7 @@ import { listModules as engineListModules } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
 import { detectAntiCheat } from './anti-cheat.js';
 import { createUpdater, type AutoUpdaterLike } from './updater.js';
+import { isWebLink } from '../shared/web-link.js';
 
 // Before anything logs: a closed stdout must not crash Starlight (see stdio-guard.ts).
 guardStdio();
@@ -589,6 +590,9 @@ app.whenReady().then(async () => {
         onSteps: (tables) => broadcast({ type: 'session:tables', tables }),
         onGameExit: (sessionId) => broadcast({ type: 'session:game-exited', sessionId }),
         onEvent: (e) => {
+          if (e['type'] === 'lua-notice' && typeof e['text'] === 'string' && (e['kind'] === 'message' || e['kind'] === 'link')) {
+            broadcast({ type: 'session:notice', kind: e['kind'], text: e['text'] });
+          }
           if (e['type'] === 'hotkey' && typeof e['id'] === 'number') {
             broadcast({
               type: 'ce:hotkey', recordId: e['id'], ok: e['ok'] === true, active: e['active'] === true,
@@ -628,6 +632,12 @@ app.whenReady().then(async () => {
     const r = await ceRetryTables(req);
     if (r.ok && r.verdict === 'works' && sessionCacheKey) void rememberTable(sessionCacheKey, r.tableId).catch(() => {});
     return r;
+  });
+
+  ipcMain.handle(CHANNELS.openLink, async (_evt, url: unknown) => {
+    if (typeof url !== 'string' || !isWebLink(url)) return { ok: false };
+    await shell.openExternal(url);
+    return { ok: true };
   });
 
   ipcMain.handle(CHANNELS.launchGame, async (_evt, req: import('../shared/ipc.js').LaunchTarget) => {

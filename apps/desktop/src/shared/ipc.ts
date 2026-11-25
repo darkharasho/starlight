@@ -36,6 +36,7 @@ export const CHANNELS = {
   ceSessionRetry:     'starlight:ceSession:retry',
   // Launching games
   launchGame:      'starlight:launchGame',
+  openLink:        'starlight:openLink',
   allowMemoryAccess: 'starlight:allowMemoryAccess',
   findGameProcess: 'starlight:findGameProcess',
   // The user's own cheats
@@ -203,6 +204,8 @@ export type StarlightEvent =
   /** Open the agent view (an attach was approved, or a notification was clicked). */
   | { type: 'agent:focus' }
   | { type: 'ce:hotkey';            recordId: number; ok: boolean; active: boolean; error?: string | undefined }
+  /** A table's Lua showed a message or offered a link (native engine). Links open only on the player's click. */
+  | { type: 'session:notice';       kind: 'message' | 'link'; text: string }
   /** The trainer engine's install state changed (downloads run in the background). */
   | { type: 'ceRuntime:status'; status: CeRuntimeStatus; error?: string | undefined }
   | { type: 'game:detected'; game: { id: string; name: string; steamAppId?: number | null }; pid: number; name: string; confidence: 'exact' | 'name' };
@@ -358,6 +361,8 @@ export interface StarlightApi {
   ceSessionRetry(req: { sessionId: string }): Promise<({ ok: true } & CeSessionTableState) | { ok: false; error: string }>;
   // Launching games
   launchGame(req: LaunchTarget): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Opens an http(s) link in the browser (a link a table's Lua offered, after the player clicks Open). */
+  openLink(url: string): Promise<{ ok: boolean }>;
   /** Asks (desktop password prompt) to let Starlight read native games' memory. */
   allowMemoryAccess(): Promise<{ ok: true } | { ok: false; cancelled?: boolean; error: string }>;
   findGameProcess(req: { game: { id: string; name: string; steamAppId?: number | null } }): Promise<{ pid: number; name: string } | null>;

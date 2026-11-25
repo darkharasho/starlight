@@ -15,7 +15,7 @@ import { matchGameToProcess, type MatchableGame } from './game-matcher.js';
 import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
 import { createScannerHost, SCANNER_METHODS } from './scanner-host.js';
 import { getEngineClient } from './starlightd-host.js';
-import { listCtRecords, compileTable, type CompiledTable } from '@starlight/ct-importer';
+import { listCtRecords, compileTable, reasonCopy, type CompiledTable } from '@starlight/ct-importer';
 import { attach, type Session } from '@starlight/engine';
 import type { DetectedGame, DetectedProcess, RouteSummary, SessionMode } from '../shared/ipc.js';
 import { findPrerequisites, isJunk } from '../shared/cheat-list.js';
@@ -398,14 +398,24 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   if (antiCheat) throw new Error(antiCheatMessage(antiCheat));
 
   const decision = await routeOf(ctPath, tableId);
-  const route = routeSummary(decision);
+  let route = routeSummary(decision);
 
   // A table that compiles runs on starlightd, whoever else holds the game (D16).
   if (decision?.engine === 'native' && decision.compiled && ctPath) {
-    return startNativeSession(opts, {
-      pid: effectivePid, ctPath, tables, tableId, needsPicker, decision, route,
-      routeOf: (path, id) => routeOf(path, id),
-    });
+    try {
+      return await startNativeSession(opts, {
+        pid: effectivePid, ctPath, tables, tableId, needsPicker, decision, route,
+        routeOf: (path, id) => routeOf(path, id),
+      });
+    } catch (err) {
+      if (!(err instanceof NativeStartError)) throw err;
+      // The table's Lua failed on starlightd: Cheat Engine runs it instead.
+      console.log(`[ct-runner] ${opts.cacheKey}#${tableId ?? 0}: Lua failed on the native engine, using Cheat Engine: ${err.message}`);
+      route = {
+        engine: 'ce', codes: { 'lua:runtime': 1 },
+        first: { recordId: null, name: '', code: 'lua:runtime', detail: err.message, copy: reasonCopy('lua:runtime') },
+      };
+    }
   }
 
   // starlightd already holds this game: Cheat Engine stays out, the table is
@@ -549,6 +559,9 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   };
 }
 
+/** The native backend couldn't start the table (its Lua script failed); the session moves to Cheat Engine. */
+class NativeStartError extends Error {}
+
 /** Lets a just-started game finish loading the modules the table points at. */
 async function waitForModules(opts: StartSessionOpts, pid: number, ctPath: string): Promise<void> {
   const modules = referencedModules(await readFile(ctPath, 'utf8').catch(() => ''));
@@ -606,6 +619,13 @@ async function startNativeSession(opts: StartSessionOpts, a: {
   } catch (err) {
     await endNative();
     throw err;
+  }
+  // The table's own Lua script runs once the game is attached.
+  const started = await (backend.start?.() ?? Promise.resolve({ ok: true as const }));
+  if (!started.ok) {
+    await backend.close().catch(() => {});
+    await endNative();
+    throw new NativeStartError(started.error);
   }
 
   const pick: PickContext = {

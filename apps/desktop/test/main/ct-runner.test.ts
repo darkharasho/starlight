@@ -45,15 +45,20 @@ describe('ct-runner', () => {
     expect(scripts.lines).toEqual(['[ct-runner] k#0: native (4 records)']);
   });
 
-  it('a Lua record routes the whole table to CE with its code', async () => {
+  it('a record with Lua the runtime lacks routes the whole table to CE with its code', async () => {
     const { d, lines } = deps();
-    const r = await routeTable(fixture('with-lua-record.CT'), d);
+    const r = await routeTable(fixture('with-unsupported-lua.CT'), d);
     expect(r).toMatchObject({
-      engine: 'ce', codes: { 'lua:block': 1 }, records: 2,
-      first: { recordId: 2, name: 'Lua inside AA', code: 'lua:block' },
+      engine: 'ce', codes: { 'lua:unsupported': 1 }, records: 2,
+      first: { recordId: 2, name: 'Lua inside AA', code: 'lua:unsupported', detail: 'createthread' },
     });
     expect(ok).not.toHaveBeenCalled();
-    expect(lines).toEqual(['[ct-runner] k#0: ce (lua:block ×1)']);
+    expect(lines).toEqual(['[ct-runner] k#0: ce (lua:unsupported ×1)']);
+  });
+
+  it('a record with supported Lua routes native', async () => {
+    const r = await routeTable(fixture('with-lua-record.CT'), deps().d);
+    expect(r).toMatchObject({ engine: 'native', codes: {} });
   });
 
   it('an instruction the assembler rejects routes CE as asm:error', async () => {
@@ -92,7 +97,7 @@ describe('ct-runner', () => {
   it('recordRoute counts each table once by sha256', async () => {
     const file = join(dir, 'ct-routing.json');
     const native = await routeTable(fixture('dropdown-hotkeys.CT'), deps().d);
-    const ce = await routeTable(fixture('with-lua-record.CT'), deps().d);
+    const ce = await routeTable(fixture('with-unsupported-lua.CT'), deps().d);
     await recordRoute(file, native);
     await recordRoute(file, native);
     await recordRoute(file, ce);
@@ -101,7 +106,7 @@ describe('ct-runner', () => {
       version: 1,
       tables: { native: 1, ce: 1 },
       records: { native: 3, ce: 2 },
-      reasons: { 'lua:block': 1 },
+      reasons: { 'lua:unsupported': 1 },
       seen: [native.sha256, ce.sha256],
     });
   });

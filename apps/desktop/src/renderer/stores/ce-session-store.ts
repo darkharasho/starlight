@@ -107,6 +107,10 @@ interface CeSessionState {
   cancelPlay: () => void;
   /** Look again for a table that matches the game. */
   retry: (opts?: { auto?: boolean }) => Promise<void>;
+  /** Messages and links the table's Lua showed (native engine), newest last. */
+  luaNotices: Array<{ id: number; kind: 'message' | 'link'; text: string }>;
+  addLuaNotice: (e: { kind: 'message' | 'link'; text: string }) => void;
+  dismissLuaNotice: (id: number) => void;
   /** A cheat was toggled by its in-game hotkey. */
   applyHotkey: (e: { recordId: number; ok: boolean; active: boolean; error?: string | undefined }) => void;
   /** Bind (or with null, remove) the hotkey for a cheat; remembered per game. */
@@ -166,6 +170,7 @@ const CLEARED = {
   attempts: [] as CeTableAttempt[],
   running: true,
   progress: null as string | null,
+  luaNotices: [] as Array<{ id: number; kind: 'message' | 'link'; text: string }>,
   pickSteps: [] as CePickStep[],
   retrying: false,
   retries: 0,
@@ -207,7 +212,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
       });
       return false;
     }
-    set({ starting: true, startError: null, startReason: null, lastReq: req, notRunning: false, needsPicker: false, progress: null, pickSteps: [], title: req.title ?? req.game?.name ?? null });
+    set({ starting: true, startError: null, startReason: null, lastReq: req, notRunning: false, needsPicker: false, progress: null, pickSteps: [], luaNotices: [], title: req.title ?? req.game?.name ?? null });
     try {
       // `launch` and `title` are renderer-side only.
       const { launch: _launch, title: _title, ...ipcReq } = req;
@@ -421,6 +426,15 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
       if (get().sessionId === sid) set({ retrying: false, progress: null });
     }
   },
+
+  addLuaNotice: (e) => {
+    const list = get().luaNotices;
+    // The same message again (a nag on every toggle) doesn't stack.
+    if (list.some((n) => n.kind === e.kind && n.text === e.text)) return;
+    const id = (list[list.length - 1]?.id ?? 0) + 1;
+    set({ luaNotices: [...list, { id, kind: e.kind, text: e.text }].slice(-5) });
+  },
+  dismissLuaNotice: (id) => set({ luaNotices: get().luaNotices.filter((n) => n.id !== id) }),
 
   applyHotkey: (e) => {
     if (!get().sessionId) return;

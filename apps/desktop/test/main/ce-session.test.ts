@@ -929,6 +929,10 @@ const reply = (cmd) => {
         return {
           kind: 'native',
           close,
+          start: async () => {
+            const e = (sp as { startError?: string }).startError;
+            return e ? { ok: false as const, error: e } : { ok: true as const };
+          },
           send: async (cmd) => {
             sends.push(cmd);
             const p = (cmd.params ?? {}) as Record<string, unknown>;
@@ -1016,6 +1020,22 @@ const reply = (cmd) => {
         expect(r.records.map((x) => x.name)).toEqual(['God Mode']);
         expect(getActiveSession()).toMatchObject({ mode: 'native', pid: 4242 });
         expect(ceSessionFor(4242)).toBeNull();     // claims on a native game release nothing
+      } finally { await t.close(); }
+    });
+
+    it('a native table whose Lua fails to start moves to Cheat Engine', async () => {
+      await installFakeCe(join(dir, 'fake-ce-luafail.log'));
+      const t = await serveTables({ 'game.CT': { route: 'native', startError: 'table script, Lua line 2: boom', records: MASTER, enable: { 1: true } } });
+      try {
+        const n = nativeOpts(t, 'luafail');
+        const r = await startSession(n.opts);
+        expect(r).toMatchObject({
+          mode: 'ce', engine: 'ce',
+          route: { engine: 'ce', codes: { 'lua:runtime': 1 }, first: { code: 'lua:runtime', detail: 'table script, Lua line 2: boom' } },
+        });
+        expect(n.backend.close).toHaveBeenCalledTimes(1);
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(n.engine.detach).toHaveBeenCalled();
       } finally { await t.close(); }
     });
 

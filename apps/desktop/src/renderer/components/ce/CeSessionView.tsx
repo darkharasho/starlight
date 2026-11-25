@@ -18,6 +18,8 @@ import { useCover } from '../../lib/use-cover.js';
 import { steamHeroUrl } from '../../types/catalog-game.js';
 import { useGameAccent } from '../../lib/accent.js';
 import { FadeScroll } from '../FadeScroll.js';
+import { starlight } from '../../ipc-client.js';
+import { isWebLink } from '../../../shared/web-link.js';
 import { ChevronDown, Play, Search } from 'lucide-react';
 
 /**
@@ -176,6 +178,24 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
           {s.retrying && s.pickSteps.length > 0 && <TableChecks steps={s.pickSteps} className="mx-auto mt-3" />}
         </Notice>
       )}
+
+      {s.luaNotices.map((n) => (
+        <Notice key={n.id} tone="cyan">
+          <div className="flex items-start gap-3">
+            <span className="min-w-0 flex-1 break-words">
+              {n.kind === 'link' ? <>This table offers a link: <span className="underline decoration-dotted">{n.text}</span></> : n.text}
+            </span>
+            {n.kind === 'link' && isWebLink(n.text) && (
+              <button type="button" onClick={() => { void starlight().openLink(n.text.trim()); s.dismissLuaNotice(n.id); }}
+                      className="shrink-0 rounded-full border border-neon-cyan/60 px-3 py-1 hover:bg-neon-cyan/[0.1]">
+                Open
+              </button>
+            )}
+            <button type="button" aria-label="Dismiss" onClick={() => s.dismissLuaNotice(n.id)}
+                    className="shrink-0 rounded-full px-2 py-1 text-muted hover:text-ink">×</button>
+          </div>
+        </Notice>
+      ))}
 
       {activeTab === 'cheats' && !paused && staleCount > 0 && s.verdict !== 'broken' && (
         <Notice tone="amber">
@@ -462,6 +482,7 @@ function RailCard({ className = '', children }: { className?: string; children: 
 const NOTICE_TONES = {
   pink: 'border-neon-pink/40 bg-neon-pink/[0.06] text-neon-pink',
   amber: 'border-neon-amber/40 bg-neon-amber/[0.06] text-neon-amber',
+  cyan: 'border-neon-cyan/40 bg-neon-cyan/[0.06] text-ink',
 };
 
 function Notice({ tone, role, className = '', children }: {
