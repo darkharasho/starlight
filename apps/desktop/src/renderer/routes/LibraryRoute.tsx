@@ -133,6 +133,14 @@ function GameTile({
   );
 }
 
+type TrainerFilter = 'all' | 'trainer' | 'none';
+
+const FILTERS: { value: TrainerFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'trainer', label: 'Has trainer' },
+  { value: 'none', label: 'No trainer' },
+];
+
 export function LibraryRoute(): JSX.Element {
   const games = useLibraryStore((s) => s.games);
   const loading = useLibraryStore((s) => s.loading);
@@ -141,6 +149,7 @@ export function LibraryRoute(): JSX.Element {
   const addManual = useLibraryStore((s) => s.addManual);
   const removeManual = useLibraryStore((s) => s.removeManual);
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [filter, setFilter] = useState<TrainerFilter>('all');
   const processes = useProcessStore((s) => s.processes);
   const navigate = useNavigate();
 
@@ -179,6 +188,15 @@ export function LibraryRoute(): JSX.Element {
     await openToolsOnly({ name: g.name, steamAppId: Number.isNaN(steamAppId as number) ? null : steamAppId }, navigate, undefined, launch);
   }
 
+  const withTrainer = games.map((g) => ({ game: g, hasTrainer: !!findCatalogEntry(g) }));
+  const counts: Record<TrainerFilter, number> = {
+    all: withTrainer.length,
+    trainer: withTrainer.filter((x) => x.hasTrainer).length,
+    none: withTrainer.filter((x) => !x.hasTrainer).length,
+  };
+  const shown = withTrainer.filter((x) =>
+    filter === 'all' ? true : filter === 'trainer' ? x.hasTrainer : !x.hasTrainer);
+
   const runningSet = useMemo(() => {
     return new Set(processes.map((p) => p.name.toLowerCase().replace(/\.exe$/i, '')));
   }, [processes]);
@@ -188,6 +206,23 @@ export function LibraryRoute(): JSX.Element {
       <div className="flex items-baseline justify-between">
         <h1 className="text-lg font-semibold">Library</h1>
         <div className="flex items-center gap-2">
+          {games.length > 0 && (
+            <div role="group" aria-label="Filter by trainer" className="flex rounded-full bg-bg p-[3px] text-xs mr-2">
+              {FILTERS.map((f) => (
+                <button
+                  key={f.value}
+                  type="button"
+                  aria-pressed={filter === f.value}
+                  onClick={() => setFilter(f.value)}
+                  className={`rounded-full px-3 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan ${
+                    filter === f.value ? 'bg-neon-cyan font-semibold text-[#06231d]' : 'text-muted hover:text-ink'
+                  }`}
+                >
+                  {f.label} <span className="tabular-nums opacity-70">{counts[f.value]}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setShowAddDialog(true)}
@@ -225,17 +260,22 @@ export function LibraryRoute(): JSX.Element {
         </div>
       )}
 
-      {games.length > 0 && (
+      {games.length > 0 && shown.length === 0 && (
+        <div className="text-sm text-muted">
+          {filter === 'none' ? 'Every installed game has a trainer.' : 'None of your installed games has a trainer yet.'}
+        </div>
+      )}
+
+      {shown.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 overflow-y-auto">
-          {games.map((g) => {
+          {shown.map(({ game: g, hasTrainer }) => {
             const dirName = (g.installDir.split(/[\\/]/).pop() ?? '').toLowerCase();
-            const matched = findCatalogEntry(g);
             return (
               <GameTile
                 key={`${g.source}:${g.appId}`}
                 game={g}
                 running={runningSet.has(dirName)}
-                hasTrainer={!!matched}
+                hasTrainer={hasTrainer}
                 onClick={() => void openTrainerForGame(g)}
                 {...(g.source === 'manual' ? { onRemove: () => void removeManual(g.appId) } : {})}
               />

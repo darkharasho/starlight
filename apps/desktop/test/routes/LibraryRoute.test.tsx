@@ -137,4 +137,29 @@ describe('LibraryRoute', () => {
     await userEvent.click(screen.getByTitle('Open Team Fortress 2 trainer'));
     await waitFor(() => expect(requestedPath).toBe('trainers/by-id.json'));
   });
+
+  it('filters to games without a trainer', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
+
+    const noTrainer = screen.getByRole('button', { name: /no trainer/i });
+    expect(noTrainer).toHaveTextContent('1');
+    await user.click(noTrainer);
+
+    expect(noTrainer).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryAllByText('Team Fortress 2')).toHaveLength(0);
+    expect(screen.getAllByText('Counter-Strike 2')[0]!).toBeInTheDocument();
+  });
+
+  it('filters to games with a trainer', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><LibraryRoute /></MemoryRouter>);
+    await waitFor(() => expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /has trainer/i }));
+
+    expect(screen.getAllByText('Team Fortress 2')[0]!).toBeInTheDocument();
+    expect(screen.queryAllByText('Counter-Strike 2')).toHaveLength(0);
+  });
 });
