@@ -14,7 +14,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 3;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed", "aob_exec"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed", "aob_exec", "lua"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -91,6 +91,7 @@ pub struct ConnState {
     pub patches: Arc<Patches>,
     pub watches: Watches,
     pub speeds: Speeds,
+    pub luas: crate::lua::Luas,
 }
 
 /// Methods that can take long; they run on their own thread and answer out of order,
@@ -113,6 +114,7 @@ pub fn is_slow(method: &str) -> bool {
             | "watch_start"
             | "watch_stop"
             | "debug_sleep"
+            | "lua_run"
     )
 }
 
@@ -133,6 +135,7 @@ impl Session {
             speeds: Speeds::new(owner.clone(), patches.clone()),
             patches,
             watches: Watches::new(owner.clone(), conn.clone()),
+            luas: crate::lua::Luas::default(),
             owner,
         });
         Session { conn, state }
@@ -578,6 +581,21 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             }
             let interval = param_u64(params, "interval_ms")?;
             Ok(json!({ "id": handles.freeze(handle, addr, data, interval)? }))
+        }
+        "lua_open" => {
+            let handle = param_handle(params)?;
+            let t = handles.get(handle)?;
+            let process = params.get("process").and_then(Value::as_str).map(str::to_string);
+            Ok(json!({ "id": state.luas.open(handle, t, process)? }))
+        }
+        "lua_run" => {
+            let id = param_id(params)?;
+            let t = handles.get(state.luas.handle_of(id)?)?;
+            state.luas.run(id, t, params)
+        }
+        "lua_close" => {
+            state.luas.close(param_id(params)?)?;
+            Ok(json!({}))
         }
         "unfreeze" => {
             let id = u32::try_from(param_u64(params, "id")?).map_err(|_| RpcError::invalid_params("id out of range"))?;

@@ -4,6 +4,7 @@ mod cleanup;
 mod disasm;
 mod freeze;
 mod hook;
+mod lua;
 mod maps;
 mod mem;
 mod modules;
