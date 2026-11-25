@@ -11,7 +11,7 @@ export function buildConnectInfo(o: { enabled: boolean; port: number; portIsFall
     port: o.port,
     portIsFallback: o.portIsFallback,
     token: o.token,
-    claudeCommand: `claude mcp add --transport http starlight ${url} --header "Authorization: Bearer ${o.token}"`,
+    claudeCommand: `claude mcp add --scope user --transport http starlight ${url} --header "Authorization: Bearer ${o.token}"`,
     // Codex's per-server tool timeout defaults to 60 s; approvals and
     // ask_player wait far longer (ask_player up to 3600 s).
     codexConfig: `[mcp_servers.starlight]\nurl = "${url}"\nhttp_headers = { "Authorization" = "Bearer ${o.token}" }\ntool_timeout_sec = 3700\n`,

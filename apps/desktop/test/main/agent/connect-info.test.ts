@@ -11,7 +11,7 @@ describe('buildConnectInfo', () => {
       port: 47771,
       portIsFallback: false,
       token: 'abc',
-      claudeCommand: 'claude mcp add --transport http starlight http://127.0.0.1:47771/mcp --header "Authorization: Bearer abc"',
+      claudeCommand: 'claude mcp add --scope user --transport http starlight http://127.0.0.1:47771/mcp --header "Authorization: Bearer abc"',
       codexConfig: '[mcp_servers.starlight]\nurl = "http://127.0.0.1:47771/mcp"\nhttp_headers = { "Authorization" = "Bearer abc" }\ntool_timeout_sec = 3700\n',
     });
   });
