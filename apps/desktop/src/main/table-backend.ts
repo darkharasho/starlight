@@ -16,4 +16,9 @@ export interface TableBackend {
   readonly kind: 'ce' | 'native';
   send(cmd: BackendCommand): Promise<unknown>;
   close(): Promise<void>;
+  /**
+   * Runs what the table does when it opens (its Lua script) once the game is attached. A failure
+   * means the table can't run on this backend.
+   */
+  start?(): Promise<{ ok: true } | { ok: false; error: string }>;
 }

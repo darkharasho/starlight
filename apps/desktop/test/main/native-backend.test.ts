@@ -385,3 +385,118 @@ describe('native table backend', () => {
     expect(await b.send({ method: 'scan_first' })).toEqual({ ok: false, error: 'unknown method: scan_first' });
   });
 });
+
+describe('native table backend: Lua', () => {
+  const xml = (entries: string, tableLua = '') =>
+    `<?xml version="1.0" encoding="utf-8"?><CheatTable><CheatEntries>${entries}</CheatEntries>${tableLua ? `<LuaScript>${tableLua}</LuaScript>` : ''}</CheatTable>`;
+  const aa = (id: number, name: string, script: string) =>
+    `<CheatEntry><ID>${id}</ID><Description>"${name}"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>${script}</AssemblerScript></CheatEntry>`;
+  const hp = '<CheatEntry><ID>1</ID><Description>"HP"</Description><VariableType>4 Bytes</VariableType><Address>[pPlayer]+10</Address></CheatEntry>';
+
+  /** A fake Lua runtime: each chunk is answered by `answer`, and every run is recorded. */
+  function withLua(answer: (chunk: string, o: { name: string; symbols: SymbolRegistry; memrec?: unknown }) => Record<string, unknown>) {
+    const g = fakeGame();
+    const runs: Array<{ chunk: string; name: string; memrec?: unknown }> = [];
+    let closed = 0;
+    const luaOpen = vi.fn(async () => ({
+      id: 1,
+      run: async (chunk: string, o: { name: string; symbols: SymbolRegistry; memrec?: unknown }) => {
+        runs.push({ chunk, name: o.name, ...(o.memrec ? { memrec: o.memrec } : {}) });
+        return { ok: true, returned: null, effects: [], notices: [], ...answer(chunk, o) };
+      },
+      close: async () => { closed++; },
+    }));
+    Object.assign(g.engine as object, { luaOpen });
+    return { g, runs, luaOpen, closed: () => closed };
+  }
+
+  it('start() runs the table script once and applies its registerSymbol', async () => {
+    const { g, runs, luaOpen } = withLua((chunk) => (chunk.includes('registerSymbol')
+      ? { effects: [{ op: 'registerSymbol', name: 'pPlayer', address: '0x5000' }] } : {}));
+    const t = compileTable(xml(hp, 'registerSymbol("pPlayer", getAddress("target+100"))'));
+    expect(t.native).toBe(true);
+    const { b } = backendFor(t, g);
+    expect(await b.start!()).toEqual({ ok: true });
+    expect(runs.map((r) => r.name)).toEqual(['table script']);
+    g.setU32('0x5010', 7);
+    expect(await b.send({ method: 'set_active', params: { id: 1, active: true } })).toEqual({ ok: true, active: true });
+    expect(g.freezes[0]!.address).toBe('0x5010');
+    expect(luaOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('start() without Lua opens no state; a failing table script fails start()', async () => {
+    const quiet = withLua(() => ({}));
+    expect(await backendFor(fixture('native-ok.CT'), quiet.g).b.start!()).toEqual({ ok: true });
+    expect(quiet.luaOpen).not.toHaveBeenCalled();
+
+    const bad = withLua(() => ({ ok: false, error: 'boom', line: 3 }));
+    const { b } = backendFor(compileTable(xml(hp, 'writeInteger("x",1)\n\nerror("boom")')), bad.g);
+    expect(await b.start!()).toEqual({ ok: false, error: 'table script, Lua line 3: boom' });
+  });
+
+  it('notices are forwarded as lua-notice events', async () => {
+    const { g } = withLua(() => ({ notices: [{ kind: 'link', text: 'https://x.y' }] }));
+    const { b } = backendFor(compileTable(xml(hp, 'writeInteger("x",1)')), g);
+    await b.start!();
+    expect(g.events).toContainEqual({ type: 'lua-notice', kind: 'link', text: 'https://x.y' });
+  });
+
+  it('a deferred script runs its enable blocks, compiles the returned AA and enables it; disable runs the disable blocks', async () => {
+    const script = [
+      '[ENABLE]', 'alloc(newmem,$100)', '{$lua}', 'return "newmem:\\nret"', '{$asm}',
+      '[DISABLE]', '{$lua}', 'writeInteger("x",0)', '{$asm}', 'dealloc(newmem)',
+    ].join('\n');
+    const { g, runs } = withLua((chunk) => (chunk.includes('return') ? { returned: 'newmem:\nret' } : {}));
+    const t = compileTable(xml(aa(5, 'Cave', script)));
+    expect(t.native).toBe(true);
+    const { b } = backendFor(t, g);
+    expect(await b.send({ method: 'set_active', params: { id: 5, active: true } })).toEqual({ ok: true, active: true });
+    const cheat = g.enableCheat.mock.calls[0]![1] as { enable: Array<{ op: string; source?: string }> };
+    expect(cheat.enable).toContainEqual({ op: 'assemble', at: 'newmem', source: 'ret' });
+    expect(runs.map((r) => r.memrec)).toEqual([{ id: 5, description: 'Cave', value: '' }]);
+    expect(await b.send({ method: 'set_active', params: { id: 5, active: false } })).toEqual({ ok: true, active: false });
+    expect(g.disabled).toEqual(['Cave']);
+    expect(runs.map((r) => r.chunk.includes('writeInteger'))).toEqual([false, true]);
+  });
+
+  it('a Lua error in a deferred block names the script line; nothing is enabled', async () => {
+    const script = '[ENABLE]\n{$lua}\n\nerror("nope")\n{$asm}\n[DISABLE]\n';
+    const { g } = withLua(() => ({ ok: false, error: 'nope', line: 3 }));
+    const { b } = backendFor(compileTable(xml(aa(5, 'Bad', script))), g);
+    expect(await b.send({ method: 'set_active', params: { id: 5, active: true } }))
+      .toEqual({ ok: false, active: false, error: 'Lua line 4: nope' });
+    expect(g.enableCheat).not.toHaveBeenCalled();
+  });
+
+  it('a record Lua script runs its [ENABLE] part on and its [DISABLE] part off', async () => {
+    const lua = '[ENABLE]\nwriteInteger("a",1)\n[DISABLE]\nwriteInteger("a",0)';
+    const { g, runs } = withLua(() => ({}));
+    const t = compileTable(xml(`<CheatEntry><ID>7</ID><Description>"Lua"</Description><LuaScript>${lua}</LuaScript></CheatEntry>`));
+    const { b } = backendFor(t, g);
+    expect(await b.send({ method: 'set_active', params: { id: 7, active: true } })).toEqual({ ok: true, active: true });
+    expect(await b.send({ method: 'set_active', params: { id: 7, active: false } })).toEqual({ ok: true, active: false });
+    expect(runs.map((r) => r.chunk.trim())).toEqual(['writeInteger("a",1)', 'writeInteger("a",0)']);
+  });
+
+  it('shutdown closes the Lua state', async () => {
+    const l = withLua(() => ({}));
+    const { b } = backendFor(compileTable(xml(hp, 'writeInteger("x",1)')), l.g);
+    await b.start!();
+    await b.send({ method: 'shutdown' });
+    expect(l.closed()).toBe(1);
+  });
+});
+
+describe('native table backend: deferred scripts and symbols', () => {
+  it('a deferred script that uses an unregistered name says which record to switch on', async () => {
+    const g = fakeGame();
+    Object.assign(g.engine as object, { luaOpen: vi.fn() });
+    const xml = '<?xml version="1.0" encoding="utf-8"?><CheatTable><CheatEntries>'
+      + '<CheatEntry><ID>1</ID><Description>"Get player"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]\nglobalalloc(pPlayer,8)\n[DISABLE]\n</AssemblerScript></CheatEntry>'
+      + '<CheatEntry><ID>2</ID><Description>"Uses it"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]\n{$lua}\nreturn ""\n{$asm}\npPlayer:\ndq 0\n[DISABLE]\n</AssemblerScript></CheatEntry>'
+      + '</CheatEntries></CheatTable>';
+    const { b } = backendFor(compileTable(xml), g);
+    expect(await b.send({ method: 'set_active', params: { id: 2, active: true } }))
+      .toEqual({ ok: false, active: false, error: 'symbol pplayer isn\'t registered; switch on "Get player" first' });
+  });
+});

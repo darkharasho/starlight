@@ -12,8 +12,11 @@
  *   slot; binding ids are opaque and map to (record, action, value) (R13).
  */
 import * as realEngine from '@starlight/engine';
-import type { FreezeHandle, RunningCheat, Session, SymbolRegistry } from '@starlight/engine';
-import { vkKeysToAccelerator, type CompiledHotkey, type CompiledRecord, type CompiledTable } from '@starlight/ct-importer';
+import type { FreezeHandle, LuaRunResult, LuaState, RunningCheat, Session, SymbolRegistry } from '@starlight/engine';
+import {
+  compileAaScript, expandLuaBlocks, vkKeysToAccelerator,
+  type CompiledHotkey, type CompiledRecord, type CompiledTable, type LuaBlock,
+} from '@starlight/ct-importer';
 import type { CeRecord } from './ce-session.js';
 import type { EngineApi } from './agent/tools.js';
 import type { BackendCommand, TableBackend } from './table-backend.js';
@@ -34,11 +37,15 @@ export interface NativeBackendDeps {
 }
 
 type ValueRecord = Extract<CompiledRecord, { kind: 'value' }>;
+type LuaRecord = Extract<CompiledRecord, { kind: 'lua' }>;
 type Reply = { ok: boolean; active: boolean; error?: string };
+/** A deferred script's source: its [DISABLE] blocks run when it switches off. */
+type Deferred = { src: string; rec: CompiledRecord };
 type Live =
-  | { kind: 'flag' }
-  | { kind: 'patch'; cheat: RunningCheat }
-  | { kind: 'value'; address: string; handle: FreezeHandle };
+  | { kind: 'flag'; deferred?: Deferred }
+  | { kind: 'patch'; cheat: RunningCheat; deferred?: Deferred }
+  | { kind: 'value'; address: string; handle: FreezeHandle }
+  | { kind: 'lua'; rec: LuaRecord };
 interface HotkeyTarget { recordId: number; action: CompiledHotkey['action']; value?: string }
 
 const FREEZE_INTERVAL_MS = 50;
@@ -61,6 +68,23 @@ const isValue = (r: CompiledRecord): r is ValueRecord => r.kind === 'value';
 const sizeOf = (r: ValueRecord) => SIZES[r.valueType] ?? r.length ?? 1;
 const isFloat = (r: ValueRecord) => r.valueType === 'float' || r.valueType === 'double';
 const isInteger = (r: ValueRecord) => r.valueType in SIZES && !isFloat(r);
+
+const MARKER = /^\s*\[(enable|disable)\]\s*$/i;
+/**
+ * A record Lua script's part for `section`: the lines before any marker plus that section's lines
+ * (other lines blanked, so error lines stay right). Without markers the whole script is the
+ * [ENABLE] part and there is no [DISABLE] part.
+ */
+function luaPart(code: string, section: 'enable' | 'disable'): string | null {
+  const lines = code.split('\n');
+  if (!lines.some((l) => MARKER.test(l))) return section === 'enable' ? code : null;
+  let cur: string = 'pre';
+  return lines.map((l) => {
+    const m = MARKER.exec(l);
+    if (m) { cur = m[1]!.toLowerCase(); return ''; }
+    return cur === 'pre' || cur === section ? l : '';
+  }).join('\n');
+}
 
 function readUnsigned(buf: Buffer, size: number): bigint {
   return size === 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUIntLE(0, size));
@@ -199,6 +223,57 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
 
   const addressOf = (r: ValueRecord) => E.resolveCheatAddress(s, r.address, { symbols: registry, mainModule });
 
+  // One Lua state per table (CE shares one between the table script and every record), opened on first use.
+  let lua: Promise<LuaState> | null = null;
+  const luaState = () => (lua ??= E.luaOpen(s, { process: mainModule }));
+  async function closeLua(): Promise<void> {
+    const l = lua;
+    lua = null;
+    if (l) await l.then((x) => x.close()).catch(() => {});
+  }
+  /** Runs a chunk against the registry; its effects apply (also after an error) and its notices go out. */
+  async function runLua(chunk: string, name: string, rec?: CompiledRecord): Promise<LuaRunResult> {
+    const r = await (await luaState()).run(chunk, {
+      name, symbols: registry,
+      ...(rec ? { memrec: { id: rec.id, description: rec.name, value: '' } } : {}),
+    });
+    for (const e of r.effects) {
+      if (e.op === 'registerSymbol') registry.set(e.name.toLowerCase(), e.address);
+      else registry.delete(e.name.toLowerCase());
+    }
+    for (const n of r.notices) deps.onEvent?.({ type: 'lua-notice', kind: n.kind, text: n.text });
+    return r;
+  }
+  /** `Lua line N: …`, N counted in the record's script (`first` = the script line of chunk line 1). */
+  const luaError = (r: Extract<LuaRunResult, { ok: false }>, first = 1) =>
+    new Error(r.line !== null ? `Lua line ${first + r.line - 1}: ${r.error}` : `Lua: ${r.error}`);
+  const runBlock = (rec: CompiledRecord) => async (b: LuaBlock): Promise<string | null> => {
+    const r = await runLua(b.code, rec.name, rec);
+    if (!r.ok) throw luaError(r, b.line);
+    return r.returned;
+  };
+
+  async function start(): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!compiled.tableLua) return { ok: true };
+    try {
+      const r = await runLua(compiled.tableLua, 'table script');
+      return r.ok ? { ok: true } : { ok: false, error: `table script, ${luaError(r).message}` };
+    } catch (err) {
+      return { ok: false, error: `table script: ${message(err)}` };
+    }
+  }
+
+  /** A deferred script: its enable blocks run, their returned AA is spliced in, then it compiles and enables. */
+  async function turnOnDeferred(rec: CompiledRecord, src: string): Promise<Live> {
+    const aa = await expandLuaBlocks(src, ['pre', 'enable'], runBlock(rec));
+    const r = compileAaScript(aa, { id: `cheat-${rec.id}`, name: rec.name });
+    if (!r.ok) throw new Error(`after its Lua ran, the script didn't compile (${r.code}${r.line !== null ? ` line ${r.line}` : ''}: ${r.detail})`);
+    const deferred = { src, rec };
+    if (!r.cheat) return { kind: 'flag', deferred };
+    const cheat = await E.enableCheat(s, r.cheat, { symbols: registry, mainModule, log });
+    return { kind: 'patch', cheat, deferred };
+  }
+
   async function turnOn(rec: CompiledRecord): Promise<Live> {
     if (rec.kind === 'unsupported') throw new Error('this record needs Cheat Engine');
     if (rec.kind === 'value') {
@@ -208,8 +283,13 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
       const handle = await E.freeze(s, { address, bytes: now, intervalMs: FREEZE_INTERVAL_MS });
       return { kind: 'value', address, handle };
     }
+    if (rec.kind === 'lua') {
+      const r = await runLua(luaPart(rec.lua, 'enable')!, rec.name, rec);
+      if (!r.ok) throw luaError(r);
+      return { kind: 'lua', rec };
+    }
     const script = rec.script;
-    if (!script?.cheat) return { kind: 'flag' };
+    if (!script || (!script.cheat && script.deferred === undefined)) return { kind: 'flag' };
     for (const use of script.uses) {
       const name = use.toLowerCase();
       if (registry.has(name)) continue;
@@ -218,13 +298,28 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
         ? `symbol ${name} isn't registered; switch on "${owner.name}" first`
         : `symbol ${name} isn't registered`);
     }
-    const cheat = await E.enableCheat(s, script.cheat, { symbols: registry, mainModule, log });
+    if (script.deferred !== undefined) return turnOnDeferred(rec, script.deferred);
+    const cheat = await E.enableCheat(s, script.cheat!, { symbols: registry, mainModule, log });
     return { kind: 'patch', cheat };
   }
 
   async function turnOff(l: Live): Promise<void> {
     if (l.kind === 'patch') await l.cheat.disable();
     else if (l.kind === 'value') await l.handle.cancel();
+    else if (l.kind === 'lua') {
+      const part = luaPart(l.rec.lua, 'disable');
+      if (part !== null) {
+        const r = await runLua(part, l.rec.name, l.rec);
+        if (!r.ok) throw luaError(r);
+      }
+    }
+    // A deferred script's [DISABLE] blocks run after its patches are reverted (CE's order: the
+    // disable section runs as one script). A failing block is logged; the record is off either way.
+    if ((l.kind === 'patch' || l.kind === 'flag') && l.deferred) {
+      const d = l.deferred;
+      await expandLuaBlocks(d.src, ['pre', 'disable'], runBlock(d.rec))
+        .catch((err) => log(`[native-table] "${d.rec.name}" disable Lua failed: ${message(err)}`));
+    }
   }
 
   /** Switches a record on/off (serialized per id), cascading per moActivate/moDeactivateChildrenAsWell. */
@@ -324,7 +419,7 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
       name: r.name,
       isActive: live.has(r.id),
       isGroupHeader: r.kind === 'header',
-      kind: r.kind === 'unsupported' ? 'script' : r.kind,
+      kind: r.kind === 'unsupported' || r.kind === 'lua' ? 'script' : r.kind,
       depth: r.depth,
       ...(r.opts ? { opts: r.opts } : {}),
       ...(toggle ? { hotkey: toggle.accelerator } : {}),
@@ -477,6 +572,7 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
         if (!deps.loadCompiled) return { ok: false, error: "this session can't load another table" };
         await disableAll();
         hotkeys.clear();
+        await closeLua();
         try {
           compiled = await deps.loadCompiled(path);
         } catch (err) {
@@ -490,6 +586,7 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
       case 'shutdown':
         await disableAll();
         hotkeys.clear();
+        await closeLua();
         return { ok: true };
       default:
         return { ok: false, error: `unknown method: ${cmd.method}` };
@@ -499,6 +596,7 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
   return {
     kind: 'native',
     send,
+    start,
     async close() { await send({ method: 'shutdown' }); },
   };
 }
