@@ -189,7 +189,8 @@ export function compileTable(xml: string): CompiledTable {
           // {$lua} blocks and luacall lines run on enable: check them, compile the AA around them.
           const blocks = luaBlocks(aa);
           const bad = blocks.flatMap((b) => scanLua(b.code).unsupported)[0];
-          const r = compileAaScript(blocks.length ? stripLuaBlocks(aa) : aa, { id: `cheat-${rec.id}`, name: rec.name });
+          // Strip every Lua region (also ones with nothing to run), so the AA compiler never sees {$lua}.
+          const r = compileAaScript(stripLuaBlocks(aa), { id: `cheat-${rec.id}`, name: rec.name });
           if (bad !== undefined) {
             compiled = unsupported('lua:unsupported', bad);
           } else if (!r.ok) {

@@ -66,3 +66,11 @@ describe('expandLuaBlocks', () => {
       .toEqual(['', '[ENABLE]', 'nop', '[DISABLE]', '', '']);
   });
 });
+
+describe('a block that runs into the next section marker', () => {
+  it('its lines before the marker belong to the section the block sits in', () => {
+    const s = '[ENABLE]\n{$lua}\nOpenProcess("Game.exe")\n[DISABLE]\n';
+    expect(luaBlocks(s)).toEqual([{ code: '\nOpenProcess("Game.exe")\n\n', section: 'enable', line: 2 }]);
+    expect(stripLuaBlocks(s).split('\n')).toEqual(['[ENABLE]', '', '', '[DISABLE]', '']);
+  });
+});

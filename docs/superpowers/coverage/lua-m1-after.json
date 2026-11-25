@@ -1,0 +1,119 @@
+{
+  "compiler": "native",
+  "generatedAt": "2026-11-25T23:12:42.935Z",
+  "tables": {
+    "total": 284,
+    "native": 99,
+    "pct": 34.9
+  },
+  "records": {
+    "total": 32823,
+    "native": 12480,
+    "pct": 38
+  },
+  "byCode": [
+    {
+      "code": "lua:unsupported",
+      "tables": 105,
+      "records": 323
+    },
+    {
+      "code": "sym:unresolved",
+      "tables": 84,
+      "records": 3776
+    },
+    {
+      "code": "asm:error",
+      "tables": 44,
+      "records": 294
+    },
+    {
+      "code": "value:type",
+      "tables": 41,
+      "records": 6614
+    },
+    {
+      "code": "sym:mono",
+      "tables": 33,
+      "records": 121
+    },
+    {
+      "code": "aa:aobscanregion",
+      "tables": 29,
+      "records": 164
+    },
+    {
+      "code": "addr:expression",
+      "tables": 28,
+      "records": 8846
+    },
+    {
+      "code": "aa:parse",
+      "tables": 19,
+      "records": 50
+    },
+    {
+      "code": "aa:name",
+      "tables": 10,
+      "records": 80
+    },
+    {
+      "code": "aa:disable-write",
+      "tables": 5,
+      "records": 10
+    },
+    {
+      "code": "aa:unknown-command",
+      "tables": 3,
+      "records": 15
+    },
+    {
+      "code": "aa:reassemble",
+      "tables": 3,
+      "records": 4
+    },
+    {
+      "code": "aa:try",
+      "tables": 3,
+      "records": 3
+    },
+    {
+      "code": "aa:pointer-origin",
+      "tables": 2,
+      "records": 20
+    },
+    {
+      "code": "aa:fullaccess",
+      "tables": 2,
+      "records": 2
+    },
+    {
+      "code": "aa:no-enable",
+      "tables": 1,
+      "records": 16
+    },
+    {
+      "code": "aa:alloc-size",
+      "tables": 1,
+      "records": 2
+    },
+    {
+      "code": "aa:createthread",
+      "tables": 1,
+      "records": 2
+    },
+    {
+      "code": "aa:assert",
+      "tables": 1,
+      "records": 1
+    },
+    {
+      "code": "table:empty",
+      "tables": 1,
+      "records": 0
+    }
+  ],
+  "failed": 9,
+  "selected": 7746,
+  "missing": 7453
+}

@@ -228,3 +228,13 @@ dealloc(newmem)`;
     expect(t.records[0]).toMatchObject({ kind: 'unsupported', code: 'addr:expression' });
   });
 });
+
+describe('compileTable: Lua blocks that run to the end of the script', () => {
+  it('a {$lua} block without {$asm} is deferred, not lua:block', () => {
+    const xml = '<?xml version="1.0" encoding="utf-8"?><CheatTable><CheatEntries><CheatEntry><ID>1</ID><Description>"Attach"</Description>'
+      + '<VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]\n{$lua}\nOpenProcess("Game.exe")\n[DISABLE]\n</AssemblerScript></CheatEntry></CheatEntries></CheatTable>';
+    const t = compileTable(xml);
+    expect(t.reasons).toEqual([]);
+    expect(t.records[0]).toMatchObject({ kind: 'script', script: { cheat: null } });
+  });
+});

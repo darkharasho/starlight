@@ -1,8 +1,9 @@
 /**
  * `{$lua}` blocks and `luacall(…)` lines inside an Auto Assembler script. CE runs them while it
  * processes the script; a block's returned string replaces it in the AA source. `[ENABLE]` and
- * `[DISABLE]` inside a block split it: the block's lines before the first marker belong to both
- * sections, as in CE (it splits a script into its sections before running the Lua).
+ * `[DISABLE]` inside a block split it, as in CE (it splits a script into its sections before running
+ * the Lua): the block's lines before its first marker belong to the section the block sits in, or to
+ * both for a block before any section.
  *
  * A block's `code` keeps its line positions: chunk line 1 is the `{$lua}` line, so an error on
  * chunk line N is script line `line + N - 1`.
@@ -83,10 +84,14 @@ function blocksOf(r: Region): LuaBlock[] {
   const lines = sectionsOf(r.body);
   const split = lines.some((l) => l.section === null);
   if (!split) return [{ code: r.body, section: r.outer, line: r.line }];
+  // Lines before the block's first marker are in the section the block sits in; for a block
+  // before any section, in both.
+  const inSection = (l: { section: LuaSection | null }, s: LuaSection) =>
+    l.section === s || (l.section === 'pre' && (r.outer === 'pre' || r.outer === s));
   const out: LuaBlock[] = [];
   for (const s of ['enable', 'disable'] as const) {
-    if (!lines.some((l) => l.section === s)) continue;
-    const code = lines.map((l) => (l.section === 'pre' || l.section === s ? l.text : '')).join('\n');
+    if (!lines.some((l) => inSection(l, s) && l.text.trim() !== '')) continue;
+    const code = lines.map((l) => (inSection(l, s) ? l.text : '')).join('\n');
     out.push({ code, section: s, line: r.line });
   }
   return out;
