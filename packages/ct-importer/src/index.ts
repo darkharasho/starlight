@@ -27,7 +27,8 @@ export { AgentCheatDraftSchema, validateAgentCheat, type AgentCheatDraft } from 
 export { REASON_CODES, reasonCopy, type ReasonCode } from './reasons.js';
 export { compileAaScript, type AaResult } from './aa-compiler.js';
 export { scanLua, type LuaScan } from './lua-scan.js';
-export { isCosmeticLua, stripLua } from './lua-cosmetic.js';
+export { isCosmeticLua, isCosmeticLuaBlock, stripLua } from './lua-cosmetic.js';
+export { luaBlocks, stripLuaBlocks, expandLuaBlocks, type LuaBlock, type LuaSection } from './lua-blocks.js';
 export { parseCtAddress, ctOffsetsInApplyOrder } from './ct-address.js';
 export { vkKeysToAccelerator } from './hotkey-parser.js';
 export {

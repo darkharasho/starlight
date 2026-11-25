@@ -5,7 +5,7 @@
  */
 import type { StarlightPatchCheat, StarlightPatchStep } from './starlight-format.js';
 import type { ReasonCode } from './reasons.js';
-import { isCosmeticLua } from './lua-cosmetic.js';
+import { isCosmeticLua, isCosmeticLuaBlock } from './lua-cosmetic.js';
 
 export type AaResult =
   | { ok: true; cheat: StarlightPatchCheat | null; registers: string[]; uses: string[] }
@@ -90,7 +90,7 @@ function stripComments(script: string): Cleaned {
  */
 function dropCosmeticLua(script: string): string {
   return script.replace(/\{\$lua\}([\s\S]*?)(\{\$asm\}|$)/gi, (whole, body: string) => {
-    if (!isCosmeticLua(body)) return whole;
+    if (!isCosmeticLuaBlock(body)) return whole;
     return body.split('\n').map((l) => (/^\s*\[(?:enable|disable)\]\s*$/i.test(l) ? l.trim() : '')).join('\n');
   });
 }

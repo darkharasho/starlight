@@ -47,3 +47,11 @@ export function isCosmeticLua(src: string): boolean {
   if (/=/.test(code.replace(/[=~<>]=/g, ' '))) return false;
   return words.every((w) => ALLOWED.has(w.toLowerCase()));
 }
+
+/**
+ * A `{$lua}` block that can be skipped: cosmetic, and it returns no value (a block's returned
+ * string is Auto Assembler code CE puts in its place).
+ */
+export function isCosmeticLuaBlock(src: string): boolean {
+  return isCosmeticLua(src) && !/\breturn\s+(?!end\b)[^\s;]/.test(stripLua(src));
+}

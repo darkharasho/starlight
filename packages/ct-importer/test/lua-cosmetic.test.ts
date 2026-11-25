@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isCosmeticLua } from '../src/lua-cosmetic.js';
+import { isCosmeticLua, isCosmeticLuaBlock } from '../src/lua-cosmetic.js';
 
 describe('isCosmeticLua', () => {
   it('accepts links, messages and the syntaxcheck guard', () => {
@@ -27,5 +27,13 @@ describe('isCosmeticLua', () => {
     expect(isCosmeticLua('local x = 1')).toBe(false);
     expect(isCosmeticLua('mono_initialize()')).toBe(false);
     expect(isCosmeticLua('ShellExecute(getAddress("x"))')).toBe(false);
+  });
+});
+
+describe('isCosmeticLuaBlock', () => {
+  it('a block that returns code is not skippable', () => {
+    expect(isCosmeticLuaBlock('if syntaxcheck then return end\nshowMessage("x")')).toBe(true);
+    expect(isCosmeticLuaBlock('return "nop"')).toBe(false);
+    expect(isCosmeticLuaBlock("if syntaxcheck then return end\nreturn 'db 90'")).toBe(false);
   });
 });
