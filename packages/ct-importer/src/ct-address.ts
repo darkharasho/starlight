@@ -1,7 +1,7 @@
 /**
  * Cheat Engine table address strings -> v2 addresses (plan D11).
  *
- *   "m"+hex, m.exe+hex      -> module
+ *   "m"+hex, m.exe+hex      -> module ($process+hex: the main module)
  *   hex                      -> absolute
  *   name[±hex]               -> symbol { expr }
  *   [expr]±hex (nested)      -> symbol { expr, offsets } (outer brackets last);
@@ -11,21 +11,44 @@
  *                               folded into that address here
  *
  * CT `<Offsets>` come after the bracket offsets, in the order of
- * `ctOffsetsInApplyOrder`. Every number in a CT address is hex (R5).
+ * `ctOffsetsInApplyOrder`. Every number in a CT address is hex (R5); wherever
+ * a ±hex goes, constant arithmetic (`+4*2-9C`, `0x144 * 0 + 0x11c`) is folded.
  */
 import type { StarlightAddress } from './starlight-format.js';
 import { parseAddress } from './address-parser.js';
 
-const HEX = /^(?:0x)?([0-9a-f]+)$/i;
-const QUOTED_MODULE = /^"([^"]+)"(?:\s*\+\s*(?:0x)?([0-9a-f]+))?$/i;
-const MODULE = /^([A-Za-z_][\w.]*\.(?:exe|dll))(?:\s*\+\s*(?:0x)?([0-9a-f]+))?$/i;
-const SYMBOL = /^([A-Za-z_][A-Za-z0-9_]*)(?:\s*([+-])\s*(?:0x)?([0-9a-f]+))?$/i;
-const RELATIVE = /^([+-])\s*(?:0x)?([0-9a-f]+)$/i;
+const FACTOR = /^(?:0x)?([0-9a-f]+)$/i;
+/** The base of an address: a quoted module, `name.exe`/`name.dll`, `$process`, a name or hex digits; the rest is `tail`. */
+const HEAD = /^("[^"]+"|[A-Za-z_][\w.]*\.(?:exe|dll)\b|\$process\b|[A-Za-z_]\w*|(?:0x)?[0-9a-f]+)(.*)$/i;
 
-/** A CT number (hex digits, possibly coerced to a JS number by the XML parser) as a BigInt. */
-function hexValue(v: string | number): bigint | null {
-  const m = HEX.exec(String(v).trim());
-  return m ? BigInt('0x' + m[1]!) : null;
+/**
+ * Constant hex arithmetic, as CE evaluates it in addresses and offsets: terms joined by `+`/`-`
+ * (optionally signed first), each a product (`*`) of hex numbers. Null when it isn't that.
+ */
+export function constHex(v: string | number): bigint | null {
+  const t = String(v).replace(/\s+/g, '');
+  if (t === '') return null;
+  const re = /([+-]?)([^+-]+)/y;
+  let total = 0n;
+  for (let pos = 0; pos < t.length;) {
+    re.lastIndex = pos;
+    const m = re.exec(t);
+    if (!m) return null;
+    pos = re.lastIndex;
+    let product = 1n;
+    for (const f of m[2]!.split('*')) {
+      const x = FACTOR.exec(f);
+      if (!x) return null;
+      product *= BigInt('0x' + x[1]!);
+    }
+    total += m[1] === '-' ? -product : product;
+  }
+  return total;
+}
+
+/** A `±…` constant tail (`+10`, `-9C+4*2`); null when `s` isn't one. */
+function signedTail(s: string): bigint | null {
+  return /^\s*[+-]/.test(s) ? constHex(s) : null;
 }
 
 /** Signed hex literal: `0x10`, `-0x10`. */
@@ -46,7 +69,7 @@ function lit(s: string): bigint {
 export function ctOffsetsInApplyOrder(xmlOffsets: ReadonlyArray<string | number>): string[] | null {
   const out: string[] = [];
   for (const o of xmlOffsets) {
-    const n = hexValue(o);
+    const n = constHex(o);
     if (n === null) return null;
     out.push(fmt(n));
   }
@@ -59,15 +82,27 @@ type Base =
   | { kind: 'symbol'; expr: string };
 
 function parseBase(s: string): Base | null {
-  let m: RegExpExecArray | null;
-  if ((m = QUOTED_MODULE.exec(s))) return { kind: 'module', module: m[1]!, offset: m[2] ? BigInt('0x' + m[2]) : 0n };
-  if ((m = MODULE.exec(s))) return { kind: 'module', module: m[1]!, offset: m[2] ? BigInt('0x' + m[2]) : 0n };
-  const hex = hexValue(s);
-  if (hex !== null) return { kind: 'absolute', address: hex };
-  if ((m = SYMBOL.exec(s))) {
-    return { kind: 'symbol', expr: m[2] ? `${m[1]}${m[2]}${m[3]!.toLowerCase().replace(/^0+(?=.)/, '')}` : m[1]! };
+  const m = HEAD.exec(s.trim());
+  if (!m) return null;
+  const head = m[1]!;
+  const tail = m[2]!.trim();
+  const delta = tail === '' ? 0n : signedTail(tail);
+  if (delta === null) return null;
+  const quoted = head.startsWith('"');
+  if (quoted || /\.(?:exe|dll)$/i.test(head)) {
+    const module = quoted ? head.slice(1, -1) : head;
+    // CE's THREADSTACKn is a thread's stack, found at run time; not a module.
+    if (/^threadstack\d+$/i.test(module) || delta < 0n) return null;
+    return { kind: 'module', module, offset: delta };
   }
-  return null;
+  if (head.toLowerCase() === '$process') return delta < 0n ? null : { kind: 'module', module: '$process', offset: delta };
+  const hex = FACTOR.exec(head);
+  if (hex) {
+    const address = BigInt('0x' + hex[1]!) + delta;
+    return address < 0n ? null : { kind: 'absolute', address };
+  }
+  if (tail === '' || delta === 0n) return { kind: 'symbol', expr: head };
+  return { kind: 'symbol', expr: `${head}${delta < 0n ? '-' : '+'}${(delta < 0n ? -delta : delta).toString(16)}` };
 }
 
 /** `[inner]±hex` nesting -> innermost base plus offsets, innermost first. */
@@ -89,9 +124,9 @@ function parseNested(s: string): { base: Base; offsets: bigint[] } | null {
   const rest = t.slice(close + 1).trim();
   let off = 0n;
   if (rest !== '') {
-    const m = RELATIVE.exec(rest);
-    if (!m) return null;
-    off = BigInt('0x' + m[2]!) * (m[1] === '-' ? -1n : 1n);
+    const d = signedTail(rest);
+    if (d === null) return null;
+    off = d;
   }
   return { base: inner.base, offsets: [...inner.offsets, off] };
 }
@@ -149,10 +184,10 @@ export function parseCtAddress(
   const ctOffsets = ctOffsetsInApplyOrder(xmlOffsets ?? []);
   if (!ctOffsets) return null;
 
-  const rel = RELATIVE.exec(s);
-  if (rel) {
+  const rel = signedTail(s);
+  if (rel !== null) {
     if (!parent) return null;
-    const folded = fold(parent, BigInt('0x' + rel[2]!) * (rel[1] === '-' ? -1n : 1n));
+    const folded = fold(parent, rel);
     return folded && withOffsets(folded, ctOffsets);
   }
 
