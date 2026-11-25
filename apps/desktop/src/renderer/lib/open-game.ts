@@ -69,6 +69,9 @@ export async function openCatalogGame(entry: CatalogIndexEntry, navigate: Naviga
     await starting;
     return;
   }
+  // No table at all (a game only the player's own library has): the game page
+  // still has the table-free tools and "My cheats".
+  if (!entry.trainerPath) { await openToolsOnly(entry, navigate, undefined, launch); return; }
   // Legacy pre-built trainers (static JSON, starlightd engine).
   const trainer = await useCatalogStore.getState().trainer(entry);
   if (!trainer) return;

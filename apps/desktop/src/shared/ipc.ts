@@ -44,6 +44,7 @@ export const CHANNELS = {
   userCheatsSetValue:    'starlight:userCheats:setValue',
   userCheatsRemove:      'starlight:userCheats:remove',
   userCheatsDisableAll:  'starlight:userCheats:disableAll',
+  userCheatsGames:       'starlight:userCheats:games',
   // The agent (MCP) connection
   agentConnectInfo:  'starlight:agent:connectInfo',
   agentRotateToken:  'starlight:agent:rotateToken',
@@ -146,6 +147,18 @@ export interface UserCheatView {
   value?: number;
   /** null when not attached to a game */
   verify: { status: 'ok' | 'needs-update' | 'unverified'; reasons: string[] } | null;
+}
+
+/** A game with cheats in the player's own library (it may not be in the catalog). */
+export interface UserCheatGame {
+  /** The user-cheats key: the game page's cache key without `tools-`. */
+  key: string;
+  name: string;
+  steamAppId: number | null;
+  processName: string[];
+  proton: boolean;
+  /** How many cheats the player has for it. */
+  cheats: number;
 }
 
 export type SetActiveResult = { ok: true } | { ok: false; error: string; confirm?: 'close-ce' };
@@ -354,6 +367,8 @@ export interface StarlightApi {
   userCheatsSetValue(req: { key: string; pid: number; id: string; value: number }): Promise<IpcResult>;
   userCheatsRemove(req: { key: string; id: string }): Promise<IpcResult>;
   userCheatsDisableAll(req: { pid: number }): Promise<void>;
+  /** Games with at least one cheat in the player's library. */
+  userCheatsGames(): Promise<UserCheatGame[]>;
   // The agent (MCP) connection
   /** The URL, token and copy-paste setup for Claude Code and Codex. */
   agentConnectInfo(): Promise<AgentConnectInfo>;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { type CatalogGame, steamCoverUrl } from '../types/catalog-game.js';
 import { starlight } from '../ipc-client.js';
+import { isMyGameEntry } from '../../shared/my-games.js';
 
 interface Props {
   game: CatalogGame;
@@ -78,7 +79,7 @@ export function GameTile({ game, onClick }: Props): JSX.Element {
         </span>
       )}
       <span className="absolute top-2 right-2 z-10 rounded-full bg-shell/80 px-2 py-[3px] text-[10px] font-medium text-neon-cyan backdrop-blur">
-        Trainer
+        {isMyGameEntry(game) ? 'My cheats' : 'Trainer'}
       </span>
       {/* Always-visible title so tiles are identifiable regardless of the art. */}
       <div className="absolute inset-x-0 bottom-0 z-10 px-2.5 pt-8 pb-2 bg-gradient-to-t from-shell via-shell/80 to-transparent pointer-events-none">

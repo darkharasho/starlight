@@ -5,6 +5,7 @@ import { useDetectionStore } from './detection-store.js';
 import { useConfigStore } from './config-store.js';
 import { useCeSessionStore } from './ce-session-store.js';
 import { useUserCheatsStore } from './user-cheats-store.js';
+import { useMyGamesStore } from './my-games-store.js';
 import { useLibraryStore } from './library-store.js';
 import { sessionRequestFor, findCatalogEntry } from '../lib/open-game.js';
 
@@ -37,7 +38,10 @@ export function attachProcessEvents(): void {
     else if (e.type === 'ce:hotkey') useCeSessionStore.getState().applyHotkey(e);
     else if (e.type === 'session:game-exited') void useCeSessionStore.getState().gameExited(e.sessionId);
     else if (e.type === 'session:engine') useCeSessionStore.getState().setEngine(e.sessionId, e.engine, e.holders, e.mode);
-    else if (e.type === 'userCheats:changed') useUserCheatsStore.getState().changed(e.key);
+    else if (e.type === 'userCheats:changed') {
+      useUserCheatsStore.getState().changed(e.key);
+      void useMyGamesStore.getState().load();
+    }
     else if (e.type === 'library:scanned') useLibraryStore.setState({ games: e.games });
     else if (e.type === 'game:detected') {
       useDetectionStore.getState().setDetected({

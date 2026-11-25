@@ -6,7 +6,8 @@ import type { LatchState } from '../stores/latch-store.js';
 import { useDetectionStore } from '../stores/detection-store.js';
 import { useCeSessionStore } from '../stores/ce-session-store.js';
 import { useSearchStore } from '../stores/search-store.js';
-import { sessionRequestFor, findCatalogEntry, showGameScreen } from '../lib/open-game.js';
+import { sessionRequestFor, findCatalogEntry, showGameScreen, openCatalogGame } from '../lib/open-game.js';
+import { isMyGameEntry } from '../../shared/my-games.js';
 
 interface Props {
   latchState: LatchState;
@@ -31,6 +32,12 @@ export function TopBar({ latchState }: Props): JSX.Element {
   const handleLatch = useCallback(async () => {
     if (!detected) return;
     const entry = findCatalogEntry(detected.game);
+    if (entry && isMyGameEntry(entry)) {
+      // A game only the player's own cheats cover: its page has them.
+      useDetectionStore.getState().clear();
+      await openCatalogGame(entry, navigate);
+      return;
+    }
     if (!entry?.trainerSource) {
       // Catalog not loaded or no entry — clear the pill and bail gracefully
       useDetectionStore.getState().clear();

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   StarlightTrainerSchema,
@@ -30,6 +30,41 @@ async function readTrainer(dir: string, key: string): Promise<Loaded> {
     const parsed = StarlightTrainerSchema.safeParse(JSON.parse(text));
     return parsed.success ? { status: 'ok', trainer: parsed.data } : { status: 'bad', file };
   } catch { return { status: 'bad', file }; }
+}
+
+/** A game the player has their own cheats for: what Search, Browse and Library list. */
+export interface UserCheatGameSummary {
+  key: string;
+  name: string;
+  steamAppId: number | null;
+  processName: string[];
+  proton: boolean;
+  cheats: number;
+}
+
+/** Every game with at least one cheat in the player's library. Unreadable files are skipped. */
+export async function listUserCheatGames(dir: string): Promise<UserCheatGameSummary[]> {
+  let files: string[];
+  try { files = await readdir(dir); } catch { return []; }
+  const out: UserCheatGameSummary[] = [];
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    const key = f.slice(0, -'.json'.length);
+    if (!KEY.test(key)) continue;
+    const t = await loadUserTrainer(dir, key);
+    if (!t) continue;
+    const cheats = t.categories.reduce((n, c) => n + c.cheats.length, 0);
+    if (cheats === 0) continue;
+    out.push({
+      key,
+      name: t.game.name,
+      steamAppId: t.game.steamAppId ?? null,
+      processName: t.game.processName ?? [],
+      proton: (t.game.platform ?? []).includes('linux-proton'),
+      cheats,
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function loadUserTrainer(dir: string, key: string): Promise<StarlightTrainer | null> {

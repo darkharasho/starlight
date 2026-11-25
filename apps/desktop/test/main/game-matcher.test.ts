@@ -124,6 +124,11 @@ describe('buildCatalogIndex', () => {
     expect(idx.has('go')).toBe(false);
   });
 
+  it('indexes the player\'s own-cheats games too, so they are detected', () => {
+    const idx = buildCatalogIndex([{ id: 'mine-bambooronin', name: 'Bamboo Ronin', steamAppId: 123 }]);
+    expect(idx.get('bambooronin')?.id).toBe('mine-bambooronin');
+  });
+
   it('keeps the first entry on a normalized-name collision', () => {
     const idx = buildCatalogIndex([
       { id: 'first', name: 'Game X', steamAppId: null, trainerSource: 'http://x' },

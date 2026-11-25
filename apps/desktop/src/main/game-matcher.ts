@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { DetectedProcess, DetectedGame } from '../shared/ipc.js';
 import { detectProton } from './proton-detect.js';
 import { EXE_SUFFIX } from './proc-exe-name.js';
+import { isMyGameEntry } from '../shared/my-games.js';
 
 export function normalizeName(s: string): string {
   return s.toLowerCase().replace(/\.exe$/, '').replace(/[^a-z0-9]/g, '');
@@ -102,7 +103,8 @@ export async function identifyProcess(proc: DetectedProcess, deps: IdentifyDeps)
 export function buildCatalogIndex(entries: CatalogEntry[]): Map<string, CatalogEntry> {
   const idx = new Map<string, CatalogEntry>();
   for (const e of entries) {
-    if (!e.trainerSource) continue;
+    // Catalog games with a table, and games the player has their own cheats for.
+    if (!e.trainerSource && !isMyGameEntry(e)) continue;
     const key = normalizeName(e.name);
     if (key.length < 3) continue;
     if (!idx.has(key)) idx.set(key, e);

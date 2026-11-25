@@ -5,6 +5,7 @@ import { sep } from 'node:path';
 import { z } from 'zod';
 import type { DetectedGame, DetectedProcess } from '../../shared/ipc.js';
 import { catalogMatcher, installedSteamAppId, type MatchableEntry } from '../../shared/catalog-match.js';
+import { isMyGameEntry } from '../../shared/my-games.js';
 import type { AntiCheatHit } from '../anti-cheat.js';
 import type { GameIdentity } from '../game-identity.js';
 import { isNoiseProcess } from '../process-host.js';
@@ -112,8 +113,11 @@ export const INSTALLED_PAGE = 200;
 export interface ListInstalledGamesDeps {
   /** The games the library scan found (Steam, Epic, Heroic, Lutris and manual). */
   installedGames(): Promise<DetectedGame[]>;
-  /** The trainer catalog's entries, or null when it can't be loaded. */
-  catalog(): Promise<readonly MatchableEntry[] | null>;
+  /**
+   * The trainer catalog's entries plus the player's own-cheats games (ids starting
+   * "mine-"), or null when it can't be loaded.
+   */
+  catalog(): Promise<readonly (MatchableEntry & { id?: string })[] | null>;
 }
 
 export interface InstalledGame {
@@ -121,11 +125,13 @@ export interface InstalledGame {
   source: DetectedGame['source'];
   steamAppId: number | null;
   hasTrainer: boolean;
+  /** The trainer is cheats the player saved (with you or an earlier agent), not a catalog table. */
+  ownCheats: boolean;
 }
 
 const installedInput = {
   trainer: z.enum(['all', 'with', 'without']).optional()
-    .describe('"without" lists only games with no trainer in the catalog yet, "with" only games that have one; default all.'),
+    .describe('"without" lists only games with no trainer yet (no catalog table and no saved cheats), "with" only games that have one; default all.'),
   limit: z.number().int().min(1).max(INSTALLED_PAGE).optional().describe(`Games per page, 1–${INSTALLED_PAGE} (default ${INSTALLED_PAGE}).`),
   offset: z.number().int().min(0).optional().describe('Paging offset; default 0.'),
 };
@@ -135,7 +141,8 @@ export function listInstalledGamesTool(deps: ListInstalledGamesDeps): ToolDef<ty
     name: 'list_installed_games',
     title: 'List installed games',
     description:
-      "Lists the games installed on the player's computer and whether Starlight's catalog has a trainer for each. " +
+      "Lists the games installed on the player's computer and whether each has a trainer: a table in Starlight's catalog, " +
+      'or cheats the player saved (ownCheats). ' +
       'Use trainer: "without" to find games nobody has made cheats for yet. The games are not running; ' +
       'ask the player to start one, then use list_games and attach.',
     tier: 'open',
@@ -146,7 +153,10 @@ export function listInstalledGamesTool(deps: ListInstalledGamesDeps): ToolDef<ty
       if (!entries) throw new ToolError("Starlight's trainer catalog isn't loaded, so it can't tell which games have a trainer. Try again in a moment.");
       const match = catalogMatcher(entries);
       const all: InstalledGame[] = games
-        .map((g) => ({ name: g.name, source: g.source, steamAppId: installedSteamAppId(g), hasTrainer: !!match(g) }))
+        .map((g) => {
+          const e = match(g);
+          return { name: g.name, source: g.source, steamAppId: installedSteamAppId(g), hasTrainer: !!e, ownCheats: !!e && isMyGameEntry(e) };
+        })
         .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
       const filter = args.trainer ?? 'all';
       const picked = filter === 'all' ? all : all.filter((g) => g.hasTrainer === (filter === 'with'));

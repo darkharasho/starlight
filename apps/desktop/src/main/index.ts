@@ -10,7 +10,8 @@ import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } fr
 import { LatchDetector } from './latch-detector.js';
 import { fetchCatalog, fetchTrainer, getCachedIndex } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
-import type { FetchTrainerRequest } from '../shared/ipc.js';
+import type { FetchTrainerRequest, CatalogIndexEntry, UserCheatGame } from '../shared/ipc.js';
+import { withMyGames } from '../shared/my-games.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart, serveArt } from './boxart-host.js';
 import { ART_SCHEME } from './steam-art.js';
@@ -19,7 +20,7 @@ import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js
 import { routeTable, recordRoute } from './ct-runner.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd, engineOf } from './ce-session.js';
 import { createUserCheatsHost } from './user-cheats-host.js';
-import { userCheatsDir } from './user-cheats.js';
+import { listUserCheatGames, userCheatsDir } from './user-cheats.js';
 import { createGameOwner } from './game-owner.js';
 import { setGameOwner } from './game-owner-singleton.js';
 import { cleanCeError } from './ce-session.js';
@@ -55,6 +56,29 @@ guardStdio();
 
 let lastDetectedGames: import('../shared/ipc.js').DetectedGame[] = [];
 let catalogIndex = new Map<string, CatalogEntry>();
+/** The catalog's own games, before the player's are added. */
+let catalogGames: CatalogIndexEntry[] = [];
+/** Games the player (or the agent) saved cheats for. */
+let myGames: UserCheatGame[] = [];
+
+/**
+ * The meta catalog: the catalog plus every game the player has their own cheats
+ * for, so a game the agent made cheats for is found, detected and opened like
+ * any catalog game. Search, Browse, Library, detection and the agent all use it.
+ */
+function metaCatalog(): CatalogIndexEntry[] {
+  return withMyGames(catalogGames, myGames);
+}
+
+async function refreshMyGames(): Promise<UserCheatGame[]> {
+  myGames = await listUserCheatGames(userCheatsDir(app.getPath('userData'))).catch(() => myGames);
+  catalogIndex = buildCatalogIndex(metaCatalog() as CatalogEntry[]);
+  return myGames;
+}
+
+function userCheatsChanged(key: string): void {
+  void refreshMyGames().finally(() => broadcast({ type: 'userCheats:changed', key }));
+}
 
 function broadcast(e: import('../shared/ipc.js').StarlightEvent): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(CHANNELS.event, e);
@@ -77,7 +101,7 @@ const userCheatsHost = createUserCheatsHost({
   dir: userCheatsDir(app.getPath('userData')),
   getClient: getEngineClient,
   owner: gameOwner,
-  onChange: (key) => broadcast({ type: 'userCheats:changed', key }),
+  onChange: userCheatsChanged,
 });
 
 // --- The agent's MCP server (Claude Code / Codex) ---
@@ -150,7 +174,11 @@ const agentTools: ToolDef<any>[] = [
   listInstalledGamesTool({
     // A fresh scan (it takes well under a second), so games installed since launch show up.
     installedGames: async () => (lastDetectedGames = await scanLibrary()),
-    catalog: async () => (getCachedIndex() ?? await fetchCatalog()).games,
+    catalog: async () => {
+      if (!getCachedIndex()) catalogGames = (await fetchCatalog()).games;
+      await refreshMyGames();
+      return metaCatalog();
+    },
   }),
   attachTool(agentSession),
   detachTool(agentSession),
@@ -160,7 +188,7 @@ const agentTools: ToolDef<any>[] = [
   ...modifyTools(),
   ...libraryTools({
     dir: userCheatsDir(USER_DATA),
-    onSaved: (key) => broadcast({ type: 'userCheats:changed', key }),
+    onSaved: userCheatsChanged,
     catalogTrainerFor: async (game) => {
       const entry = game.catalogId ? (getCachedIndex()?.games ?? []).find((g) => g.id === game.catalogId) : undefined;
       if (!entry) return null;
@@ -411,8 +439,9 @@ app.whenReady().then(async () => {
       // A game running before the catalog loads is re-evaluated each poll (LatchDetector.reported
       // only records matched pids), so it will be detected once the index populates — don't
       // "optimize" the re-evaluation away.
-      catalogIndex = buildCatalogIndex((index?.games ?? []) as CatalogEntry[]);
-      return { ok: true as const, index };
+      catalogGames = index?.games ?? [];
+      await refreshMyGames();
+      return { ok: true as const, index: { ...index, games: metaCatalog() } };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
@@ -622,6 +651,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.userCheatsSetValue, (_evt, req: Parameters<typeof userCheatsHost.setValue>[0]) => userCheatsHost.setValue(req));
   ipcMain.handle(CHANNELS.userCheatsRemove, (_evt, req: { key: string; id: string }) => userCheatsHost.remove(req.key, req.id));
   ipcMain.handle(CHANNELS.userCheatsDisableAll, (_evt, req: { pid: number }) => userCheatsHost.disableAll(req.pid));
+  ipcMain.handle(CHANNELS.userCheatsGames, () => refreshMyGames());
 
   ipcMain.handle(CHANNELS.agentConnectInfo, () => agentConnectInfo());
   ipcMain.handle(CHANNELS.agentRotateToken, async () => {

@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadUserTrainer, saveUserCheat, removeUserCheat, userCheatsDir } from '../../src/main/user-cheats.js';
+import { listUserCheatGames, loadUserTrainer, saveUserCheat, removeUserCheat, userCheatsDir } from '../../src/main/user-cheats.js';
 
 const game = { name: '9 Kings', exeName: '9Kings.exe', proton: true, steamAppId: 2162800 };
 const gold = {
@@ -90,5 +90,20 @@ describe('user cheats', () => {
     const bad = { ...gold, valueType: 'bogus' } as never;
     await expect(saveUserCheat(dir, '9kings', game, bad)).rejects.toThrow(/isn't valid/);
     expect(await loadUserTrainer(dir, '9kings')).toBeNull();
+  });
+
+  it('listUserCheatGames lists games with cheats, skipping empty and unreadable files', async () => {
+    expect(await listUserCheatGames(join(dir, 'missing'))).toEqual([]);
+    await saveUserCheat(dir, '9kings', game, gold);
+    await saveUserCheat(dir, '9kings', game, { ...gold, name: 'Other' });
+    const { id } = await saveUserCheat(dir, 'emptied', { ...game, name: 'Emptied' }, gold);
+    await removeUserCheat(dir, 'emptied', id);
+    await saveUserCheat(dir, 'native', { name: 'Native', exeName: 'native', proton: false, steamAppId: null }, gold);
+    await writeFile(join(dir, 'broken.json'), '{', 'utf8');
+    await writeFile(join(dir, 'notes.txt'), 'x', 'utf8');
+    expect(await listUserCheatGames(dir)).toEqual([
+      { key: '9kings', name: '9 Kings', steamAppId: 2162800, processName: ['9Kings.exe'], proton: true, cheats: 2 },
+      { key: 'native', name: 'Native', steamAppId: null, processName: ['native'], proton: false, cheats: 1 },
+    ]);
   });
 });

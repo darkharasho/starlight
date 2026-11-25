@@ -10,6 +10,8 @@ import type { DetectedGame } from '../../shared/ipc.js';
 import { AddManualGameDialog } from '../components/AddManualGameDialog.js';
 import { starlight } from '../ipc-client.js';
 import { steamCoverUrl } from '../types/catalog-game.js';
+import { useMyGamesStore } from '../stores/my-games-store.js';
+import { myGameMatcher } from '../../shared/my-games.js';
 
 function boxartUrl(g: DetectedGame): string | null {
   const id = g.boxartSteamAppId ?? (g.source === 'steam' ? Number(g.appId) : null);
@@ -18,11 +20,13 @@ function boxartUrl(g: DetectedGame): string | null {
 }
 
 function GameTile({
-  game, running, hasTrainer, onClick, onRemove,
+  game, running, hasTrainer, hasMine = false, onClick, onRemove,
 }: {
   game: DetectedGame;
   running: boolean;
   hasTrainer: boolean;
+  /** The player has their own cheats for it. */
+  hasMine?: boolean;
   onClick?: () => void;
   onRemove?: () => void;
 }): JSX.Element {
@@ -124,8 +128,11 @@ function GameTile({
         {running && (
           <span className="text-[9px] tracking-wider uppercase text-neon-cyan border border-neon-cyan/40 rounded-sm px-1.5 py-[1px]">Running</span>
         )}
-        {hasTrainer && (
+        {hasTrainer && !hasMine && (
           <span className="text-[9px] tracking-wider uppercase text-neon-cyan border border-neon-cyan/40 rounded-sm px-1.5 py-[1px]">Trainer</span>
+        )}
+        {hasMine && (
+          <span className="text-[9px] tracking-wider uppercase text-neon-cyan border border-neon-cyan/40 rounded-sm px-1.5 py-[1px]">My cheats</span>
         )}
       </div>
       <div className="text-[10px] text-muted truncate">{game.installDir}</div>
@@ -161,17 +168,30 @@ export function LibraryRoute(): JSX.Element {
   useEffect(() => { if (!catalogIndex) void loadCatalog(); }, [catalogIndex, loadCatalog]);
 
   const findCatalogEntry = useMemo(() => catalogMatcher(catalogIndex?.games ?? []), [catalogIndex]);
+  const mine = useMyGamesStore((s) => s.games);
+  const loadMine = useMyGamesStore((s) => s.load);
+  useEffect(() => { void loadMine(); }, [loadMine]);
+  const findMine = useMemo(() => myGameMatcher(mine), [mine]);
+  const steamIdOf = (g: DetectedGame): number | null => {
+    const id = g.source === 'steam' ? Number(g.appId) : (g.boxartSteamAppId ?? null);
+    return id == null || Number.isNaN(id) ? null : id;
+  };
 
   async function openTrainerForGame(g: DetectedGame): Promise<void> {
     const entry = findCatalogEntry(g);
     const launch = { source: g.source, appId: g.appId };
     if (entry) { await openCatalogGame(entry, navigate, launch); return; }
     // No table in the catalog: the table-free tools still work on it.
-    const steamAppId = g.source === 'steam' ? Number(g.appId) : (g.boxartSteamAppId ?? null);
-    await openToolsOnly({ name: g.name, steamAppId: Number.isNaN(steamAppId as number) ? null : steamAppId }, navigate, undefined, launch);
+    // The page's "My cheats" is keyed by the name the cheats were saved under.
+    const steamAppId = steamIdOf(g);
+    const mineGame = findMine({ name: g.name, steamAppId });
+    await openToolsOnly({ name: mineGame?.name ?? g.name, steamAppId }, navigate, undefined, launch);
   }
 
-  const withTrainer = games.map((g) => ({ game: g, hasTrainer: !!findCatalogEntry(g) }));
+  const withTrainer = games.map((g) => {
+    const hasMine = !!findMine({ name: g.name, steamAppId: steamIdOf(g) });
+    return { game: g, hasMine, hasTrainer: hasMine || !!findCatalogEntry(g) };
+  });
   const counts: Record<TrainerFilter, number> = {
     all: withTrainer.length,
     trainer: withTrainer.filter((x) => x.hasTrainer).length,
@@ -251,7 +271,7 @@ export function LibraryRoute(): JSX.Element {
 
       {shown.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 overflow-y-auto">
-          {shown.map(({ game: g, hasTrainer }) => {
+          {shown.map(({ game: g, hasTrainer, hasMine }) => {
             const dirName = (g.installDir.split(/[\\/]/).pop() ?? '').toLowerCase();
             return (
               <GameTile
@@ -259,6 +279,7 @@ export function LibraryRoute(): JSX.Element {
                 game={g}
                 running={runningSet.has(dirName)}
                 hasTrainer={hasTrainer}
+                hasMine={hasMine}
                 onClick={() => void openTrainerForGame(g)}
                 {...(g.source === 'manual' ? { onRemove: () => void removeManual(g.appId) } : {})}
               />

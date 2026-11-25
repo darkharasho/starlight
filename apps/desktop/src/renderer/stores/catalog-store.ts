@@ -3,6 +3,8 @@ import { starlight } from '../ipc-client.js';
 import type { CatalogIndex, FetchTrainerRequest } from '../../shared/ipc.js';
 import type { CatalogIndexEntry, StarlightTrainer } from '@starlight/catalog/schema';
 import { dedupeGamesWithSources } from '../lib/dedupe-games.js';
+import { isMyGameEntry, withMyGames } from '../../shared/my-games.js';
+import type { UserCheatGame } from '../../shared/ipc.js';
 
 interface CatalogState {
   index: CatalogIndex | null;
@@ -19,6 +21,8 @@ interface CatalogState {
   /** Last trainer-fetch error, cleared on the next attempt. */
   trainerError: string | null;
   load: () => Promise<void>;
+  /** Replaces the player's own games in the index (the main process adds them on load). */
+  mergeMine: (mine: UserCheatGame[]) => void;
   /**
    * Fetch the trainer JSON for a catalog entry. Routes to a static CDN
    * lookup when `trainerPath` is set, or to a live fearlessrevolution fetch
@@ -65,6 +69,9 @@ export const useCatalogStore = create<CatalogState>((set) => ({
       set({ loading: false, error: err instanceof Error ? err.message : String(err) });
     }
   },
+  mergeMine: (mine) => set((s) => (s.index
+    ? { index: { ...s.index, games: withMyGames(s.index.games.filter((g) => !isMyGameEntry(g)), mine) } }
+    : {})),
   trainer: async (entry) => {
     const cached = trainerCache.get(entry.id);
     if (cached) return cached;

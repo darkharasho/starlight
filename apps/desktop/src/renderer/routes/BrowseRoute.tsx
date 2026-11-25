@@ -7,7 +7,9 @@ import { useLibraryStore } from '../stores/library-store.js';
 import { openCatalogGame } from '../lib/open-game.js';
 import { installedGameKeys, isInstalled } from '../lib/installed.js';
 import type { CatalogGame } from '../types/catalog-game.js';
+import type { CatalogIndexEntry } from '../../shared/ipc.js';
 import { steamMatchedOnly } from '../lib/dedupe-games.js';
+import { isMyGameEntry } from '../../shared/my-games.js';
 
 export function BrowseRoute(): JSX.Element {
   const navigate = useNavigate();
@@ -22,12 +24,13 @@ export function BrowseRoute(): JSX.Element {
   const installedKeys = installedGameKeys(detectedGames);
 
   const [showUnmatched, setShowUnmatched] = useState(false);
-  const all: CatalogGame[] = (index?.games ?? []).map(entry => ({
-    ...entry,
-    installed: isInstalled(installedKeys, entry),
-  }));
+  const toGame = (entry: CatalogIndexEntry): CatalogGame => ({ ...entry, installed: isInstalled(installedKeys, entry) });
+  const entries = index?.games ?? [];
+  const all: CatalogGame[] = entries.filter((e) => !isMyGameEntry(e)).map(toGame);
+  // Games only the player's own cheats have always show, first.
+  const myOnly: CatalogGame[] = entries.filter(isMyGameEntry).map(toGame);
   const matched = steamMatchedOnly(all);
-  const games = showUnmatched ? all : matched.games;
+  const games = [...myOnly, ...(showUnmatched ? all : matched.games)];
 
   async function onSelect(g: CatalogGame): Promise<void> {
     await openCatalogGame(g, navigate);

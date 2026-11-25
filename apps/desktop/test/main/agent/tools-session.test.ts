@@ -184,10 +184,10 @@ describe('list_installed_games', () => {
     expect(r).toEqual({
       total: 4, installed: 4, withTrainer: 3,
       games: [
-        { name: 'Apple Farm: Deluxe', source: 'heroic', steamAppId: null, hasTrainer: true },
-        { name: 'Hand Added', source: 'manual', steamAppId: 777, hasTrainer: true },
-        { name: 'Team Fortress 2', source: 'steam', steamAppId: 440, hasTrainer: true },
-        { name: 'Zebra Quest', source: 'steam', steamAppId: 999, hasTrainer: false },
+        { name: 'Apple Farm: Deluxe', source: 'heroic', steamAppId: null, hasTrainer: true, ownCheats: false },
+        { name: 'Hand Added', source: 'manual', steamAppId: 777, hasTrainer: true, ownCheats: false },
+        { name: 'Team Fortress 2', source: 'steam', steamAppId: 440, hasTrainer: true, ownCheats: false },
+        { name: 'Zebra Quest', source: 'steam', steamAppId: 999, hasTrainer: false, ownCheats: false },
       ],
     });
   });
@@ -209,6 +209,16 @@ describe('list_installed_games', () => {
   it('refuses when the catalog can\'t be loaded instead of calling every game trainer-less', async () => {
     await expect(tool({ catalog: async () => { throw new Error('offline'); } }).run({}, ctx)).rejects.toThrow(/catalog isn't loaded/);
     await expect(tool({ catalog: async () => null }).run({}, ctx)).rejects.toThrow(/catalog isn't loaded/);
+  });
+
+  it('counts games the player saved cheats for as having a trainer', async () => {
+    const r = await tool({ catalog: async () => [...catalog, { id: 'mine-zebraquest', name: 'Zebra Quest', steamAppId: 999 }] })
+      .run({ trainer: 'without' }, ctx) as { total: number };
+    expect(r.total).toBe(0);
+    const all = await tool({ catalog: async () => [...catalog, { id: 'mine-zebraquest', name: 'Zebra Quest', steamAppId: 999 }] })
+      .run({}, ctx) as { games: Array<{ name: string; ownCheats: boolean }> };
+    expect(all.games.find((g) => g.name === 'Zebra Quest')?.ownCheats).toBe(true);
+    expect(all.games.find((g) => g.name === 'Team Fortress 2')?.ownCheats).toBe(false);
   });
 
   it('summarizes with the filter', async () => {
