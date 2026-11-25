@@ -26,6 +26,8 @@ export { parseCt, listCtRecords, type CtRecord } from './xml-parser.js';
 export { AgentCheatDraftSchema, validateAgentCheat, type AgentCheatDraft } from './agent-cheat.js';
 export { REASON_CODES, reasonCopy, type ReasonCode } from './reasons.js';
 export { compileAaScript, type AaResult } from './aa-compiler.js';
+export { scanLua, type LuaScan } from './lua-scan.js';
+export { isCosmeticLua, stripLua } from './lua-cosmetic.js';
 export { parseCtAddress, ctOffsetsInApplyOrder } from './ct-address.js';
 export { vkKeysToAccelerator } from './hotkey-parser.js';
 export {

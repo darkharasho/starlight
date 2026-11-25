@@ -1,0 +1,14 @@
+{
+  "real": [
+    "openprocess", "getopenedprocessid", "targetis64bit", "getceversion",
+    "readbytes", "readsmallinteger", "readinteger", "readqword", "readpointer", "readfloat", "readdouble", "readstring",
+    "writebytes", "writesmallinteger", "writeinteger", "writeqword", "writepointer", "writefloat", "writedouble", "writestring",
+    "getaddress", "getaddresssafe", "registersymbol", "unregistersymbol", "getnamefromaddress",
+    "aobscan", "aobscanmodule", "sleep", "gettickcount",
+    "showmessage", "messagedialog", "shellexecute"
+  ],
+  "inert": [
+    "getmainform", "getaddresslist", "getautoattachlist", "createmenuitem", "createform", "createlabel",
+    "createstringlist", "stringlist_add", "launchmonodatacollector", "mono_initialize", "waitforpdb", "synchronize", "beep"
+  ]
+}

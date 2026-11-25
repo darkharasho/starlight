@@ -1,6 +1,6 @@
 /** Why a table (or part of one) needs Cheat Engine instead of the native runner. */
 export const REASON_CODES = [
-  'lua:table-script', 'lua:script', 'lua:block',
+  'lua:table-script', 'lua:script', 'lua:block', 'lua:unsupported', 'lua:runtime',
   'aa:no-enable', 'aa:createthread', 'aa:loadlibrary', 'aa:readmem', 'aa:struct', 'aa:aobscanregion',
   'aa:assert', 'aa:fullaccess', 'aa:include', 'aa:luacall', 'aa:reassemble', 'aa:loadbinary', 'aa:try',
   'aa:c-code', 'aa:directive', 'aa:unknown-command', 'aa:alloc-size', 'aa:name', 'aa:disable-write',
@@ -17,6 +17,8 @@ const COPY: Record<string, string> = {
   'lua:table-script': 'This table runs Lua code when it loads.',
   'lua:script': 'A cheat in this table is a Lua script.',
   'lua:block': 'A script in this table runs Lua code.',
+  'lua:unsupported': "A Lua script in this table uses something Starlight can't run yet.",
+  'lua:runtime': "This table's Lua failed on Starlight's engine, so it runs in Cheat Engine.",
   'aa:no-enable': 'A script has no enable section to run.',
   'aa:createthread': 'A script starts its own thread in the game.',
   'aa:loadlibrary': 'A script loads an extra library into the game.',

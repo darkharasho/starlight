@@ -29,7 +29,8 @@ const CE_WINDOW = new Set([
   'getmainform', 'splitter1', 'panel4', 'panel5', 'menu', 'items', 'createmenuitem', 'add',
 ]);
 
-function stripLua(src: string): string {
+/** `src` without comments, with every string literal replaced by `""` and [ENABLE]/[DISABLE] markers removed. */
+export function stripLua(src: string): string {
   return src
     .replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, ' ')
     .replace(/--[^\n]*/g, ' ')
