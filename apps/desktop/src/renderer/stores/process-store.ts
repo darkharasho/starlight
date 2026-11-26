@@ -7,7 +7,7 @@ import { useCeSessionStore } from './ce-session-store.js';
 import { useCommunityCheatsStore, useUserCheatsStore } from './user-cheats-store.js';
 import { useMyGamesStore } from './my-games-store.js';
 import { useLibraryStore } from './library-store.js';
-import { sessionRequestFor, findCatalogEntry } from '../lib/open-game.js';
+import { attachRequestFor, findCatalogEntry } from '../lib/open-game.js';
 
 interface ProcessState {
   processes: DetectedProcess[];
@@ -62,9 +62,10 @@ export function attachProcessEvents(): void {
         !useCeSessionStore.getState().attached
       ) {
         const entry = findCatalogEntry(e.game);
-        if (entry?.trainerSource) {
+        const req = entry ? attachRequestFor(entry, { pid: e.pid, processName: e.name }) : null;
+        if (req) {
           void useCeSessionStore.getState()
-            .start(sessionRequestFor(entry, { pid: e.pid, processName: e.name }))
+            .start(req)
             .then((ok) => { if (ok) useDetectionStore.getState().clear(); }).catch(() => {});
         }
       }

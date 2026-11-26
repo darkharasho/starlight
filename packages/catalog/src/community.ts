@@ -21,6 +21,9 @@ const CommunityCheatMeta = z.object({
   buildId: z.string().optional(),
   submittedAt: z.string(),
   credit: z.string().optional(),
+  /** A repair: the community cheat it is based on, and that cheat's credit. */
+  derivedFrom: z.string().optional(),
+  derivedCredit: z.string().optional(),
 });
 
 export const CommunityIndexSchema = z.object({
@@ -64,6 +67,8 @@ export async function buildCommunity(
       ...(f.game.buildId ? { buildId: f.game.buildId } : {}),
       submittedAt: f.submittedAt,
       ...(f.credit ? { credit: f.credit } : {}),
+      ...(f.derivedFrom ? { derivedFrom: f.derivedFrom } : {}),
+      ...(f.derivedCredit ? { derivedCredit: f.derivedCredit } : {}),
     });
   }
 

@@ -35,6 +35,7 @@ export function CommunitySection({ steamAppId, userKey, pid, attached, exeName }
                   tag={(
                     <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
                       <span>{`by ${c?.credit ?? 'Anonymous'}`}</span>
+                      {c?.basedOn && <span>{`based on a cheat by ${c.basedOn.credit ?? 'Anonymous'}`}</span>}
                       {c?.buildId && <span>{`made on build ${c.buildId}`}</span>}
                     </span>
                   )}

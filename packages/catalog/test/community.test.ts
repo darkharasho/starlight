@@ -50,6 +50,12 @@ describe('buildCommunity', () => {
     expect(r.catalog.games).toHaveLength(3);
   });
 
+  it('a repair keeps the original credit in the index', async () => {
+    const a = await entry(file(1234, 'Gold', { credit: 'Bob', derivedFrom: 'abcdef012345', derivedCredit: 'Alice' }));
+    const r = await buildCommunity([a], CATALOG, NOW);
+    expect(r.index.games[0]!.cheats[0]).toMatchObject({ credit: 'Bob', derivedFrom: 'abcdef012345', derivedCredit: 'Alice' });
+  });
+
   it('platforms of a new game cover all its cheats', async () => {
     const a = await entry(file(7, 'A'));
     const b = await entry(file(7, 'B', { game: { steamAppId: 7, name: 'N', platform: 'linux', bits: 64 } }));

@@ -13,22 +13,35 @@ export function sharePlatformOf(p: string): SharePlatform {
 
 export const MAX_SHARE_BYTES = 65536;
 
+/** Line breaks, control characters and text-direction overrides: never allowed in a name shown to the reviewer. */
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+const safeText = (s: string) => !UNSAFE_TEXT.test(s);
+const NO_BREAKS = 'no line breaks or control characters';
+const Credit = z.string().min(1).max(40).refine((s) => s === s.trim(), 'no spaces at the ends').refine(safeText, NO_BREAKS);
+
 export const CommunityCheatFileSchema = z.object({
   schemaVersion: z.literal(1),
   cheat: AgentCheatDraftSchema,
   game: z.object({
     steamAppId: z.number().int().positive(),
-    name: z.string().min(1).max(120),
+    name: z.string().min(1).max(120).refine(safeText, NO_BREAKS),
     platform: z.enum(['linux', 'windows']),
     bits: z.union([z.literal(32), z.literal(64)]),
     buildId: z.string().max(40).optional(),
     exeHash: z.string().max(128).optional(),
   }).strict(),
-  agent: z.string().max(80).optional(),
-  credit: z.string().min(1).max(40).refine((s) => s === s.trim(), 'credit: no spaces at the ends').optional(),
+  agent: z.string().max(80).refine(safeText, NO_BREAKS).optional(),
+  credit: Credit.optional(),
   derivedFrom: z.string().regex(/^[0-9a-f]{12}$/).optional(),
+  /** The credit of the community cheat this one repairs. */
+  derivedCredit: Credit.optional(),
   submittedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-}).strict();
+}).strict().superRefine((f, ctx) => {
+  if (!safeText(f.cheat.name)) ctx.addIssue({ code: 'custom', path: ['cheat', 'name'], message: NO_BREAKS });
+  if (f.derivedCredit !== undefined && f.derivedFrom === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['derivedCredit'], message: 'only with derivedFrom' });
+  }
+});
 
 export type CommunityCheatFile = Omit<z.infer<typeof CommunityCheatFileSchema>, 'cheat'> & { cheat: AgentCheatDraft };
 
@@ -129,15 +142,32 @@ export function shareFlags(file: CommunityCheatFile): string[] {
   return flags;
 }
 
+/** Free text as an inline code span: GitHub renders no HTML, links or @mentions inside one. */
+function code(text: unknown): string {
+  const t = String(text).replace(/[\r\n]+/g, ' ');
+  const longest = Math.max(0, ...(t.match(/`+/g) ?? []).map((r) => r.length));
+  const tick = '`'.repeat(longest + 1);
+  const pad = t.startsWith('`') || t.endsWith('`') || /^ .* $/.test(t) ? ' ' : '';
+  return `${tick}${pad}${t}${pad}${tick}`;
+}
+
+/** A fence longer than any backtick run in the source, so the source can't close it. */
+function fenceFor(source: string): string {
+  const longest = Math.max(0, ...(source.match(/`+/g) ?? []).map((r) => r.length));
+  return '`'.repeat(Math.max(3, longest + 1));
+}
+
+const REPO_FILES = 'https://github.com/darkharasho/starlight/blob/main/packages/catalog/community';
+
 const platformName = (p: SharePlatform) => (p === 'windows' ? 'Windows (Proton)' : 'Linux (native)');
 
 function addressText(cheat: Exclude<AgentCheatDraft, { type: 'patch' }>): string {
   const a = cheat.address;
   switch (a.kind) {
-    case 'pointer': return [`${a.module ?? '?'}+${a.baseOffset}`, ...a.offsets].join(' → ');
-    case 'module': return `${a.module}+${a.offset}`;
-    case 'aob': return `AOB ${a.pattern} in ${a.module}${a.offset ? ` + ${a.offset}` : ''}`;
-    default: return JSON.stringify(a);
+    case 'pointer': return code([`${a.module ?? '?'}+${a.baseOffset}`, ...a.offsets].join(' → '));
+    case 'module': return code(`${a.module}+${a.offset}`);
+    case 'aob': return `AOB ${code(a.pattern)} in ${code(a.module)}${a.offset ? ` + ${code(a.offset)}` : ''}`;
+    default: return code(JSON.stringify(a));
   }
 }
 
@@ -145,28 +175,34 @@ export function shareSummary(file: CommunityCheatFile, flags: string[]): string 
   const g = file.game;
   const c = file.cheat;
   const out: string[] = [];
-  out.push(`## ${c.name}`, '');
-  out.push(`- **Game:** ${g.name} (Steam app ${g.steamAppId}), ${platformName(g.platform)}, ${g.bits}-bit, ${g.buildId ? `build ${g.buildId}` : 'unknown build'}${g.exeHash ? `, exe ${g.exeHash}` : ''}`);
+  out.push(`## ${code(c.name)}`, '');
+  out.push(`- **Game:** ${code(g.name)} (Steam app ${g.steamAppId}), ${platformName(g.platform)}, ${g.bits}-bit, ${g.buildId ? `build ${code(g.buildId)}` : 'unknown build'}${g.exeHash ? `, exe ${code(g.exeHash)}` : ''}`);
   out.push(`- **Type:** ${c.type}`);
-  out.push(`- **Made by:** ${file.agent ?? 'unknown agent'}; credit: ${file.credit ?? 'Anonymous'}`);
-  if (file.derivedFrom) out.push(`- **Based on:** community cheat ${file.derivedFrom}`);
+  out.push(`- **Made by:** ${file.agent ? code(file.agent) : 'unknown agent'}; credit: ${file.credit ? code(file.credit) : 'Anonymous'}`);
+  if (file.derivedFrom) {
+    out.push(`- **Based on:** [community cheat ${file.derivedFrom}](${REPO_FILES}/${g.steamAppId}/${file.derivedFrom}.json), credit: ${file.derivedCredit ? code(file.derivedCredit) : 'Anonymous'}`);
+  }
   out.push('');
   if (c.type === 'patch') {
-    if (c.site) out.push(`**Site:** AOB \`${c.site.pattern}\` in ${c.site.module}${c.site.offset ? ` + ${c.site.offset}` : ''}`, '');
+    if (c.site) out.push(`**Site:** AOB ${code(c.site.pattern)} in ${code(c.site.module)}${c.site.offset ? ` + ${code(c.site.offset)}` : ''}`, '');
     out.push('**Steps:**', '');
     c.enable.forEach((s, i) => {
       const n = `${i + 1}.`;
       switch (s.op) {
-        case 'alloc': out.push(`${n} alloc \`${s.name}\`, ${s.size} bytes${s.near ? `, near ${s.near}` : ''}`); break;
-        case 'writeBytes': out.push(`${n} writeBytes at \`${s.at}\`: ${s.original ?? '(original unknown)'} → ${s.bytes}`); break;
-        case 'registerSymbol': out.push(`${n} registerSymbol \`${s.name}\` = \`${s.at}\``); break;
-        case 'assemble': out.push(`${n} assemble at \`${s.at}\`:`, '', '```asm', ...s.source.split('\n').map((l) => l.trimEnd()), '```', ''); break;
-        default: out.push(`${n} ${s.op} ${JSON.stringify(s)}`);
+        case 'alloc': out.push(`${n} alloc ${code(s.name)}, ${s.size} bytes${s.near ? `, near ${code(s.near)}` : ''}`); break;
+        case 'writeBytes': out.push(`${n} writeBytes at ${code(s.at)}: ${s.original ? code(s.original) : '(original unknown)'} → ${code(s.bytes)}`); break;
+        case 'registerSymbol': out.push(`${n} registerSymbol ${code(s.name)} = ${code(s.at)}`); break;
+        case 'assemble': {
+          const fence = fenceFor(s.source);
+          out.push(`${n} assemble at ${code(s.at)}:`, '', `${fence}asm`, ...s.source.split('\n').map((l) => l.trimEnd()), fence, '');
+          break;
+        }
+        default: out.push(`${n} ${s.op} ${code(JSON.stringify(s))}`);
       }
     });
   } else {
     out.push(`**Address:** ${addressText(c)}`);
-    out.push(`**Value:** ${c.valueType}${c.value !== undefined ? ` = ${c.value}` : ''}`);
+    out.push(`**Value:** ${c.valueType}${c.value !== undefined ? ` = ${code(c.value)}` : ''}`);
     const r = c.verify?.range;
     if (r) out.push(`**Check:** range ${r.min}–${r.max}`);
   }

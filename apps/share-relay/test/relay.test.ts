@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { shareHash, shareSummary, shareFlags, type CommunityCheatFile } from '@starlight/ct-importer/share';
 import { handle, type Env } from '../src/index.js';
+import { RateLimiter } from '../src/limiter.js';
 
 let PEM = '';
 beforeAll(async () => {
@@ -17,6 +18,26 @@ class FakeKV {
   m = new Map<string, string>();
   async get(k: string): Promise<string | null> { return this.m.get(k) ?? null; }
   async put(k: string, v: string): Promise<void> { this.m.set(k, v); }
+}
+
+/** A Durable Object namespace with one real RateLimiter on in-memory storage. */
+function fakeLimiterNamespace() {
+  const store = new Map<string, unknown>();
+  const storage = {
+    async get(k: string) { return store.get(k); },
+    async put(k: string, v: unknown) { store.set(k, structuredClone(v)); },
+    async delete(k: string) { return store.delete(k); },
+    async list(o: { prefix?: string } = {}) { return new Map([...store].filter(([k]) => k.startsWith(o.prefix ?? ''))); },
+  };
+  let chain = Promise.resolve();
+  const state = {
+    storage,
+    // Like the runtime's input gate: one request's storage work at a time.
+    blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T> { const r = chain.then(fn); chain = r.then(() => undefined, () => undefined); return r; },
+  };
+  const obj = new RateLimiter(state as never);
+  const stub = { fetch: (input: string, init?: RequestInit) => obj.fetch(new Request(input, init)) };
+  return { idFromName: (n: string) => n, get: () => stub, store } as unknown as DurableObjectNamespace & { store: Map<string, unknown> };
 }
 
 interface Call { method: string; path: string; body: any } // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -79,7 +100,7 @@ function setup() {
   const kv = new FakeKV();
   const gh = fakeGitHub();
   const env = {
-    SHARE_KV: kv as unknown as KVNamespace, GITHUB_APP_ID: '42', GITHUB_INSTALLATION_ID: '99', GITHUB_APP_KEY: PEM,
+    SHARE_KV: kv as unknown as KVNamespace, LIMITER: fakeLimiterNamespace(), GITHUB_APP_ID: '42', GITHUB_INSTALLATION_ID: '99', GITHUB_APP_KEY: PEM,
     GITHUB_OWNER: 'o', GITHUB_REPO: 'r',
   } as Env;
   let installId = 'install-1';
@@ -161,6 +182,36 @@ describe('share relay', () => {
     expect((await s.submit(file({ cheat: { ...file().cheat, name: 'One more' } as never }))).status).toBe(429);
     s.setIp('203.0.113.2');
     expect((await s.submit(file({ cheat: { ...file().cheat, name: 'Other ip' } as never }))).status).toBe(200);
+  });
+
+  it('a burst of submissions cannot get past the limit', async () => {
+    const s = setup();
+    const all = await Promise.all(Array.from({ length: 30 }, (_, i) => s.submit(file({ cheat: { ...file().cheat, name: `Burst ${i}` } as never }))));
+    expect(all.filter((r) => r.status === 200)).toHaveLength(5);
+    expect(all.filter((r) => r.status === 429)).toHaveLength(25);
+    expect(s.gh.calls.filter((c) => c.method === 'POST' && c.path === '/repos/o/r/pulls')).toHaveLength(5);
+  });
+
+  it('IPv6 addresses in one /64 share a limit', async () => {
+    const s = setup();
+    for (let i = 1; i <= 20; i++) {
+      s.setInstall(`v6-install-${i}`); s.setIp(`2001:db8:1:2::${i.toString(16)}`);
+      expect((await s.submit(file({ cheat: { ...file().cheat, name: `V6 ${i}` } as never }))).status).toBe(200);
+    }
+    s.setInstall('v6-install-next'); s.setIp('2001:0db8:0001:0002:ffff::9');
+    expect((await s.submit(file({ cheat: { ...file().cheat, name: 'V6 next' } as never }))).status).toBe(429);
+    s.setIp('2001:db8:1:3::1');
+    expect((await s.submit(file({ cheat: { ...file().cheat, name: 'Other /64' } as never }))).status).toBe(200);
+  });
+
+  it('there is a daily cap across everyone', async () => {
+    const s = setup();
+    for (let i = 0; i < 100; i++) {
+      s.setInstall(`everyone-${i}`); s.setIp(`198.51.100.${i}`);
+      expect((await s.submit(file({ cheat: { ...file().cheat, name: `All ${i}` } as never }))).status).toBe(200);
+    }
+    s.setInstall('one-more-install'); s.setIp('192.0.2.1');
+    expect((await s.submit(file({ cheat: { ...file().cheat, name: 'All 100' } as never }))).status).toBe(429);
   });
 
   it('duplicate_returns_existing', async () => {

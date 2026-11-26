@@ -53,6 +53,12 @@ describe('share host', () => {
     expect(p.already).toBeNull();
   });
 
+  it('a repair carries the original credit', async () => {
+    const s = await setup({ draft: value({ derivedFrom: 'abcdef012345', derivedCredit: 'Alice' }) });
+    const p = await s.host.preview({ key: 'testgame', id: s.id, pid: null });
+    expect(p.ok && JSON.parse(p.json)).toMatchObject({ derivedFrom: 'abcdef012345', derivedCredit: 'Alice' });
+  });
+
   it('ct_import_cheats_are_not_shareable', async () => {
     const s = await setup({ draft: value({ kind: 'ct-import' }) });
     const p = await s.host.preview({ key: 'testgame', id: s.id, pid: null });
@@ -67,6 +73,21 @@ describe('share host', () => {
     const live = await s.host.preview({ key: 'testgame', id: s.id, pid: 42 });
     expect(live.ok).toBe(true);
     if (live.ok) expect((JSON.parse(live.json) as CommunityCheatFile).game.bits).toBe(32);
+  });
+
+  it('a short user name that is also a word does not block sharing', async () => {
+    const ok = await setup({ draft: value({}, { name: 'Max ammo', description: 'sets ammo to max' }), username: 'max' });
+    expect((await ok.host.preview({ key: 'testgame', id: ok.id, pid: null })).ok).toBe(true);
+    const ash = await setup({ draft: value({}, { name: 'Ash count' }), game: {}, username: 'ash' });
+    expect((await ash.host.preview({ key: 'testgame', id: ash.id, pid: null })).ok).toBe(true);
+    const path = await setup({ draft: value({}, { description: 'notes in C:/Users/max/cheats' }), username: 'max' });
+    const p = await path.host.preview({ key: 'testgame', id: path.id, pid: null });
+    expect(p).toEqual({ ok: false, reason: 'This cheat contains your user name. Remove it before sharing.' });
+  });
+
+  it('a long user name is only matched as a whole word', async () => {
+    const s = await setup({ draft: value({}, { description: 'see the mstephensville wiki' }), username: 'mstephens' });
+    expect((await s.host.preview({ key: 'testgame', id: s.id, pid: null })).ok).toBe(true);
   });
 
   it('refuses_the_username', async () => {

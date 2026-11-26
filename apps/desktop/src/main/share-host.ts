@@ -40,6 +40,27 @@ interface ShareState { installId: string; shared: Record<string, string> }
 const NO_BITS = "Start the game once so Starlight can tell whether it's 32- or 64-bit.";
 const UNREACHABLE = "Couldn't reach the sharing service.";
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whether the player's user name appears in the file's text (never its keys or
+ * numbers): as a whole word, or for a short name, which is often an ordinary
+ * word like "max", only as a folder in a path.
+ */
+export function containsUserName(file: unknown, username: string): boolean {
+  const user = username.trim();
+  if (user.length < 3) return false;
+  const u = escapeRe(user);
+  const re = user.length < 5
+    ? new RegExp(`[\\\\/]${u}(?=[\\\\/]|$)`, 'i')
+    : new RegExp(`(?<![\\p{L}\\p{N}_])${u}(?![\\p{L}\\p{N}_])`, 'iu');
+  const found = (v: unknown): boolean =>
+    typeof v === 'string' ? re.test(v)
+      : Array.isArray(v) ? v.some(found)
+        : v !== null && typeof v === 'object' ? Object.values(v).some(found) : false;
+  return found(file);
+}
+
 export function createShareHost(deps: ShareHostDeps): ShareHost {
   const fetchFn = deps.fetch ?? fetch;
   const now = deps.now ?? (() => new Date());
@@ -97,13 +118,12 @@ export function createShareHost(deps: ShareHostDeps): ShareHost {
       },
       ...(prov.agent ? { agent: prov.agent } : {}),
       ...(credit ? { credit } : {}),
-      ...(prov.derivedFrom ? { derivedFrom: prov.derivedFrom } : {}),
+      ...(prov.derivedFrom ? { derivedFrom: prov.derivedFrom, ...(prov.derivedCredit ? { derivedCredit: prov.derivedCredit } : {}) } : {}),
       submittedAt: now().toISOString().slice(0, 10),
     };
     const checked = checkShareRules(file);
     if (!checked.ok) return { ok: false, reason: `This cheat can't be shared: ${checked.errors.join('; ')}` };
-    const user = deps.username?.toLowerCase();
-    if (user && user.length >= 3 && JSON.stringify(file).toLowerCase().includes(user)) {
+    if (deps.username && containsUserName(checked.file, deps.username)) {
       return { ok: false, reason: 'This cheat contains your user name. Remove it before sharing.' };
     }
     return { ok: true, file: checked.file, hash12: (await shareHash(checked.file)).slice(0, 12) };

@@ -4,9 +4,15 @@
 // never merges and never writes anywhere else.
 import { checkShareRules, shareFlags, shareHash, shareSummary } from '@starlight/ct-importer/share';
 import { GitHub } from './github.js';
+import { addressKey, type Limit } from './limiter.js';
+
+export { RateLimiter } from './limiter.js';
 
 export interface Env {
+  /** Content hash → pull request number. */
   SHARE_KV: KVNamespace;
+  /** The RateLimiter Durable Object; one instance counts every submission. */
+  LIMITER: DurableObjectNamespace;
   GITHUB_APP_ID: string;
   GITHUB_INSTALLATION_ID: string;
   GITHUB_APP_KEY: string;
@@ -20,7 +26,8 @@ export interface Env {
 const MAX_BODY = 65536 + 2048;
 const PER_INSTALL = 5;
 const PER_IP = 20;
-const DAY_TTL = 172800;
+/** Across everyone: a ceiling on how many pull requests one day can bring. */
+const PER_DAY = 100;
 const COMMUNITY = 'packages/catalog/community';
 
 const json = (status: number, body: unknown) =>
@@ -61,11 +68,15 @@ export async function handle(req: Request, env: Env, deps: { fetch?: typeof fetc
   }
 
   const day = now().toISOString().slice(0, 10);
-  const ip = req.headers.get('CF-Connecting-IP') ?? 'unknown';
-  const installKey = `rl:i:${body.installId}:${day}`;
-  const ipKey = `rl:ip:${ip}:${day}`;
-  const [byInstall, byIp] = await Promise.all([env.SHARE_KV.get(installKey), env.SHARE_KV.get(ipKey)]);
-  if (Number(byInstall ?? 0) >= PER_INSTALL || Number(byIp ?? 0) >= PER_IP) return error(429, 'Too many submissions today.');
+  const limits: Limit[] = [
+    { key: `i:${body.installId}`, max: PER_INSTALL },
+    { key: `ip:${addressKey(req.headers.get('CF-Connecting-IP') ?? 'unknown')}`, max: PER_IP },
+    { key: 'all', max: PER_DAY },
+  ];
+  const limiter = env.LIMITER.get(env.LIMITER.idFromName('submissions'));
+  const ask = (path: string) => limiter.fetch(`https://limiter${path}`, { method: 'POST', body: JSON.stringify({ day, limits }) });
+  const taken = await ask('/take').then((r) => r.json() as Promise<{ ok?: boolean }>);
+  if (!taken.ok) return error(429, 'Too many submissions today.');
 
   const hash12 = hash.slice(0, 12);
   let pr: { number: number; url: string };
@@ -80,14 +91,11 @@ export async function handle(req: Request, env: Env, deps: { fetch?: typeof fetc
     });
   } catch (err) {
     console.error('share relay: opening the pull request failed:', err instanceof Error ? err.message : String(err));
+    await ask('/give-back').catch(() => undefined);
     return error(502, "GitHub didn't accept the submission. Try again later.");
   }
 
-  await Promise.all([
-    env.SHARE_KV.put(`h:${hash}`, String(pr.number)),
-    env.SHARE_KV.put(installKey, String(Number(byInstall ?? 0) + 1), { expirationTtl: DAY_TTL }),
-    env.SHARE_KV.put(ipKey, String(Number(byIp ?? 0) + 1), { expirationTtl: DAY_TTL }),
-  ]);
+  await env.SHARE_KV.put(`h:${hash}`, String(pr.number));
   return json(200, { url: pr.url, state: 'open', duplicate: false });
 }
 

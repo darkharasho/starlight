@@ -101,6 +101,15 @@ describe('share rules', () => {
     expect(checkShareRules(valueFile({ credit: 'Mika' })).ok).toBe(true);
   });
 
+  it('refuses line breaks and control characters in names', () => {
+    for (const over of [{ credit: 'a\nb' }, { agent: 'a\rb' }, { game: { ...game, name: 'G\u202eame' } }]) {
+      expect(errs(checkShareRules(valueFile(over))).length).toBeGreaterThan(0);
+    }
+    const f = valueFile();
+    (f.cheat as { name: string }).name = 'Gold\n<!--';
+    expect(errs(checkShareRules(f)).join()).toMatch(/cheat\.name/);
+  });
+
   it('maps trainer platforms', () => {
     expect(sharePlatformOf('linux-proton')).toBe('windows');
     expect(sharePlatformOf('linux')).toBe('linux');
@@ -166,13 +175,13 @@ describe('shareSummary', () => {
     const f = patchFile();
     const flags = ['an example flag'];
     const s = shareSummary(f, flags);
-    for (const want of ['Test Game', 'Steam app 1234', 'Windows (Proton)', '64-bit', 'build 555', 'No damage', 'Anonymous']) {
+    for (const want of ['Test Game', 'Steam app 1234', 'Windows (Proton)', '64-bit', 'build `555`', 'No damage', 'Anonymous']) {
       expect(s).toContain(want);
     }
     const ops = ['alloc', 'assemble', 'writeBytes', 'registerSymbol'].map((op) => s.indexOf(op));
     expect(ops.every((i) => i >= 0)).toBe(true);
     expect([...ops].sort((a, b) => a - b)).toEqual(ops);
-    expect(s).toContain('2943108B → E9000000');
+    expect(s).toContain('`2943108B` → `E9000000`');
     expect(s).toContain('```asm\nnop // keep hp\njmp return\nreturn:\n```');
     expect(s).toMatch(/### Look closely[\s\S]*an example flag/);
     expect(s.split('\n').every((l) => l === l.trimEnd())).toBe(true);
@@ -180,7 +189,7 @@ describe('shareSummary', () => {
 
   it('summarises value cheats and credit', () => {
     const s = shareSummary(valueFile({ credit: 'Mika' }), []);
-    expect(s).toContain('game.exe+0x10 → 0x8 → 0x10');
+    expect(s).toContain('`game.exe+0x10 → 0x8 → 0x10`');
     expect(s).toContain('int32');
     expect(s).toContain('9999');
     expect(s).toContain('range 0–9999');
@@ -191,6 +200,31 @@ describe('shareSummary', () => {
   it('mentions what a repair is based on', () => {
     const s = shareSummary(valueFile({ derivedFrom: 'abcdef012345' }), []);
     expect(s).toMatch(/Based on.*abcdef012345/);
+  });
+
+  it('a crafted name cannot hide the steps from the description', () => {
+    const f = patchFile(undefined, { agent: 'x <!-- y', credit: '@octocat' });
+    (f.cheat as { name: string }).name = 'Gold <!-- [click](https://evil.test)';
+    const s = shareSummary(f, ['syscall flag']);
+    for (const line of s.split('\n')) {
+      if (/<!--|\]\(|@octocat/.test(line)) expect(line).toMatch(/`[^`]*(<!--|\]\(|@octocat)[^`]*`/);
+    }
+    expect(s).toContain('### Look closely');
+  });
+
+  it('an assembly fence cannot be closed early', () => {
+    const s = shareSummary(asm('nop\n```\n<!--\nnop'), []);
+    const fence = /^(`{4,})asm$/m.exec(s)?.[1];
+    expect(fence).toBeDefined();
+    expect(s).toContain(`${fence}asm\nnop\n\`\`\`\n<!--\nnop\n${fence}`);
+  });
+
+  it('keeps the original credit of a repaired cheat', () => {
+    const s = shareSummary(valueFile({ derivedFrom: 'abcdef012345', derivedCredit: 'Alice', credit: 'Bob' }), []);
+    expect(s).toMatch(/Based on.*abcdef012345.*Alice/);
+    expect(s).toContain('https://github.com/darkharasho/starlight/blob/main/packages/catalog/community/1234/abcdef012345.json');
+    expect(errs(checkShareRules(valueFile({ derivedFrom: 'abcdef012345', derivedCredit: 'Alice' })))).toEqual([]);
+    expect(errs(checkShareRules(valueFile({ derivedCredit: 'Alice' }))).join()).toMatch(/derivedCredit/);
   });
 
   it('says unknown build and native Linux', () => {

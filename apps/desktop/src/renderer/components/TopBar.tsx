@@ -6,7 +6,7 @@ import type { LatchState } from '../stores/latch-store.js';
 import { useDetectionStore } from '../stores/detection-store.js';
 import { useCeSessionStore } from '../stores/ce-session-store.js';
 import { useSearchStore } from '../stores/search-store.js';
-import { sessionRequestFor, findCatalogEntry, showGameScreen, openCatalogGame } from '../lib/open-game.js';
+import { attachRequestFor, findCatalogEntry, showGameScreen, openCatalogGame } from '../lib/open-game.js';
 import { isMyGameEntry } from '../../shared/my-games.js';
 
 interface Props {
@@ -38,12 +38,13 @@ export function TopBar({ latchState }: Props): JSX.Element {
       await openCatalogGame(entry, navigate);
       return;
     }
-    if (!entry?.trainerSource) {
+    const req = entry ? attachRequestFor(entry, { pid: detected.pid, processName: detected.name }) : null;
+    if (!req) {
       // Catalog not loaded or no entry — clear the pill and bail gracefully
       useDetectionStore.getState().clear();
       return;
     }
-    await start(sessionRequestFor(entry, { pid: detected.pid, processName: detected.name }));
+    await start(req);
     useDetectionStore.getState().clear();
     showGameScreen(navigate);
   }, [detected, navigate, start]);

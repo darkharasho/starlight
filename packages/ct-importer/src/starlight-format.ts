@@ -72,6 +72,8 @@ const Provenance = z.object({
   bits: z.union([z.literal(32), z.literal(64)]).optional(),
   /** The hash12 of the community cheat this one was copied from. */
   derivedFrom: z.string().optional(),
+  /** That community cheat's credit, kept when the copy is shared again. */
+  derivedCredit: z.string().optional(),
 });
 
 const PatchStep = z.discriminatedUnion('op', [

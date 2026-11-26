@@ -119,6 +119,14 @@ describe('community host', () => {
     expect(await c.host.trainer(999, { platform: null, bits: null, buildId: null })).toBeNull();
   });
 
+  it('a repaired cheat says whose cheat it is based on', async () => {
+    const c = await communityFixture();
+    const m = c.index.games[0]!.cheats[0]!;
+    Object.assign(m, { derivedFrom: 'abcdef012345', derivedCredit: 'Alice' });
+    const r = await c.host.trainer(1234, { platform: null, bits: null, buildId: null });
+    expect(r!.meta.get(`c-${c.hash}`)).toMatchObject({ credit: 'Mika', basedOn: { credit: 'Alice' } });
+  });
+
   it('index_is_cached_offline', async () => {
     const c = await communityFixture();
     expect((await c.host.index()).games).toHaveLength(1);
@@ -155,6 +163,7 @@ describe('community host', () => {
     expect(saved.provenance.kind).toBe('manual');
     expect(saved.provenance.derivedFrom).toBe(c.hash);
     expect(t!.game.platform).toEqual(['linux-proton']);
+    expect((saved.provenance as { derivedCredit?: string }).derivedCredit).toBe('Mika');
     expect(await saveCommunityCheat({ dir, community: c.host }, { key: communityKey(1234), id: 'c-nope', userKey: 'newgame' })).toEqual({ ok: false, error: 'That community cheat is no longer available.' });
   });
 });

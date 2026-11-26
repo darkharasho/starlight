@@ -152,7 +152,11 @@ export interface UserCheatView {
   /** null when not attached to a game */
   verify: { status: 'ok' | 'needs-update' | 'unverified'; reasons: string[] } | null;
   /** Set for community cheats: who made it, for which build and setup, and whether a newer version is shown. */
-  community?: { credit: string | null; buildId: string | null; platform: 'linux' | 'windows'; bits: 32 | 64; older: boolean };
+  community?: {
+    credit: string | null; buildId: string | null; platform: 'linux' | 'windows'; bits: 32 | 64; older: boolean;
+    /** Set for a repair of another community cheat: that cheat's credit. */
+    basedOn?: { credit: string | null };
+  };
 }
 
 /** What Share would send, for the player to check first. */

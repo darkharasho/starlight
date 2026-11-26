@@ -40,6 +40,13 @@ describe('CommunitySection', () => {
     expect(within(section).getByText('by Anonymous')).toBeTruthy();
   });
 
+  it('shows whose cheat a repair is based on', async () => {
+    list.mockResolvedValue([view('c-aaa', 'Infinite gold', { credit: 'Bob', basedOn: { credit: 'Alice' } }), view('c-bbb', 'Ammo', { basedOn: { credit: null } })]);
+    render(<CommunitySection steamAppId={1234} userKey="newgame" pid={7} attached />);
+    expect(await screen.findByText('based on a cheat by Alice')).toBeTruthy();
+    expect(screen.getByText('based on a cheat by Anonymous')).toBeTruthy();
+  });
+
   it('older_versions_toggle', async () => {
     render(<CommunitySection steamAppId={1234} userKey="newgame" pid={7} attached />);
     await screen.findByText('by Mika');

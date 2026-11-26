@@ -89,15 +89,38 @@ export async function openToolsOnly(
   target?: { pid: number; processName?: string | undefined },
   launch?: LaunchTarget,
 ): Promise<void> {
+  const starting = useCeSessionStore.getState().start(toolsOnlyRequest(game, target, launch));
+  showGameScreen(navigate);
+  await starting;
+}
+
+/** The session request for the table-free tools on a game. */
+export function toolsOnlyRequest(
+  game: { name: string; steamAppId?: number | null },
+  target?: { pid: number; processName?: string | undefined },
+  launch?: LaunchTarget,
+): StartReq {
   const key = gameKey(game.name) || game.name;
-  const starting = useCeSessionStore.getState().start({
+  return {
     sources: [],
     cacheKey: `tools-${key}`,
     title: game.name,
     game: { id: `tools-${key}`, name: game.name, steamAppId: game.steamAppId ?? null },
     launch: launch ?? launchTargetFor(game),
     ...(target ? { pid: target.pid, processName: target.processName } : {}),
-  });
-  showGameScreen(navigate);
-  await starting;
+  };
+}
+
+/**
+ * What attaching to a running copy of a catalog game starts: its tables, or
+ * for a game only community cheats cover, the tools with its Steam id (so the
+ * page shows the Community group). Null when the entry has neither.
+ */
+export function attachRequestFor(
+  entry: CatalogIndexEntry,
+  target: { pid: number; processName?: string | undefined },
+): StartReq | null {
+  if (entry.trainerSource) return sessionRequestFor(entry, target);
+  if (entry.communityOnly) return toolsOnlyRequest(entry, target);
+  return null;
 }

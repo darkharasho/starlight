@@ -111,6 +111,7 @@ export function createCommunityHost(deps: { cacheDir: string; baseUrl?: string; 
         },
         bits: f.game.bits,
         derivedFrom: hash,
+        ...(f.credit ? { derivedCredit: f.credit } : {}),
       },
     } as StarlightCheat;
   }
@@ -128,7 +129,10 @@ export function createCommunityHost(deps: { cacheDir: string; baseUrl?: string; 
           const c = await file(m.file);
           if (!c) continue;
           cheats.push(c);
-          meta.set(c.id, { credit: m.credit ?? null, buildId: m.buildId ?? null, platform: m.platform, bits: m.bits, older: isOlder });
+          meta.set(c.id, {
+            credit: m.credit ?? null, buildId: m.buildId ?? null, platform: m.platform, bits: m.bits, older: isOlder,
+            ...(m.derivedFrom ? { basedOn: { credit: m.derivedCredit ?? null } } : {}),
+          });
         }
       }
       const platforms = [...new Set(game.cheats.map((c) => (c.platform === 'windows' ? 'linux-proton' : 'linux') as 'linux' | 'linux-proton'))];

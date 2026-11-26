@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { sessionRequestFor, findCatalogEntry } from '../../src/renderer/lib/open-game.js';
+import { sessionRequestFor, findCatalogEntry, attachRequestFor } from '../../src/renderer/lib/open-game.js';
 import { installedGameKeys, launchTargetFor } from '../../src/renderer/lib/installed.js';
 import { useLibraryStore } from '../../src/renderer/stores/library-store.js';
 import { gameKey } from '../../src/renderer/lib/dedupe-games.js';
@@ -64,5 +64,23 @@ describe('installedGameKeys', () => {
     expect(keys.has(gameKey('Baldurs Gate 3'))).toBe(true);
     expect(keys.has(gameKey('Peak'))).toBe(true);
     expect(keys.has(gameKey('Palworld'))).toBe(false);
+  });
+});
+
+describe('attachRequestFor', () => {
+  const target = { pid: 7, processName: 'NewGame.exe' };
+  it('a community-only game attaches tools-only, with its Steam id so the Community group shows', () => {
+    const community = { id: 'new-game', name: 'New Game', steamAppId: 1234, processName: [], platform: ['windows' as const], communityOnly: true };
+    const req = attachRequestFor(community, target)!;
+    expect(req.sources).toEqual([]);
+    expect(req.game).toMatchObject({ name: 'New Game', steamAppId: 1234 });
+    expect(req).toMatchObject({ pid: 7, processName: 'NewGame.exe' });
+  });
+  it('a game with tables uses its tables', () => {
+    const e = entry('9-kings', '9 Kings', 1);
+    expect(attachRequestFor(e, target)).toEqual(sessionRequestFor(e, target));
+  });
+  it('an entry with neither has nothing to attach', () => {
+    expect(attachRequestFor({ id: 'x', name: 'X', steamAppId: null, processName: [], platform: ['windows'] }, target)).toBeNull();
   });
 });

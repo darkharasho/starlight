@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { useCatalogStore } from '../../src/renderer/stores/catalog-store.js';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { TopBar } from '../../src/renderer/components/TopBar.js';
@@ -37,5 +39,19 @@ describe('TopBar pill priority', () => {
     useDetectionStore.setState({ detected: { game: { id: 'g', name: 'G' }, pid: 1, name: 'g.exe', confidence: 'name' } });
     renderTopBar('waiting');
     expect(screen.getByRole('status')).toHaveTextContent('Connected');
+  });
+});
+
+describe('TopBar Latch', () => {
+  it('latches onto a community-only game, tools-only with its Steam id', async () => {
+    const start = vi.fn(async () => true);
+    useCeSessionStore.setState({ start } as never);
+    useCatalogStore.setState({ index: { schemaVersion: 1, generatedAt: 'x', games: [
+      { id: 'new-game', name: 'New Game', steamAppId: 1234, processName: [], platform: ['windows'], communityOnly: true },
+    ] } } as never);
+    useDetectionStore.setState({ detected: { game: { id: 'new-game', name: 'New Game', steamAppId: 1234 }, pid: 7, name: 'NewGame.exe', confidence: 'exact' } });
+    renderTopBar('waiting');
+    await userEvent.click(screen.getByRole('button', { name: /New Game detected/ }));
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ sources: [], pid: 7, game: expect.objectContaining({ steamAppId: 1234 }) }));
   });
 });

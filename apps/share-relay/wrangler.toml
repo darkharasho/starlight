@@ -1,5 +1,5 @@
 # The share relay: turns a shared cheat into a pull request on darkharasho/starlight.
-# Before the first deploy: create the KV namespace and fill in its id, set the
+# Before the first deploy: create the KV namespace (pull requests by cheat hash) and fill in its id, set the
 # App and installation ids, and `wrangler secret put GITHUB_APP_KEY` (PKCS#8 PEM).
 name = "starlight-share"
 main = "src/index.ts"
@@ -15,3 +15,12 @@ GITHUB_INSTALLATION_ID = ""
 [[kv_namespaces]]
 binding = "SHARE_KV"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Daily submission limits: one Durable Object counts every submission.
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]

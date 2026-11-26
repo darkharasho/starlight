@@ -11,7 +11,7 @@ import { useCover } from '../lib/use-cover.js';
 import { findConflict, resolveCheatHotkeys } from '../lib/accelerator.js';
 import type { StarlightCheat, StarlightSupportedCheat, StarlightTrainer } from '../../shared/ipc.js';
 import { CeSessionView, gameCandidates } from '../components/ce/CeSessionView.js';
-import { openToolsOnly, findCatalogEntry, sessionRequestFor, showGameScreen } from '../lib/open-game.js';
+import { openToolsOnly, findCatalogEntry, attachRequestFor, showGameScreen } from '../lib/open-game.js';
 
 export { gameCandidates };
 import { ToggleCheatCard } from '../components/cheat-cards/ToggleCheatCard.js';
@@ -156,8 +156,9 @@ export function ActiveTrainerRoute(): JSX.Element {
     const name = p.name.replace(/\.exe$/i, '');
     const target = { pid: p.pid, processName: p.name };
     const entry = findCatalogEntry({ id: '', name });
-    if (entry?.trainerSource) {
-      await ceStart(sessionRequestFor(entry, target));
+    const req = entry ? attachRequestFor(entry, target) : null;
+    if (req) {
+      await ceStart(req);
       showGameScreen(navigate);
       return;
     }
