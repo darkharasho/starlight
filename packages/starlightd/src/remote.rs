@@ -132,6 +132,7 @@ pub fn alloc(t: &Target, size: u64, near: Option<u64>, prot: i32) -> Result<u64,
     if size == 0 {
         return Err(RpcError::invalid_params("size must be positive"));
     }
+    crate::guard::remote(t)?;
     let len = page_round(size);
     let tracer = t.tracer()?;
     syscall_site(t, &tracer)?;
@@ -187,6 +188,7 @@ pub fn free(t: &Target, addr: u64, size: u64) -> Result<(), FreeError> {
     let end = addr.saturating_add(page_round(size));
     OWN.lock().unwrap().retain(|&(pid, s, e)| !(pid == t.pid && s < end && addr < e));
     let not_run = |error| FreeError { error, maybe_unmapped: false };
+    crate::guard::remote(t).map_err(not_run)?;
     let tracer = t.tracer().map_err(not_run)?;
     syscall_site(t, &tracer).map_err(not_run)?;
     match tracer.with_stopped(move |s| s.syscall(libc::SYS_munmap, [addr, size, 0, 0, 0, 0])) {

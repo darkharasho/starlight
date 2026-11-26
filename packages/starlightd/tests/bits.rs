@@ -62,3 +62,61 @@ fn capabilities_include_bits() {
     let h = c.call("hello", json!({})).unwrap();
     assert!(h["capabilities"].as_array().unwrap().iter().any(|v| v == "bits"));
 }
+
+const SPEED_32: &str = "Game speed doesn't work with 32-bit games yet.";
+
+fn attach(c: &mut Client, t: &Target) -> Value {
+    c.call("attach", json!({"pid": t.pid})).unwrap()["handle"].clone()
+}
+
+fn alive_with_gold(c: &mut Client, h: &Value, t: &Target) {
+    let r = c.call("read", json!({"handle": h, "address": t.addr("gold"), "length": 4})).unwrap();
+    assert_eq!(r["bytes"], "d2040000");
+}
+
+#[test]
+fn guard_alloc_on_i386_target_is_refused_and_target_lives() {
+    let t = Target::spawn32(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let e = c.call("alloc", json!({"handle": h, "size": 4096})).unwrap_err();
+    assert_eq!(e.0, -32015, "{e:?}");
+    alive_with_gold(&mut c, &h, &t);
+}
+
+#[test]
+fn guard_speed_on_i386_target_is_refused() {
+    let t = Target::spawn32(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let e = c.call_timeout("speed_set", json!({"handle": h, "speed": 2.0}), std::time::Duration::from_secs(15)).unwrap_err();
+    assert_eq!(e, (-32015, SPEED_32.to_string()));
+    let e = c.call("speed_get", json!({"handle": h})).unwrap_err();
+    assert_eq!(e.0, -32015);
+    alive_with_gold(&mut c, &h, &t);
+}
+
+#[test]
+fn guard_alloc_on_64_bit_target_unchanged() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    c.call("alloc", json!({"handle": h, "size": 4096})).unwrap();
+}
+
+#[test]
+fn guard_unknown_code_bits_is_not_ready() {
+    // A 64-bit process whose named game exe isn't mapped: bitness unknown.
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = c.call("attach", json!({"pid": t.pid, "main_module": "game.exe"})).unwrap()["handle"].clone();
+    let not_ready = (-32016, "The game is still starting; try again in a moment.".to_string());
+    assert_eq!(c.call("alloc", json!({"handle": h, "size": 4096})).unwrap_err(), not_ready);
+    assert_eq!(c.call("speed_get", json!({"handle": h})).unwrap_err(), not_ready);
+    // Plain reads keep working.
+    c.call("read", json!({"handle": h, "address": t.addr("g_health"), "length": 4})).unwrap();
+}

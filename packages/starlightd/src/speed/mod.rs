@@ -201,6 +201,7 @@ impl Speeds {
         if !speed.is_finite() || !(MIN_SPEED..=MAX_SPEED).contains(&speed) {
             return Err(RpcError::invalid_params(format!("speed must be between {MIN_SPEED} and {MAX_SPEED}, got {speed}")));
         }
+        crate::guard::speed(t)?;
         recover_orphans(t)?;
         let existing = self.map.lock().unwrap().get(&handle).cloned();
         if speed == 1.0 && existing.is_none() {
@@ -274,6 +275,7 @@ impl Speeds {
 
     /// `handle`'s speed and hooks, after recovering orphaned hooks (D12).
     pub fn get(&self, handle: u32, t: &Target) -> Result<Status, RpcError> {
+        crate::guard::speed(t)?;
         recover_orphans(t)?;
         let entry = self.map.lock().unwrap().get(&handle).cloned();
         Ok(match entry {
