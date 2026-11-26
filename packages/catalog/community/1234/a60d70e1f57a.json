@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "cheat": {
+    "name": "Relay smoke test",
+    "type": "freeze",
+    "valueType": "int32",
+    "value": 1,
+    "address": {
+      "kind": "pointer",
+      "module": "game.exe",
+      "baseOffset": "0x10",
+      "offsets": [
+        "0x8"
+      ]
+    },
+    "verify": {
+      "range": {
+        "min": 0,
+        "max": 9999
+      }
+    }
+  },
+  "game": {
+    "steamAppId": 1234,
+    "name": "Smoke Test (please close)",
+    "platform": "windows",
+    "bits": 64,
+    "buildId": "1"
+  },
+  "submittedAt": "2026-11-25"
+}
