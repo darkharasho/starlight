@@ -12,7 +12,7 @@ import type { SharePreview, ShareSent } from '../shared/ipc.js';
 import { loadUserTrainer } from './user-cheats.js';
 
 /** Set to the deployed relay when it goes live. */
-export const SHARE_RELAY_URL = 'https://starlight-share.invalid/submit';
+export const SHARE_RELAY_URL = 'https://starlight-share.project96.workers.dev/submit';
 
 export interface ShareHostDeps {
   dir: string;

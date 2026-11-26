@@ -9,12 +9,12 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 GITHUB_OWNER = "darkharasho"
 GITHUB_REPO = "starlight"
-GITHUB_APP_ID = ""
-GITHUB_INSTALLATION_ID = ""
+GITHUB_APP_ID = "5932101"
+GITHUB_INSTALLATION_ID = "186016614"
 
 [[kv_namespaces]]
 binding = "SHARE_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "15a49e29bae04cceab813a1cf7ea7646"
 
 # Daily submission limits: one Durable Object counts every submission.
 [[durable_objects.bindings]]
