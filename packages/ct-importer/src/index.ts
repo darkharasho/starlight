@@ -38,3 +38,7 @@ export {
   type CompiledScript,
   type CompiledHotkey,
 } from './table-compiler.js';
+export {
+  CommunityCheatFileSchema, checkShareRules, shareHash, shareFlags, shareSummary, sharePlatformOf, MAX_SHARE_BYTES,
+  type CommunityCheatFile, type SharePlatform,
+} from './share.js';
