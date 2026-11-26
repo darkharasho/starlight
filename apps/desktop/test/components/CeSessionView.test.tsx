@@ -341,6 +341,29 @@ describe('CeSessionView with starlightd', () => {
     expect(screen.queryByText('Cheat Engine')).not.toBeInTheDocument();
   });
 
+  it('speed buttons are disabled with the 32-bit message', () => {
+    seed({ engine: 'starlightd', mode: 'native', holders: ['table'], codeBits: 32, route: { engine: 'native', codes: {}, first: null } });
+    render(<CeSessionView processes={[]} />);
+    const group = screen.getByRole('group', { name: 'Game speed' });
+    for (const b of within(group).getAllByRole('button')) expect(b).toBeDisabled();
+    expect(group).toHaveAttribute('title', "Game speed doesn't work with 32-bit games yet.");
+    expect(screen.getByText("Game speed doesn't work with 32-bit games yet.")).toBeInTheDocument();
+  });
+
+  it('CE mode keeps speed enabled on 32-bit games', () => {
+    seed({ engine: 'ce', mode: 'ce', codeBits: 32 });
+    render(<CeSessionView processes={[]} />);
+    const group = screen.getByRole('group', { name: 'Game speed' });
+    for (const b of within(group).getAllByRole('button')) expect(b).toBeEnabled();
+    expect(screen.queryByText("Game speed doesn't work with 32-bit games yet.")).not.toBeInTheDocument();
+  });
+
+  it('64-bit unchanged', () => {
+    seed({ engine: 'starlightd', mode: 'native', holders: ['table'], codeBits: 64, route: { engine: 'native', codes: {}, first: null } });
+    render(<CeSessionView processes={[]} />);
+    for (const b of within(screen.getByRole('group', { name: 'Game speed' })).getAllByRole('button')) expect(b).toBeEnabled();
+  });
+
   it('speed buttons in a native session call set_speed and show the active speed', async () => {
     call.mockResolvedValue({ ok: true });
     seed({ engine: 'starlightd', mode: 'native', holders: ['table'], route: { engine: 'native', codes: {}, first: null } });

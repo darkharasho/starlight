@@ -17,8 +17,8 @@ import { resolveBoxart, serveArt } from './boxart-host.js';
 import { ART_SCHEME } from './steam-art.js';
 import { createRuntimeManager, type RuntimeManifest } from './ce-runtime-manager.js';
 import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js';
-import { routeTable, recordRoute } from './ct-runner.js';
-import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd, engineOf } from './ce-session.js';
+import { recordRoute } from './ct-runner.js';
+import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd, engineOf, gameCodeBits } from './ce-session.js';
 import { createUserCheatsHost } from './user-cheats-host.js';
 import { listUserCheatGames, userCheatsDir } from './user-cheats.js';
 import { createGameOwner } from './game-owner.js';
@@ -581,11 +581,7 @@ app.whenReady().then(async () => {
         starlightdHolders: (pid) => gameOwner.holders(pid),
         holdTable: (pid) => gameOwner.hold(pid, 'table'),
         nativeTables: cfg.preferences.nativeTables !== false,
-        routeTableFn: async (ctPath, label) => {
-          const d = await routeTable(ctPath, { getClient: getEngineClient, enabled: cfg.preferences.nativeTables !== false, label });
-          void recordRoute(CT_ROUTING_FILE, d).catch(() => {});
-          return d;
-        },
+        recordRouteFn: (d) => { void recordRoute(CT_ROUTING_FILE, d).catch(() => {}); },
         onProgress: (message) => broadcast({ type: 'session:progress', message }),
         onSteps: (tables) => broadcast({ type: 'session:tables', tables }),
         onGameExit: (sessionId) => broadcast({ type: 'session:game-exited', sessionId }),
@@ -603,12 +599,14 @@ app.whenReady().then(async () => {
       });
       sessionCacheKey = req.cacheKey;
       if (r.attached && (explicit || r.verdict === 'works')) void rememberTable(req.cacheKey, r.tableId).catch(() => {});
+      // Game speed is off for 32-bit games (starlightd's speed hooks are 64-bit).
+      const codeBits = r.attached && r.process ? await gameCodeBits(r.process.pid, r.process.name) : null;
       return {
         ok: true as const, sessionId: r.sessionId, records: r.records, proton: r.proton,
         attached: r.attached, needsPicker: r.needsPicker, running: r.running,
         tables: r.tables, tableId: r.tableId, tableError: r.tableError, process: r.process,
         hiddenIds: r.hiddenIds, prereqErrors: r.prereqErrors, verdict: r.verdict, attempts: r.attempts,
-        engine: r.engine, mode: r.mode, route: r.route, holders: r.holders,
+        engine: r.engine, mode: r.mode, route: r.route, holders: r.holders, codeBits,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

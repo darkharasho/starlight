@@ -139,6 +139,15 @@ describe('ce-session-store tables, errors and values', () => {
     expect(useCeSessionStore.getState().records[1]!.value).toBe('9999');
   });
 
+  it('a -32015 speed refusal shows the daemon\'s text, and start keeps codeBits', async () => {
+    mockStart.mockResolvedValue({ ...okStart, codeBits: 32 });
+    await useCeSessionStore.getState().start({ sources: ['t'], cacheKey: 'game' });
+    expect(useCeSessionStore.getState().codeBits).toBe(32);
+    mockCall.mockResolvedValue({ ok: false, error: "Game speed doesn't work with 32-bit games yet." });
+    await useCeSessionStore.getState().setSpeed(2);
+    expect(useCeSessionStore.getState()).toMatchObject({ speed: 1, speedError: "Game speed doesn't work with 32-bit games yet." });
+  });
+
   it('setSpeed keeps the old speed and reports why when it fails', async () => {
     mockStart.mockResolvedValue(okStart);
     await useCeSessionStore.getState().start({ sources: ['t'], cacheKey: 'game' });

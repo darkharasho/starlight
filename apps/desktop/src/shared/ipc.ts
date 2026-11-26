@@ -321,6 +321,8 @@ export type CeSessionStartResult =
       /** Where the loaded table was routed; null without a table. */
       route: RouteSummary | null;
       holders: SessionHolder[];
+      /** The game code's bitness; null while unknown. Game speed is off for 32-bit games. */
+      codeBits?: 32 | 64 | null;
     } & CeSessionTableState)
   | { ok: false; error: string; reason?: 'runtime-missing' | 'spawn-failed' | 'not-running' | 'busy' | 'ptrace' | 'anti-cheat' | 'unknown' };
 

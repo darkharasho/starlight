@@ -217,6 +217,8 @@ export interface StartSessionOpts {
   ensureRuntime?: (() => Promise<{ ok: true; status: Extract<DetectResult, { status: 'ready' }> } | { ok: false; error: string }>) | undefined;
   /** Decides whether a table runs natively or in Cheat Engine (default: ct-runner on starlightd). */
   routeTableFn?: ((ctPath: string, label: string) => Promise<RouteDecision>) | undefined;
+  /** Told every decision the default router makes (e.g. to count it in ct-routing.json). */
+  recordRouteFn?: ((d: RouteDecision) => void) | undefined;
   createNativeBackendFn?: typeof createNativeBackend | undefined;
   /** Opens starlightd's session on the game for a native table (`mainModule`: the game's exe). */
   attachEngineFn?: ((pid: number, mainModule?: string) => Promise<Session>) | undefined;
@@ -348,7 +350,24 @@ function mainModuleOf(name: string | undefined): string | undefined {
  * its exe the bitness is unknown: wait for the table's modules once and ask again.
  */
 function defaultRouteFn(opts: StartSessionOpts, pidOf: () => number | undefined): (ctPath: string, label: string) => Promise<RouteDecision> {
-  return (ctPath, label) => routeTable(ctPath, {
+  return async (ctPath, label) => {
+    const d = await routeWithBits(opts, pidOf, ctPath, label);
+    opts.recordRouteFn?.(d);
+    return d;
+  };
+}
+
+/** The game's code bitness for `pid` (null while unknown, or when starlightd can't be asked). */
+export async function gameCodeBits(pid: number, processName?: string): Promise<32 | 64 | null> {
+  try {
+    return (await processInfo(await getEngineClient(), pid, mainModuleOf(processName))).codeBits;
+  } catch {
+    return null;
+  }
+}
+
+function routeWithBits(opts: StartSessionOpts, pidOf: () => number | undefined, ctPath: string, label: string): Promise<RouteDecision> {
+  return routeTable(ctPath, {
     getClient: getEngineClient, enabled: opts.nativeTables !== false, label,
     ...(opts.checkAssemblesFn ? { check: opts.checkAssemblesFn } : {}),
     codeBits: async () => {

@@ -39,6 +39,8 @@ export function looksStale(msg: string): boolean {
 }
 
 const SPEEDS = [0.5, 1, 2, 4, 8];
+/** starlightd's refusal text: its speed hooks are 64-bit code. */
+const SPEED_32 = "Game speed doesn't work with 32-bit games yet.";
 /** How many times to look again, on its own, for a table that matches. */
 const MAX_AUTO_RETRIES = 8;
 const AUTO_RETRY_MS = 12_000;
@@ -78,6 +80,8 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
   const hasCheatsTab = hasTable || hasUserCheats || paused;
   const activeTab: Tab = hasCheatsTab ? tab : 'scanner';
   const hotkeysOn = config?.preferences.cheatHotkeys !== false;
+  // Cheat Engine runs speed itself for its tables; starlightd can't on 32-bit games.
+  const speedOff = s.codeBits === 32 && s.mode !== 'ce';
   const title = s.title ?? 'Cheat Engine session';
 
   const hidden = useMemo(() => new Set(s.hiddenIds), [s.hiddenIds]);
@@ -260,16 +264,18 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
         {s.attached ? (
           <RailCard className="animate-rise">
             <div className="pb-1.5 text-xs text-muted">Game speed</div>
-            <div role="group" aria-label="Game speed" className="flex rounded-full bg-bg p-[3px] text-[12.5px]">
+            <div role="group" aria-label="Game speed" title={speedOff ? SPEED_32 : undefined}
+                 className={`flex rounded-full bg-bg p-[3px] text-[12.5px] ${speedOff ? 'opacity-50' : ''}`}>
               {SPEEDS.map((x) => (
-                <button key={x} type="button" aria-pressed={s.speed === x} onClick={() => void s.setSpeed(x)}
-                        className={`flex-1 rounded-full py-1 tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan ${
-                          s.speed === x ? 'bg-neon-cyan font-semibold text-[#06231d]' : 'text-muted hover:text-ink'
+                <button key={x} type="button" aria-pressed={s.speed === x} disabled={speedOff} onClick={() => void s.setSpeed(x)}
+                        className={`flex-1 rounded-full py-1 tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan disabled:cursor-not-allowed ${
+                          s.speed === x ? 'bg-neon-cyan font-semibold text-[#06231d]' : `text-muted ${speedOff ? '' : 'hover:text-ink'}`
                         }`}>
                   {x}×
                 </button>
               ))}
             </div>
+            {speedOff && <div className="pt-1.5 text-[11.5px] text-muted">{SPEED_32}</div>}
           </RailCard>
         ) : (
           <PlayBar processes={processes} />

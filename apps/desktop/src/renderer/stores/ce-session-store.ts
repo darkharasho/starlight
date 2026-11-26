@@ -60,6 +60,8 @@ interface CeSessionState {
   /** Current game speed multiplier (1 = normal). */
   speed: number;
   speedError: string | null;
+  /** The game code's bitness, null while unknown. Game speed is off for 32-bit games. */
+  codeBits: 32 | 64 | null;
   /** Prerequisite scripts switched on automatically; hidden from the cheat list. */
   hiddenIds: number[];
   /** How the loaded table fared against the running game. */
@@ -165,6 +167,7 @@ const CLEARED = {
   tableError: null as string | null,
   speed: 1,
   speedError: null as string | null,
+  codeBits: null as 32 | 64 | null,
   hiddenIds: [] as number[],
   verdict: 'unknown' as CeTableVerdict,
   attempts: [] as CeTableAttempt[],
@@ -235,6 +238,7 @@ export const useCeSessionStore = create<CeSessionState>((set, get) => ({
         mode: r.mode ?? (r.engine === 'starlightd' ? 'paused' : 'ce'),
         route: r.route ?? null,
         holders: r.holders ?? [],
+        codeBits: r.codeBits ?? null,
         ...tableState(r),
       });
       if (r.attached) void get().syncHotkeys();
