@@ -160,16 +160,16 @@ impl Handles {
             .ok_or_else(|| RpcError::unknown_handle(format!("unknown handle: {handle}")))
     }
 
-    pub fn freeze(&self, handle: u32, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
+    pub fn freeze(&self, handle: u32, addr: u64, data: Vec<u8>, mask: Option<Vec<u8>>, interval_ms: u64) -> Result<u32, RpcError> {
         let target = self.get(handle)?;
-        self.freeze_target(handle, target, addr, data, interval_ms)
+        self.freeze_target(handle, target, addr, data, mask, interval_ms)
     }
 
     /// Detach and the exit watcher run the handle's teardown and remove it from the map. Rechecking
     /// after the freeze's teardown is registered means one side always sees the other, so no
     /// freeze outlives its handle.
-    fn freeze_target(&self, handle: u32, target: Arc<Target>, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
-        let id = self.freezes.start(target, addr, data, interval_ms)?;
+    fn freeze_target(&self, handle: u32, target: Arc<Target>, addr: u64, data: Vec<u8>, mask: Option<Vec<u8>>, interval_ms: u64) -> Result<u32, RpcError> {
+        let id = self.freezes.start(target, addr, data, mask, interval_ms)?;
         let freezes = self.freezes.clone();
         let token = self.owner.add(Some(handle), Teardown::Freeze, Box::new(move || {
             let _ = freezes.stop(id);
@@ -267,7 +267,7 @@ mod tests {
         });
         // Handle 7 was never inserted: models the watcher having removed it between get and insert.
         let addr = &CELL as *const u32 as u64;
-        let e = handles.freeze_target(7, target, addr, vec![0; 4], 20).unwrap_err();
+        let e = handles.freeze_target(7, target, addr, vec![0; 4], None, 20).unwrap_err();
         assert_eq!(e.code, -32007);
         assert!(handles.unfreeze(1).is_err(), "freeze must not survive");
     }

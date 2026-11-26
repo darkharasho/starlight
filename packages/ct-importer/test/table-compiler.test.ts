@@ -208,13 +208,31 @@ dealloc(newmem)`;
     expect(byId(t.records, 4)).toMatchObject({ kind: 'value', valueType: 'string', length: 16 });
   });
 
-  it('custom and binary types are value:type with the type name', () => {
+  it('custom types are value:type with the type name', () => {
     const t = compileTable(table('custom-type.CT'));
     expect(byId(t.records, 1)).toMatchObject({ kind: 'unsupported', code: 'value:type', detail: 'Custom: 4 Byte Big Endian' });
-    expect(byId(t.records, 2)).toMatchObject({ kind: 'unsupported', code: 'value:type', detail: 'Binary' });
     expect(byId(t.records, 7)).toMatchObject({ kind: 'unsupported', code: 'addr:expression', detail: '[[pPlayer]+8]*2+foo' });
-    expect(t.reasons.map((r) => r.code).sort()).toEqual(['addr:expression', 'value:type', 'value:type']);
+    expect(t.reasons.map((r) => r.code).sort()).toEqual(['addr:expression', 'value:type']);
     for (const r of t.reasons) expect(REASON_CODES).toContain(r.code);
+  });
+
+  it('Binary records are bit fields: BitStart/BitLength over the bytes they cover', () => {
+    const t = compileTable(table('custom-type.CT'));
+    expect(byId(t.records, 2)).toMatchObject({ kind: 'value', valueType: 'binary', bitStart: 0, bitLength: 1, length: 1 });
+    const bin = (start: string, len: string) => compileTable(ct(
+      `<CheatEntry><ID>1</ID><Description>"B"</Description><VariableType>Binary</VariableType>${start}${len}<Address>"target"+10</Address></CheatEntry>`,
+    )).records[0];
+    expect(bin('<BitStart>6</BitStart>', '<BitLength>4</BitLength>')).toMatchObject({ valueType: 'binary', bitStart: 6, bitLength: 4, length: 2 });
+    expect(bin('<BitStart>0</BitStart>', '<BitLength>64</BitLength>')).toMatchObject({ valueType: 'binary', length: 8 });
+    expect(bin('<BitStart>1</BitStart>', '<BitLength>64</BitLength>')).toMatchObject({ kind: 'unsupported', code: 'value:type' });
+    expect(bin('', '<BitLength>0</BitLength>')).toMatchObject({ kind: 'unsupported', code: 'value:type' });
+  });
+
+  it('a Unicode String is UTF-16: Length characters, twice as many bytes', () => {
+    const t = compileTable(ct(
+      '<CheatEntry><ID>1</ID><Description>"N"</Description><VariableType>String</VariableType><Length>32</Length><Unicode>1</Unicode><Address>"target"+10</Address></CheatEntry>',
+    ));
+    expect(t.records[0]).toMatchObject({ kind: 'value', valueType: 'string16', length: 64 });
   });
 
   it('an empty script record compiles to a no-op', () => {

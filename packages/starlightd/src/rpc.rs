@@ -14,7 +14,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 3;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed", "aob_exec", "lua"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed", "aob_exec", "lua", "freeze_mask"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -579,8 +579,12 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             if data.is_empty() {
                 return Err(RpcError::invalid_params("bytes must not be empty"));
             }
+            let mask = match params.get("mask").and_then(Value::as_str) {
+                Some(m) => Some(from_hex(Some(m))?),
+                None => None,
+            };
             let interval = param_u64(params, "interval_ms")?;
-            Ok(json!({ "id": handles.freeze(handle, addr, data, interval)? }))
+            Ok(json!({ "id": handles.freeze(handle, addr, data, mask, interval)? }))
         }
         "lua_open" => {
             let handle = param_handle(params)?;

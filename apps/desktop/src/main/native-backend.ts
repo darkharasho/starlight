@@ -67,7 +67,26 @@ const hasOpt = (r: CompiledRecord, name: string) => (r.opts ?? '').split(/[\s,[\
 const isValue = (r: CompiledRecord): r is ValueRecord => r.kind === 'value';
 const sizeOf = (r: ValueRecord) => SIZES[r.valueType] ?? r.length ?? 1;
 const isFloat = (r: ValueRecord) => r.valueType === 'float' || r.valueType === 'double';
-const isInteger = (r: ValueRecord) => r.valueType in SIZES && !isFloat(r);
+const isInteger = (r: ValueRecord) => (r.valueType in SIZES && !isFloat(r)) || r.valueType === 'binary';
+const isBits = (r: ValueRecord) => r.valueType === 'binary';
+
+/** A bit field's bits within its bytes: `(field mask) << bitStart`, as a number and as bytes. */
+function bitMask(r: ValueRecord): { bits: bigint; mask: Buffer } {
+  const bits = ((1n << BigInt(r.bitLength ?? 1)) - 1n) << BigInt(r.bitStart ?? 0);
+  return { bits, mask: leBytes(bits, sizeOf(r)) };
+}
+
+function leBytes(v: bigint, size: number): Buffer {
+  const buf = Buffer.alloc(size);
+  for (let i = 0; i < size; i++) buf[i] = Number((v >> BigInt(8 * i)) & 0xffn);
+  return buf;
+}
+
+function leValue(buf: Buffer): bigint {
+  let v = 0n;
+  for (let i = buf.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(buf[i]!);
+  return v;
+}
 
 const MARKER = /^\s*\[(enable|disable)\]\s*$/i;
 /**
@@ -92,6 +111,7 @@ function readUnsigned(buf: Buffer, size: number): bigint {
 
 /** A value as numbers: BigInt for integer types (signed per the record), number for floats. */
 function numberOf(r: ValueRecord, buf: Buffer): bigint | number {
+  if (isBits(r)) return (leValue(buf.subarray(0, sizeOf(r))) & bitMask(r).bits) >> BigInt(r.bitStart ?? 0);
   if (r.valueType === 'float') return buf.readFloatLE(0);
   if (r.valueType === 'double') return buf.readDoubleLE(0);
   const raw = readUnsigned(buf, sizeOf(r));
@@ -105,7 +125,13 @@ function display(r: ValueRecord, buf: Buffer): string {
     const nul = buf.indexOf(0);
     return buf.subarray(0, nul < 0 ? buf.length : nul).toString('utf8');
   }
+  if (r.valueType === 'string16') {
+    let end = 0;
+    while (end + 1 < buf.length && (buf[end] !== 0 || buf[end + 1] !== 0)) end += 2;
+    return buf.subarray(0, end).toString('utf16le');
+  }
   if (buf.length < sizeOf(r)) return '??';
+  if (isBits(r)) return r.showAsHex ? (numberOf(r, buf) as bigint).toString(16).toUpperCase() : String(numberOf(r, buf));
   if (r.valueType === 'float') {
     const v = buf.readFloatLE(0);
     return Number.isFinite(v) ? String(Number(v.toPrecision(7))) : String(v);
@@ -138,9 +164,16 @@ function parseNumber(r: ValueRecord, text: string): bigint | number {
   return BigInt(Math.trunc(n));
 }
 
-/** Little-endian bytes of a number; integers wrap to the record's width, as CE does. */
+/**
+ * Little-endian bytes of a number; integers wrap to the record's width, as CE does. A bit field's
+ * value is shifted into place: `writeValue` merges it with the bits around it.
+ */
 function encodeNumber(r: ValueRecord, v: bigint | number): Buffer {
   const size = sizeOf(r);
+  if (isBits(r)) {
+    const n = BigInt.asUintN(r.bitLength ?? 1, typeof v === 'bigint' ? v : BigInt(Math.trunc(v)));
+    return leBytes(n << BigInt(r.bitStart ?? 0), size);
+  }
   const buf = Buffer.alloc(size);
   if (r.valueType === 'float') buf.writeFloatLE(Number(v));
   else if (r.valueType === 'double') buf.writeDoubleLE(Number(v));
@@ -169,8 +202,22 @@ function encode(r: ValueRecord, input: unknown): Buffer {
     const bytes = Buffer.from(text, 'utf8').subarray(0, len);
     return bytes.length < len ? Buffer.concat([bytes, Buffer.alloc(1)]) : bytes;
   }
-  return encodeNumber(r, parseNumber(r, text));
+  if (r.valueType === 'string16') {
+    const len = sizeOf(r);
+    const bytes = Buffer.from(text, 'utf16le').subarray(0, len & ~1);
+    return bytes.length < len ? Buffer.concat([bytes, Buffer.alloc(2)]) : bytes;
+  }
+  const n = parseNumber(r, text);
+  if (isBits(r)) {
+    const max = (1n << BigInt(r.bitLength ?? 1)) - 1n;
+    const v = typeof n === 'bigint' ? n : BigInt(Math.trunc(n));
+    if (v < 0n || v > max) throw new Error(`"${text}" doesn't fit this record's ${r.bitLength} bit${r.bitLength === 1 ? '' : 's'} (0 to ${max})`);
+  }
+  return encodeNumber(r, n);
 }
+
+/** A bit field freezes only its own bits. */
+const freezeMask = (r: ValueRecord): { mask?: Buffer } => (isBits(r) ? { mask: bitMask(r).mask } : {});
 
 function lazyHotkeys(): NonNullable<NativeBackendDeps['hotkeys']> {
   // Loaded on first use, so the backend doesn't pull the keyboard hook in until it binds keys.
@@ -280,7 +327,7 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
       const address = await addressOf(rec);
       const [now] = await E.readMany(s, [{ address, length: sizeOf(rec) }]);
       if (!now) throw new Error(`can't read the value at ${address}`);
-      const handle = await E.freeze(s, { address, bytes: now, intervalMs: FREEZE_INTERVAL_MS });
+      const handle = await E.freeze(s, { address, bytes: now, ...freezeMask(rec), intervalMs: FREEZE_INTERVAL_MS });
       return { kind: 'value', address, handle };
     }
     if (rec.kind === 'lua') {
@@ -365,13 +412,21 @@ export function createNativeBackend(deps: NativeBackendDeps): TableBackend {
   }
 
   /** Writes a value record (moving its freeze when active) and returns what it reads back. */
-  async function writeValue(rec: ValueRecord, bytes: Buffer): Promise<string> {
+  async function writeValue(rec: ValueRecord, value: Buffer): Promise<string> {
     const l = live.get(rec.id);
     const address = l?.kind === 'value' ? l.address : await addressOf(rec);
+    let bytes = value;
+    if (isBits(rec)) {
+      // A bit field shares its bytes: keep the bits around it.
+      const [cur] = await E.readMany(s, [{ address, length: sizeOf(rec) }]);
+      if (!cur) throw new Error(`can't read the value at ${address}`);
+      const { bits } = bitMask(rec);
+      bytes = leBytes((leValue(cur) & ~bits) | (leValue(value) & bits), sizeOf(rec));
+    }
     await writeRaw(address, bytes);
     if (l?.kind === 'value') {
       await l.handle.cancel();
-      l.handle = await E.freeze(s, { address, bytes, intervalMs: FREEZE_INTERVAL_MS });
+      l.handle = await E.freeze(s, { address, bytes, ...freezeMask(rec), intervalMs: FREEZE_INTERVAL_MS });
     }
     const [got] = await E.readMany(s, [{ address, length: sizeOf(rec) }]);
     return got ? display(rec, got) : '??';

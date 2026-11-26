@@ -23,13 +23,26 @@ pub struct Freezes {
     inner: Arc<Mutex<(u32, HashMap<u32, Entry>)>>,
 }
 
+/// Writes `data`, or with a `mask` only its masked bits: the other bits keep what memory holds
+/// (bit fields share their bytes with other values).
+fn write(target: &Target, addr: u64, data: &[u8], mask: Option<&[u8]>) -> Result<(), RpcError> {
+    let Some(mask) = mask else { return mem::write_bytes(target, addr, data) };
+    let cur = mem::read_bytes(target, addr, data.len())?;
+    let merged: Vec<u8> = cur.iter().zip(data).zip(mask).map(|((c, d), m)| (c & !m) | (d & m)).collect();
+    mem::write_bytes(target, addr, &merged)
+}
+
 impl Freezes {
     /// Write once synchronously (failure creates no freeze), then keep writing on a thread.
-    pub fn start(&self, target: Arc<Target>, addr: u64, data: Vec<u8>, interval_ms: u64) -> Result<u32, RpcError> {
+    /// `mask` (same length as `data`) limits the freeze to its set bits.
+    pub fn start(&self, target: Arc<Target>, addr: u64, data: Vec<u8>, mask: Option<Vec<u8>>, interval_ms: u64) -> Result<u32, RpcError> {
         if interval_ms > MAX_INTERVAL_MS {
             return Err(RpcError::invalid_params(format!("interval_ms exceeds {MAX_INTERVAL_MS}")));
         }
-        mem::write_bytes(&target, addr, &data)?;
+        if mask.as_ref().is_some_and(|m| m.len() != data.len()) {
+            return Err(RpcError::invalid_params("mask must be as long as bytes"));
+        }
+        write(&target, addr, &data, mask.as_deref())?;
         let interval = Duration::from_millis(interval_ms.max(MIN_INTERVAL_MS));
         let stopped = Arc::new(Mutex::new(false));
         let id = {
@@ -53,7 +66,7 @@ impl Freezes {
                 if *guard {
                     return;
                 }
-                let _ = mem::write_bytes(&target, addr, &data); // errors are ignored by design
+                let _ = write(&target, addr, &data, mask.as_deref()); // errors are ignored by design
                 drop(guard);
                 next = Instant::now() + interval;
             }

@@ -129,3 +129,28 @@ fn huge_interval_is_invalid_params() {
     assert_eq!(e.0, -32602);
     assert!(c.call("freeze", json!({"handle": h, "address": t.addr("g_health"), "bytes": "e7030000", "interval_ms": 3_600_000})).is_ok());
 }
+
+#[test]
+fn a_masked_freeze_holds_only_the_masked_bits() {
+    // A bit field: only bits 4..8 of the first byte are frozen (to 0xA); the game keeps changing the rest.
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    write_health(&mut c, &h, &t, "05000000");
+    c.call("freeze", json!({"handle": h, "address": t.addr("g_health"), "bytes": "a0", "mask": "f0", "interval_ms": 20})).unwrap();
+    assert_eq!(read_health(&mut c, &h, &t), "a5000000", "the first write keeps the unmasked bits");
+    write_health(&mut c, &h, &t, "0f112233");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(read_health(&mut c, &h, &t), "af112233");
+}
+
+#[test]
+fn a_mask_must_match_the_bytes() {
+    let t = Target::spawn(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let e = c.call("freeze", json!({"handle": h, "address": t.addr("g_health"), "bytes": "a0", "mask": "f0ff", "interval_ms": 20})).unwrap_err();
+    assert_eq!(e.0, -32602, "{e:?}");
+}

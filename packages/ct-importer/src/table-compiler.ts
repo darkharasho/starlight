@@ -38,8 +38,13 @@ export type CompiledRecord = { id: number; name: string; depth: number; opts?: s
   | { kind: 'script'; script: CompiledScript }
   | {
       kind: 'value';
-      valueType: StarlightValueType | 'bytes';
+      /** `bytes`: Array of byte; `string16`: a UTF-16 (Unicode) string; `binary`: a bit field. */
+      valueType: CompiledValueType;
+      /** Bytes covered (strings, byte arrays and bit fields). */
       length?: number;
+      /** Bit fields: the first bit (0 = lowest bit of the first byte) and how many bits. */
+      bitStart?: number;
+      bitLength?: number;
       address: StarlightAddress;
       showAsHex: boolean;
       showAsSigned: boolean;
@@ -48,6 +53,8 @@ export type CompiledRecord = { id: number; name: string; depth: number; opts?: s
   /** A record whose own LuaScript runs on enable ([ENABLE] part) and disable ([DISABLE] part). */
   | { kind: 'lua'; lua: string }
   | { kind: 'unsupported'; code: ReasonCode; detail: string });
+
+export type CompiledValueType = StarlightValueType | 'bytes' | 'string16' | 'binary';
 
 export interface CompiledTable {
   records: CompiledRecord[];
@@ -113,7 +120,7 @@ function parseDropdown(src: string): { value: string; label: string }[] {
   return out;
 }
 
-type ValueKind = { valueType: StarlightValueType | 'bytes'; length?: number } | { unsupported: string };
+type ValueKind = { valueType: CompiledValueType; length?: number; bitStart?: number; bitLength?: number } | { unsupported: string };
 
 /** CE variable type -> value type (R26: 2/4/8-byte types are unsigned unless ShowAsSigned=1). */
 function valueKind(e: CtEntry, signed: boolean): ValueKind {
@@ -134,8 +141,15 @@ function valueKind(e: CtEntry, signed: boolean): ValueKind {
   }
   if (lower === 'string') {
     const n = len(e['Length']);
-    if (flag(e['Unicode'])) return { unsupported: 'Unicode String' };
-    return n ? { valueType: 'string', length: n } : { unsupported: vt };
+    if (!n) return { unsupported: vt };
+    // CE's Length counts characters; a Unicode character is two bytes.
+    return flag(e['Unicode']) ? { valueType: 'string16', length: n * 2 } : { valueType: 'string', length: n };
+  }
+  if (lower === 'binary') {
+    const start = Number(text(e['BitStart']).trim() || '0');
+    const bits = Number(text(e['BitLength']).trim());
+    if (!Number.isInteger(start) || start < 0 || !Number.isInteger(bits) || bits < 1 || start + bits > 64) return { unsupported: vt };
+    return { valueType: 'binary', bitStart: start, bitLength: bits, length: Math.ceil((start + bits) / 8) };
   }
   if (lower === 'custom') {
     const name = text(e['CustomType']).trim();
@@ -213,6 +227,7 @@ export function compileTable(xml: string): CompiledTable {
           compiled = {
             ...base, kind: 'value', valueType: vk.valueType,
             ...(vk.length !== undefined ? { length: vk.length } : {}),
+            ...(vk.bitStart !== undefined ? { bitStart: vk.bitStart, bitLength: vk.bitLength! } : {}),
             address: own, showAsHex, showAsSigned,
           };
         }

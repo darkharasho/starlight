@@ -16,7 +16,7 @@ const hex = (n: bigint) => '0x' + n.toString(16);
 function fakeGame() {
   const mem = new Map<string, Buffer>();
   const writes: Array<{ address: string; bytes: string }> = [];
-  const freezes: Array<{ address: string; bytes: string; cancelled: boolean }> = [];
+  const freezes: Array<{ address: string; bytes: string; mask?: string; cancelled: boolean }> = [];
   const enabled: string[] = [];
   const disabled: string[] = [];
   const session = {
@@ -47,9 +47,9 @@ function fakeGame() {
       const b = mem.get(it.address);
       return b ? Buffer.from(b.subarray(0, it.length)) : null;
     }));
-  const freeze = vi.fn(async (_s: Session, spec: { address: string; bytes?: Buffer | string; type?: string; value?: number }) => {
+  const freeze = vi.fn(async (_s: Session, spec: { address: string; bytes?: Buffer | string; mask?: Buffer; type?: string; value?: number }) => {
     const bytes = typeof spec.bytes === 'string' ? spec.bytes : spec.bytes!.toString('hex');
-    const f = { address: spec.address, bytes, cancelled: false };
+    const f = { address: spec.address, bytes, ...(spec.mask ? { mask: spec.mask.toString('hex') } : {}), cancelled: false };
     freezes.push(f);
     return { get active() { return !f.cancelled; }, cancel: async () => { f.cancelled = true; } };
   });
@@ -111,6 +111,8 @@ const VALUES = compileTable(`<?xml version="1.0" encoding="utf-8"?>
   <CheatEntry><ID>1</ID><Description>"Flags"</Description><ShowAsHex>1</ShowAsHex><VariableType>4 Bytes</VariableType><Address>"target"+100</Address></CheatEntry>
   <CheatEntry><ID>2</ID><Description>"Bytes"</Description><VariableType>Array of byte</VariableType><ByteLength>3</ByteLength><Address>"target"+200</Address></CheatEntry>
   <CheatEntry><ID>3</ID><Description>"Delta"</Description><ShowAsSigned>1</ShowAsSigned><VariableType>Byte</VariableType><Address>"target"+300</Address></CheatEntry>
+  <CheatEntry><ID>4</ID><Description>"Name"</Description><VariableType>String</VariableType><Length>4</Length><Unicode>1</Unicode><Address>"target"+400</Address></CheatEntry>
+  <CheatEntry><ID>5</ID><Description>"Bits"</Description><VariableType>Binary</VariableType><BitStart>4</BitStart><BitLength>3</BitLength><Address>"target"+500</Address></CheatEntry>
 </CheatEntries></CheatTable>`);
 
 describe('native table backend', () => {
@@ -226,6 +228,38 @@ describe('native table backend', () => {
     // An active byte array freezes raw bytes.
     expect(await b.send({ method: 'set_active', params: { id: 2, active: true } })).toEqual({ ok: true, active: true });
     expect(g.freezes.at(-1)).toEqual({ address: '0x400200', bytes: '9090c3', cancelled: false });
+  });
+
+  it('a Unicode String reads and writes UTF-16', async () => {
+    const g = fakeGame();
+    g.mem.set('0x400400', Buffer.from('Hi\0\0', 'utf16le'));
+    const { b } = backendFor(VALUES, g);
+    const { records } = await b.send({ method: 'list_records' }) as { records: Array<{ id: number; value: string }> };
+    expect(records.find((r) => r.id === 4)!.value).toBe('Hi');
+    expect(await b.send({ method: 'set_value', params: { id: 4, value: 'Yo' } })).toEqual({ ok: true, value: 'Yo' });
+    expect(g.writes.at(-1)).toEqual({ address: '0x400400', bytes: Buffer.from('Yo\0', 'utf16le').toString('hex') });
+    // Too long: cut at Length characters, no terminator (as CE).
+    await b.send({ method: 'set_value', params: { id: 4, value: 'Hello' } });
+    expect(g.writes.at(-1)).toEqual({ address: '0x400400', bytes: Buffer.from('Hell', 'utf16le').toString('hex') });
+  });
+
+  it('a Binary record is its bits: writes keep the other bits, a freeze holds only its bits', async () => {
+    const g = fakeGame();
+    g.mem.set('0x400500', Buffer.from([0xa5])); // bits 4..6 = 0b010
+    const { b } = backendFor(VALUES, g);
+    const { records } = await b.send({ method: 'list_records' }) as { records: Array<{ id: number; value: string }> };
+    expect(records.find((r) => r.id === 5)!.value).toBe('2');
+    expect(await b.send({ method: 'set_value', params: { id: 5, value: '7' } })).toEqual({ ok: true, value: '7' });
+    expect(g.writes.at(-1)).toEqual({ address: '0x400500', bytes: 'f5' });
+    const big = await b.send({ method: 'set_value', params: { id: 5, value: '8' } }) as { ok: boolean; error?: string };
+    expect(big).toMatchObject({ ok: false });
+    expect(await b.send({ method: 'set_active', params: { id: 5, active: true } })).toEqual({ ok: true, active: true });
+    expect(g.freezes.at(-1)).toEqual({ address: '0x400500', bytes: 'f5', mask: '70', cancelled: false });
+    // Stepping a bit field works on its value.
+    g.mem.set('0x400500', Buffer.from([0x05]));
+    expect(await b.send({ method: 'set_value', params: { id: 5, value: '3' } })).toEqual({ ok: true, value: '3' });
+    expect(g.writes.at(-1)).toEqual({ address: '0x400500', bytes: '35' });
+    expect(g.freezes.at(-1)).toEqual({ address: '0x400500', bytes: '35', mask: '70', cancelled: false });
   });
 
   it('moActivateChildrenAsWell switches the children on in order', async () => {
