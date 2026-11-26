@@ -455,6 +455,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle(CHANNELS.fetchCatalog, async () => {
+    void communityHost.index(); // warm the community cheats alongside the catalog
     try {
       const index = await fetchCatalog();
       // A game running before the catalog loads is re-evaluated each poll (LatchDetector.reported

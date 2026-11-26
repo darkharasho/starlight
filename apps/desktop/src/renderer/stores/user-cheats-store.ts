@@ -26,7 +26,7 @@ interface UserCheatsState {
 
 const msg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-export const useUserCheatsStore = create<UserCheatsState>((set, get) => {
+const makeStore = () => create<UserCheatsState>((set, get) => {
   const reload = async (): Promise<void> => {
     const { key, pid } = get();
     if (key === null) return;
@@ -123,3 +123,9 @@ export const useUserCheatsStore = create<UserCheatsState>((set, get) => {
     changed: (key) => { if (get().key === key) void reload(); },
   };
 });
+
+/** The player's own cheats for the open game. */
+export const useUserCheatsStore = makeStore();
+/** Community cheats for the open game (a `community-<steamAppId>` key). */
+export const useCommunityCheatsStore = makeStore();
+export type UserCheatsStore = typeof useUserCheatsStore;

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useCeSessionStore } from '../../stores/ce-session-store.js';
 import { useConfigStore } from '../../stores/config-store.js';
-import { useUserCheatsStore } from '../../stores/user-cheats-store.js';
+import { useCommunityCheatsStore, useUserCheatsStore } from '../../stores/user-cheats-store.js';
 import { userCheatsKey } from '../../../shared/game-key.js';
 import { MyCheatsSection } from './MyCheatsSection.js';
+import { CommunitySection } from './CommunitySection.js';
 import type { CeSessionRecord, DetectedProcess, SessionHolder } from '../../../shared/ipc.js';
 import { buildCheatList, type CheatItem } from '../../../shared/cheat-list.js';
 import { acceleratorLabel, acceleratorToVk } from '../../../shared/vk.js';
@@ -74,10 +75,14 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
   const myPid = s.attached ? s.attachedTo?.pid ?? null : null;
   const hasUserCheats = useUserCheatsStore((u) => myKey !== null && u.key === myKey && u.items.length > 0);
   useEffect(() => { if (myKey !== null) void useUserCheatsStore.getState().load(myKey, myPid); }, [myKey, myPid]);
+  const steamAppId = s.lastReq?.game?.steamAppId ?? null;
+  const communityKey = steamAppId !== null ? `community-${steamAppId}` : null;
+  const hasCommunity = useCommunityCheatsStore((u) => communityKey !== null && u.key === communityKey && u.items.length > 0);
+  useEffect(() => { if (communityKey !== null) void useCommunityCheatsStore.getState().load(communityKey, myPid); }, [communityKey, myPid]);
   const [confirmTable, setConfirmTable] = useState(false);
   useEffect(() => { if (!paused) setConfirmTable(false); }, [paused]);
   // The Cheats tab has something to show when there is a table, the player's own cheats, or the paused notice.
-  const hasCheatsTab = hasTable || hasUserCheats || paused;
+  const hasCheatsTab = hasTable || hasUserCheats || hasCommunity || paused;
   const activeTab: Tab = hasCheatsTab ? tab : 'scanner';
   const hotkeysOn = config?.preferences.cheatHotkeys !== false;
   // Cheat Engine runs speed itself for its tables; starlightd can't on 32-bit games.
@@ -256,7 +261,9 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
                 {s.attached && onCount > 0 && <span className="text-neon-cyan">{`, ${onCount} on`}</span>}
               </span>
             ) : (
-              <span>No table for this game — game speed and the memory scanner still work</span>
+              <span>{hasCommunity
+                ? 'Community cheats only — no Cheat Engine table for this game'
+                : 'No table for this game — game speed and the memory scanner still work'}</span>
             )}
           </div>
         </div>
@@ -378,6 +385,9 @@ export function CeSessionView({ processes }: { processes: DetectedProcess[] }): 
                 </section>
               );
             })}
+            {!paused && steamAppId !== null && myKey !== null && (
+              <CommunitySection steamAppId={steamAppId} userKey={myKey} pid={myPid} attached={s.attached} exeName={s.attachedTo?.name} />
+            )}
             {!paused && list.notes.length > 0 && q === '' && (
               <details className="mt-1 px-1 text-xs text-muted">
                 <summary className="cursor-pointer hover:text-ink">About this table</summary>
