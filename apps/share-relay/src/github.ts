@@ -9,6 +9,8 @@ export interface GitHubConfig {
   privateKey: string;
   owner: string;
   repo: string;
+  /** The API origin; only local end-to-end runs change it. */
+  api?: string | undefined;
   fetch: typeof fetch;
   now(): Date;
 }
@@ -47,7 +49,9 @@ export class GitHub {
   constructor(private readonly cfg: GitHubConfig) {}
 
   private async call<T>(method: string, path: string, body?: unknown, auth?: string): Promise<{ status: number; data: T }> {
-    const res = await this.cfg.fetch(`${API}${path}`, {
+    // Called unbound: the Workers runtime rejects fetch called as a method of another object.
+    const fetchFn = this.cfg.fetch;
+    const res = await fetchFn(`${this.cfg.api ?? API}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${auth ?? await this.installationToken()}`,

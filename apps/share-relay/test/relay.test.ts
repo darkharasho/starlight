@@ -212,6 +212,26 @@ describe('share relay', () => {
     expect(other.status).toBe(404);
   });
 
+  it('uses GITHUB_API when set (local end-to-end runs)', async () => {
+    const s = setup();
+    const seen: string[] = [];
+    const spy = (async (input: string | URL | Request, init?: RequestInit) => { seen.push(new URL(String(input)).origin); return s.gh.fetch(input, init); }) as typeof fetch;
+    const env = { ...s.env, GITHUB_API: 'http://127.0.0.1:9' } as Env;
+    const res = await handle(new Request('https://relay.test/submit', { method: 'POST', body: JSON.stringify({ file: file(), installId: 'install-api', appVersion: 'x' }) }), env, { fetch: spy });
+    expect(res.status).toBe(200);
+    expect(new Set(seen)).toEqual(new Set(['http://127.0.0.1:9']));
+  });
+
+  it('calls fetch unbound, as the Workers runtime requires', async () => {
+    const s = setup();
+    const strict = function (this: unknown, input: string | URL | Request, init?: RequestInit) {
+      if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+      return s.gh.fetch(input, init);
+    } as typeof fetch;
+    const res = await handle(new Request('https://relay.test/submit', { method: 'POST', body: JSON.stringify({ file: file(), installId: 'install-unbound', appVersion: 'x' }) }), s.env, { fetch: strict });
+    expect(res.status).toBe(200);
+  });
+
   it('only_writes_community_path', () => {
     expect(allPuts.length).toBeGreaterThan(0);
     for (const p of allPuts) expect(p.startsWith('/repos/o/r/contents/packages/catalog/community/')).toBe(true);

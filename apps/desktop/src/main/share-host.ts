@@ -18,6 +18,8 @@ export interface ShareHostDeps {
   dir: string;
   userData: string;
   appVersion: string;
+  /** Defaults to SHARE_RELAY_URL; the local end-to-end check points it at `wrangler dev`. */
+  relayUrl?: string;
   fetch?: typeof fetch;
   /** The running game's code bitness, for cheats saved before bits were recorded. */
   liveBits?(pid: number): Promise<32 | 64 | null>;
@@ -128,7 +130,7 @@ export function createShareHost(deps: ShareHostDeps): ShareHost {
       const state = await readState();
       let res: Response;
       try {
-        res = await fetchFn(SHARE_RELAY_URL, {
+        res = await fetchFn(deps.relayUrl ?? SHARE_RELAY_URL, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ file: b.file, installId: state.installId, appVersion: deps.appVersion }),

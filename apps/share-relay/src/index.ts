@@ -12,6 +12,8 @@ export interface Env {
   GITHUB_APP_KEY: string;
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
+  /** Local end-to-end runs point this at a fake GitHub; unset in production. */
+  GITHUB_API?: string;
 }
 
 /** The cheat file may be 64 KB; the envelope (install id, app version) gets a little more. */
@@ -45,7 +47,7 @@ export async function handle(req: Request, env: Env, deps: { fetch?: typeof fetc
 
   const gh = new GitHub({
     appId: env.GITHUB_APP_ID, installationId: env.GITHUB_INSTALLATION_ID, privateKey: env.GITHUB_APP_KEY,
-    owner: env.GITHUB_OWNER, repo: env.GITHUB_REPO, fetch: deps.fetch ?? fetch, now,
+    owner: env.GITHUB_OWNER, repo: env.GITHUB_REPO, api: env.GITHUB_API || undefined, fetch: deps.fetch ?? fetch, now,
   });
 
   const known = await env.SHARE_KV.get(`h:${hash}`);
@@ -76,7 +78,8 @@ export async function handle(req: Request, env: Env, deps: { fetch?: typeof fetc
       body: `<!-- starlight-summary -->\n${shareSummary(file, shareFlags(file))}\n<!-- /starlight-summary -->`,
       label: 'community-cheat',
     });
-  } catch {
+  } catch (err) {
+    console.error('share relay: opening the pull request failed:', err instanceof Error ? err.message : String(err));
     return error(502, "GitHub didn't accept the submission. Try again later.");
   }
 
