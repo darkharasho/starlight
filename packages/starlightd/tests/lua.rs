@@ -365,3 +365,20 @@ fn std_list_matches() {
     assert_eq!(l.ret("return select('#', unpack({1, 2, 3}))"), Value::Null);
     assert_eq!(l.ret("return tostring(select('#', unpack({1, 2, 3})))"), "3");
 }
+
+#[test]
+fn readpointer_is_4_bytes_on_i386() {
+    let t = Target::spawn32(&[]);
+    let (_d, mut l) = open(&t);
+    let s = syms(&t, &["p1", "p2", "gold"]);
+    let hex = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap();
+    let got = l.run_with("return string.format('%x', readPointer('p1'))", s.clone())["returned"].clone();
+    assert_eq!(hex(got.as_str().unwrap()), hex(&t.addr("p2")));
+    let got = l.run_with("return string.format('%x', getAddress('[[p1]]'))", s.clone())["returned"].clone();
+    assert_eq!(hex(got.as_str().unwrap()), hex(&t.addr("gold")));
+    assert_eq!(l.run_with("writePointer('p2', readPointer('p2')) return tostring(readInteger('gold'))", s.clone())["returned"], "1234");
+    assert_eq!(l.ret("return tostring(targetIs64Bit())"), "false");
+    let t64 = Target::spawn(&[]);
+    let (_d2, mut l2) = open(&t64);
+    assert_eq!(l2.ret("return tostring(targetIs64Bit())"), "true");
+}

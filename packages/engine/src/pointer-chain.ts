@@ -3,7 +3,8 @@ import type { PointerChainSpec } from './types.js';
 
 /* Resolves a pointer chain to a final address (hex string).
  *
- * Semantics, matching Cheat Engine: read 8 bytes (assumed 64-bit) at the base
+ * Semantics, matching Cheat Engine: read a pointer (4 or 8 bytes: starlightd uses the
+ * game's pointer size, 4 for 32-bit games) at the base
  * address to get a pointer P. Then for each offset, do P = *(P + offset),
  * EXCEPT for the LAST offset, which is added without dereferencing — the
  * caller wants the final address, not the value behind it. The walk runs in

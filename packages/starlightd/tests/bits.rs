@@ -120,3 +120,17 @@ fn guard_unknown_code_bits_is_not_ready() {
     // Plain reads keep working.
     c.call("read", json!({"handle": h, "address": t.addr("g_health"), "length": 4})).unwrap();
 }
+
+#[test]
+fn i386_pointer_chain() {
+    let t = Target::spawn32(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let r = c.call("resolve_pointer", json!({"handle": h, "base": t.addr("p1"), "offsets": ["0x0", "0x0"]})).unwrap();
+    assert_eq!(u64::from_str_radix(r["address"].as_str().unwrap().trim_start_matches("0x"), 16).unwrap(),
+               u64::from_str_radix(t.addr("gold").trim_start_matches("0x"), 16).unwrap());
+    // An explicit size overrides; anything but 4 or 8 is invalid.
+    let e = c.call("resolve_pointer", json!({"handle": h, "base": t.addr("p1"), "offsets": ["0x0"], "pointer_size": 2})).unwrap_err();
+    assert_eq!(e.0, -32602);
+}

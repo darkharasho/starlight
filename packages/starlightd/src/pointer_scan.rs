@@ -290,7 +290,7 @@ impl PointerScans {
             .into_iter()
             .filter(|p| {
                 let Some(m) = modules::find(&mods, &p.module) else { return false };
-                pointer::resolve(t, m.base.wrapping_add(p.base), &p.offsets).map_or(false, |a| a == want)
+                pointer::resolve(t, m.base.wrapping_add(p.base), &p.offsets, 8).map_or(false, |a| a == want)
             })
             .collect();
         if t.exited() {

@@ -444,7 +444,15 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
                     aob::module_range(&t, name)?.0
                 }
             };
-            let addr = pointer::resolve(&t, module_base.wrapping_add(base), &offsets)?;
+            let size = match params.get("pointer_size") {
+                None | Some(Value::Null) => t.require_code_bits()?.ptr_size(),
+                Some(v) => match v.as_u64() {
+                    Some(4) => 4,
+                    Some(8) => 8,
+                    _ => return Err(RpcError::invalid_params("pointer_size must be 4 or 8")),
+                },
+            };
+            let addr = pointer::resolve(&t, module_base.wrapping_add(base), &offsets, size)?;
             Ok(json!({ "address": format!("{addr:#x}") }))
         }
         "pointer_scan" => {

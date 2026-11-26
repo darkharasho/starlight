@@ -120,6 +120,12 @@ fn read_at(ctx: &Ctx, a: &LuaValue, n: usize) -> Option<Vec<u8>> {
     mem::read_bytes(&t, addr, n).ok().filter(|b| b.len() == n)
 }
 
+/// The attached game's pointer size, once its bitness is known.
+fn ptr_size(ctx: &Ctx) -> Option<usize> {
+    let t = ctx.lock().unwrap().target.clone()?;
+    t.code_bits().map(|b| b.ptr_size())
+}
+
 fn write_at(ctx: &Ctx, a: &LuaValue, bytes: &[u8]) -> bool {
     let Ok(addr) = address(ctx, a) else { return false };
     let Some(t) = ctx.lock().unwrap().target.clone() else { return false };
@@ -147,11 +153,13 @@ fn num_of(v: &LuaValue) -> Option<f64> {
 
 fn memory(lua: &Lua, api: &Table, ctx: &Ctx) -> mlua::Result<()> {
     // Integer reads: (name, size). `signed` as the second argument, CE-style.
-    for (name, size) in [("readsmallinteger", 2usize), ("readinteger", 4), ("readqword", 8), ("readpointer", 8)] {
+    for (name, size) in [("readsmallinteger", 2usize), ("readinteger", 4), ("readqword", 8), ("readpointer", 0)] {
         let c = ctx.clone();
         api.raw_set(
             name,
             lua.create_function(move |_, (a, signed): (LuaValue, Option<bool>)| {
+                // Size 0: the game's pointer size (nil while it isn't known yet).
+                let size = if size == 0 { match ptr_size(&c) { Some(n) => n, None => return Ok(None) } } else { size };
                 let Some(b) = read_at(&c, &a, size) else { return Ok(None) };
                 let mut buf = [0u8; 8];
                 buf[..size].copy_from_slice(&b);
@@ -164,12 +172,13 @@ fn memory(lua: &Lua, api: &Table, ctx: &Ctx) -> mlua::Result<()> {
             })?,
         )?;
     }
-    for (name, size) in [("writesmallinteger", 2usize), ("writeinteger", 4), ("writeqword", 8), ("writepointer", 8)] {
+    for (name, size) in [("writesmallinteger", 2usize), ("writeinteger", 4), ("writeqword", 8), ("writepointer", 0)] {
         let c = ctx.clone();
         api.raw_set(
             name,
             lua.create_function(move |_, (a, v): (LuaValue, LuaValue)| {
                 let Some(v) = int_of(&v) else { return Ok(false) };
+                let size = if size == 0 { match ptr_size(&c) { Some(n) => n, None => return Ok(false) } } else { size };
                 Ok(write_at(&c, &a, &v.to_le_bytes()[..size]))
             })?,
         )?;
@@ -352,7 +361,17 @@ fn addresses(lua: &Lua, api: &Table, ctx: &Ctx) -> mlua::Result<()> {
         "getopenedprocessid",
         lua.create_function(move |_, ()| Ok(c.lock().unwrap().target.as_ref().map_or(0, |t| t.pid as i64)))?,
     )?;
-    api.raw_set("targetis64bit", lua.create_function(|_, ()| Ok(true))?)?;
+    let c = ctx.clone();
+    api.raw_set(
+        "targetis64bit",
+        lua.create_function(move |_, ()| {
+            let Some(t) = c.lock().unwrap().target.clone() else { return Ok(true) };
+            match t.require_code_bits() {
+                Ok(b) => Ok(b == crate::arch::Bits::B64),
+                Err(e) => Err(mlua::Error::runtime(e.message)),
+            }
+        })?,
+    )?;
 
     // aobScan(pattern) / aobScanModule(module, pattern): a stringlist of hex addresses, or nil.
     let scan = |c: Ctx, module: bool| {

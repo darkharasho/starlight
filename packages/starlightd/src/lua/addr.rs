@@ -5,7 +5,6 @@
 //! symbols. A bare name is a symbol first, then a module, then a hex number; all
 //! case-insensitive, as in the engine's `resolveExpr`.
 
-use crate::mem;
 use crate::modules::{self, Module};
 use crate::process::Target;
 use std::collections::HashMap;
@@ -82,8 +81,8 @@ impl Scope<'_> {
         }
         if let Some(inner) = t.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
             let a = self.eval_in(inner, cache, depth + 1)?;
-            let b = mem::read_bytes(self.target, a, 8).map_err(|_| format!("can't read the pointer at {a:#x}"))?;
-            return Ok(u64::from_le_bytes(b.try_into().unwrap()));
+            let size = self.target.require_code_bits().map_err(|e| e.message)?.ptr_size();
+            return crate::pointer::read_pointer(self.target, a, size).map_err(|_| format!("can't read the pointer at {a:#x}"));
         }
         if let Some(q) = t.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
             return self.module_base(q, cache)?.ok_or_else(|| format!("module {q} isn't loaded"));
