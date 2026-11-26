@@ -26,7 +26,7 @@ const jsonOut = opt('--json', null);
 // --asm-log <file>: one JSON line per script that doesn't assemble (table, record, message, line text).
 const asmLog = opt('--asm-log', null);
 
-const { measureTable, summarize } = await import(join(root, 'packages/indexer/dist/coverage.js'));
+const { measureTable, summarize, guessTableBits } = await import(join(root, 'packages/indexer/dist/coverage.js'));
 
 const catalog = JSON.parse(readFileSync(join(root, 'packages/catalog/index.json'), 'utf8'));
 const sha = (s) => createHash('sha256').update(s).digest('hex');
@@ -115,10 +115,14 @@ async function startAssembler() {
     async check(row, xml) {
       const t = compileTable(xml);
       const known = Object.keys(t.registeredBy);
+      // No game to ask: the table's bitness is guessed from its scripts.
+      const cheats = t.records.flatMap((r) => (r.script?.cheat ? [r.script.cheat] : []));
+      const bits = guessTableBits(cheats);
+      row.bits = bits;
       for (const r of t.records) {
         if ((r.kind !== 'script' && r.kind !== 'header') || !r.script?.cheat) continue;
         checked += 1;
-        const res = await checkAssembles(engine.client, r.script.cheat, { known });
+        const res = await checkAssembles(engine.client, r.script.cheat, { known, bits });
         if (res.ok) continue;
         if (asmLog) {
           const st = [...r.script.cheat.enable, ...(r.script.cheat.disable ?? [])][res.step];
@@ -169,6 +173,12 @@ const report = summarize(rows, failed, compiler);
 console.log(`compiler: ${compiler}   selected: ${selected.length}   missing (not fetched): ${missing}   failed: ${report.failed}`);
 console.log(`tables:  ${report.tables.native}/${report.tables.total} native (${report.tables.pct}%)`);
 console.log(`records: ${report.records.native}/${report.records.total} native (${report.records.pct}%)`);
+if (assembler) {
+  for (const b of [32, 64]) {
+    const of = rows.filter((r) => r.bits === b);
+    console.log(`${b}-bit tables (guessed): ${of.filter((r) => r.native).length}/${of.length} native`);
+  }
+}
 console.log('top codes (tables / records):');
 for (const c of report.byCode.slice(0, 15)) console.log(`  ${c.code.padEnd(18)} ${String(c.tables).padStart(5)} ${String(c.records).padStart(7)}`);
 if (jsonOut) {

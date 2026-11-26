@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { baselineCompile, measureTable, summarize, type TableCoverage } from '../src/coverage.js';
+import { baselineCompile, measureTable, summarize, guessTableBits, type TableCoverage } from '../src/coverage.js';
+import type { StarlightPatchCheat } from '@starlight/ct-importer';
 
 function ct(entries: string, tableLua = ''): string {
   return `<?xml version="1.0" encoding="utf-8"?><CheatTable><CheatEntries>${entries}</CheatEntries><UserdefinedSymbols/>${tableLua}</CheatTable>`;
@@ -129,5 +130,25 @@ describe('coverage', () => {
     expect(t.tableCodes).toEqual(['lua:unsupported']);
     expect(t).toMatchObject({ records: 3, nativeRecords: 1, native: false });
     expect(measureTable('g', ct(header(1)), 'native')).toMatchObject({ records: 0, tableCodes: ['table:empty'], native: false });
+  });
+});
+
+describe('guessTableBits', () => {
+  const cheat = (...sources: string[]) =>
+    ({ enable: sources.map((source) => ({ op: 'assemble', at: 'x', source })), disable: [] }) as unknown as StarlightPatchCheat;
+  it('32 for 32-bit address registers', () => {
+    expect(guessTableBits([cheat('mov eax,[esi+10]')])).toBe(32);
+    expect(guessTableBits([cheat('mov ecx,[0x400000+eax*4]')])).toBe(32);
+  });
+  it('64 for 64-bit registers', () => {
+    expect(guessTableBits([cheat('mov rax,[rsi+10]')])).toBe(64);
+  });
+  it('64 for a mix', () => {
+    expect(guessTableBits([cheat('mov eax,[esi+10]'), cheat('mov rax,[rbx]')])).toBe(64);
+    expect(guessTableBits([cheat('mov eax,[esi+10]\nmov r8d,1')])).toBe(64);
+  });
+  it('64 when there are no brackets', () => {
+    expect(guessTableBits([cheat('mov eax,1')])).toBe(64);
+    expect(guessTableBits([])).toBe(64);
   });
 });

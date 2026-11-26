@@ -1,4 +1,4 @@
-import { compileTable, importCt, listCtRecords, parseCt, type CtRecord } from '@starlight/ct-importer';
+import { compileTable, importCt, listCtRecords, parseCt, type CtRecord, type StarlightPatchCheat } from '@starlight/ct-importer';
 
 export type Compiler = 'baseline' | 'native';
 
@@ -164,4 +164,19 @@ export function summarize(rows: TableCoverage[], failed: number, compiler: Compi
       .sort((a, b) => b.tables - a.tables || b.records - a.records || a.code.localeCompare(b.code)),
     failed,
   };
+}
+
+const ADDR32 = /\[[^\]]*\be(?:[abcd]x|[sd]i|[sb]p)\b[^\]]*\]/i;
+const GPR64 = /\b(?:r[abcd]x|r[sd]i|r[sb]p|r(?:8|9|1[0-5])[bwdl]?)\b/i;
+
+/**
+ * A table's likely code bitness, for counting coverage without its game: 32 when a script
+ * addresses memory through a 32-bit register (`[esi+10]`) and no script names a 64-bit-only
+ * register; otherwise 64.
+ */
+export function guessTableBits(cheats: StarlightPatchCheat[]): 32 | 64 {
+  const sources = cheats.flatMap((c) => [...c.enable, ...(c.disable ?? [])])
+    .flatMap((st) => (st.op === 'assemble' ? [st.source] : []));
+  if (sources.some((src) => GPR64.test(src))) return 64;
+  return sources.some((src) => ADDR32.test(src)) ? 32 : 64;
 }
