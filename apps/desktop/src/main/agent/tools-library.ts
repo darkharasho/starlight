@@ -111,6 +111,8 @@ export function libraryTools(deps: LibraryToolsDeps): ToolDef<any>[] { // eslint
         a = live(ctx);
       }
       const g = a.game;
+      const bits = await a.session.codeBits().catch(() => null);
+      a = live(ctx);
       const provenance: StarlightProvenance = {
         kind: 'agent',
         agent: `${a.client.name} ${a.client.version}`,
@@ -120,6 +122,7 @@ export function libraryTools(deps: LibraryToolsDeps): ToolDef<any>[] { // eslint
           ...(g.buildId !== null ? { buildId: g.buildId } : {}),
           ...(g.exeHash !== null ? { exeHash: g.exeHash } : {}),
         },
+        ...(bits !== null ? { bits } : {}),
       };
       const o: { category?: string; replaces?: string } = {};
       if (args.category !== undefined) o.category = args.category;

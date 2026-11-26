@@ -25,7 +25,7 @@ const OK: VerifyResult = { status: 'ok', reasons: [] };
 let dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.map((d) => rm(d, { recursive: true, force: true }))); dirs = []; });
 
-async function setup(o: { verify?: VerifyResult; catalog?: unknown; engine?: Record<string, unknown> } = {}) {
+async function setup(o: { verify?: VerifyResult; catalog?: unknown; engine?: Record<string, unknown>; bits?: 32 | 64 | null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'tl-'));
   dirs.push(dir);
   const verify = vi.fn(async () => o.verify ?? OK);
@@ -36,7 +36,7 @@ async function setup(o: { verify?: VerifyResult; catalog?: unknown; engine?: Rec
     ...(o.engine ? { engine: o.engine as never } : {}),
   });
   const ac = new AbortController();
-  const attached = { gen: 1, session: { id: 'x' } as unknown as Session, signal: ac.signal, game: GAME, client: CLIENT, describe: async () => null, track: {} } as unknown as AttachedContext;
+  const attached = { gen: 1, session: { id: 'x', codeBits: async () => o.bits ?? null } as unknown as Session, signal: ac.signal, game: GAME, client: CLIENT, describe: async () => null, track: {} } as unknown as AttachedContext;
   const ctx: ToolContext = { mcpSessionId: 's1', client: CLIENT, attached };
   const tool = (n: string): ToolDef<any> => defs.find((d) => d.name === n)!; // eslint-disable-line @typescript-eslint/no-explicit-any
   return { dir, verify, onSaved, catalogTrainerFor, defs, ctx, tool, stop: () => ac.abort() };
@@ -77,6 +77,20 @@ describe('save_cheat', () => {
       game: { steamAppId: 2784470, buildId: '17012345', exeHash: 'ab'.repeat(32) },
     });
     expect(s.tool('save_cheat').summarize({ cheat: DRAFT }, r)).toBe('save_cheat "Infinite gold" → 9 Kings');
+  });
+
+  it('save_cheat_records_bits', async () => {
+    const s = await setup({ bits: 32 });
+    await s.tool('save_cheat').run({ cheat: DRAFT }, s.ctx);
+    const t = await loadUserTrainer(s.dir, '9kings');
+    expect((t!.categories[0]!.cheats[0]! as { provenance?: { bits?: number } }).provenance!.bits).toBe(32);
+  });
+
+  it('save_cheat_leaves_bits_out_when_unknown', async () => {
+    const s = await setup({ bits: null });
+    await s.tool('save_cheat').run({ cheat: DRAFT }, s.ctx);
+    const t = await loadUserTrainer(s.dir, '9kings');
+    expect('bits' in (t!.categories[0]!.cheats[0]! as { provenance: object }).provenance).toBe(false);
   });
 
   it('omits provenance game fields that are unknown', async () => {
