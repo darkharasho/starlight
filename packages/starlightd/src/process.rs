@@ -1,4 +1,5 @@
 //! Attached processes. `Handles` is per connection; dropping a connection detaches everything.
+use crate::arch::{self, Bits};
 use crate::cleanup::{Owner, Teardown, ON_TARGET_EXIT};
 use crate::freeze::Freezes;
 use crate::maps;
@@ -10,13 +11,19 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub struct Target {
     pub pid: i32,
     pub pidfd: OwnedFd,
     pub mem: File,
+    /// ELF class of `/proc/<pid>/exe`: how remote calls are made.
+    pub process_bits: Bits,
+    /// The game code's bitness, once known (see `code_bits`).
+    pub code_bits_cell: OnceLock<Bits>,
+    /// The game's exe name, if the client named it; it alone then decides `code_bits`.
+    pub main_module: Option<String>,
 }
 
 type Map = Arc<Mutex<HashMap<u32, Arc<Target>>>>;
@@ -51,7 +58,12 @@ fn map_errno(e: &io::Error, pid: i32) -> RpcError {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn open_target(pid: i32) -> Result<Target, RpcError> {
+    open_target_with(pid, None)
+}
+
+pub(crate) fn open_target_with(pid: i32, main_module: Option<String>) -> Result<Target, RpcError> {
     if pid <= 0 {
         return Err(RpcError::invalid_params("pid must be positive"));
     }
@@ -61,7 +73,8 @@ pub(crate) fn open_target(pid: i32) -> Result<Target, RpcError> {
         .write(true)
         .open(format!("/proc/{pid}/mem"))
         .map_err(|e| map_errno(&e, pid))?;
-    let t = Target { pid, pidfd, mem };
+    let process_bits = arch::process_bits(pid).map_err(|e| map_errno(&e, pid))?;
+    let t = Target { pid, pidfd, mem, process_bits, code_bits_cell: OnceLock::new(), main_module };
     // Validate that reads actually work (ptrace access check) before handing out a handle.
     let regions = maps::read(pid).map_err(|e| map_errno(&e, pid))?;
     if let Some(r) = regions.iter().find(|r| r.perms.read) {
@@ -79,6 +92,13 @@ pub(crate) fn open_target(pid: i32) -> Result<Target, RpcError> {
     Ok(t)
 }
 
+/// `(process_bits, code_bits)` for a pid without attaching a handle or tracing it: it reads
+/// `/proc/<pid>/exe`, the maps and the PE headers only.
+pub fn process_info(pid: i32, main_module: Option<String>) -> Result<(Bits, Option<Bits>), RpcError> {
+    let t = open_target_with(pid, main_module)?;
+    Ok((t.process_bits, t.code_bits()))
+}
+
 /// True once the process behind `pidfd` has exited (pidfd becomes readable).
 fn poll_exited(pidfd: &OwnedFd, timeout: Duration) -> bool {
     let mut p = libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
@@ -87,6 +107,21 @@ fn poll_exited(pidfd: &OwnedFd, timeout: Duration) -> bool {
 }
 
 impl Target {
+    /// The game code's bitness. Detection runs again on each call until it succeeds; the first
+    /// answer is kept.
+    pub fn code_bits(&self) -> Option<Bits> {
+        if let Some(b) = self.code_bits_cell.get() {
+            return Some(*b);
+        }
+        let b = arch::detect_code_bits(self)?;
+        Some(*self.code_bits_cell.get_or_init(|| b))
+    }
+
+    /// `code_bits`, or `-32016` while it isn't known yet.
+    pub fn require_code_bits(&self) -> Result<Bits, RpcError> {
+        self.code_bits().ok_or_else(RpcError::target_not_ready)
+    }
+
     /// True once the process has exited (its pidfd is readable).
     pub fn exited(&self) -> bool {
         poll_exited(&self.pidfd, Duration::ZERO)
@@ -122,8 +157,9 @@ impl Handles {
         }
     }
 
-    pub fn attach(&self, pid: i32) -> Result<u32, RpcError> {
-        let target = Arc::new(open_target(pid)?);
+    pub fn attach(&self, pid: i32, main_module: Option<String>) -> Result<(u32, Arc<Target>), RpcError> {
+        let target = Arc::new(open_target_with(pid, main_module)?);
+        let attached = target.clone();
         let handle = self.next.fetch_add(1, Ordering::Relaxed);
         self.map.lock().unwrap().insert(handle, target.clone());
 
@@ -148,7 +184,7 @@ impl Handles {
                 return; // detached
             }
         });
-        Ok(handle)
+        Ok((handle, attached))
     }
 
     pub fn get(&self, handle: u32) -> Result<Arc<Target>, RpcError> {
@@ -264,6 +300,9 @@ mod tests {
             pid,
             pidfd: pidfd_open(pid).unwrap(),
             mem: OpenOptions::new().read(true).write(true).open("/proc/self/mem").unwrap(),
+            process_bits: Bits::B64,
+            code_bits_cell: OnceLock::new(),
+            main_module: None,
         });
         // Handle 7 was never inserted: models the watcher having removed it between get and insert.
         let addr = &CELL as *const u32 as u64;

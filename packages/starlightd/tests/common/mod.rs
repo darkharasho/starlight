@@ -187,7 +187,16 @@ pub struct Target {
 
 impl Target {
     pub fn spawn(args: &[&str]) -> Target {
-        let exe = Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/test-target/build/target");
+        Target::spawn_exe("target", args)
+    }
+
+    /// The freestanding i386 target (`target32.c`): `gold` = 1234 behind `p1 -> p2 -> gold`.
+    pub fn spawn32(args: &[&str]) -> Target {
+        Target::spawn_exe("target32", args)
+    }
+
+    fn spawn_exe(name: &str, args: &[&str]) -> Target {
+        let exe = Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/test-target/build").join(name);
         assert!(exe.exists(), "build it with `make -C packages/engine/test-target`");
         let mut child = Command::new(&exe)
             .args(args)

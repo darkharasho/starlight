@@ -7,6 +7,7 @@ use crate::speed::Speeds;
 use crate::tracer::DrRw;
 use crate::watch::{self, Watches};
 use crate::{aob, asm, disasm, mem, modules, pointer, process::Handles, signature, speed, symbols};
+use crate::arch::Bits;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -14,7 +15,7 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 pub const PROTOCOL: u64 = 3;
-pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed", "aob_exec", "lua", "freeze_mask"];
+pub const CAPABILITIES: &[&str] = &["read", "write", "modules", "aob", "pointer", "freeze", "read_many", "scan", "symbols", "disasm", "signature", "assemble", "alloc", "patch", "watch", "pointer_scan", "speed", "aob_exec", "lua", "freeze_mask", "bits"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -49,6 +50,8 @@ impl RpcError {
     pub fn ptrace_failed(m: impl Into<String>) -> Self { Self::new(-32012, m) }
     pub fn busy(m: impl Into<String>) -> Self { Self::new(-32013, m) }
     pub fn patch_conflict(m: impl Into<String>) -> Self { Self::new(-32014, m) }
+    pub fn unsupported_target(m: impl Into<String>) -> Self { Self::new(-32015, m) }
+    pub fn target_not_ready() -> Self { Self::new(-32016, "The game is still starting; try again in a moment.") }
 }
 
 /// Cloneable, thread-safe line writer for one connection.
@@ -196,7 +199,20 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
         "attach" => {
             let pid = param_u64(params, "pid")?;
             let pid = i32::try_from(pid).map_err(|_| RpcError::invalid_params("pid out of range"))?;
-            Ok(json!({ "handle": handles.attach(pid)? }))
+            let main_module = params.get("main_module").and_then(Value::as_str).map(str::to_string);
+            let (handle, t) = handles.attach(pid, main_module)?;
+            Ok(json!({ "handle": handle, "process_bits": t.process_bits.n(), "code_bits": t.code_bits().map(Bits::n) }))
+        }
+        "target_info" => {
+            let t = handles.get(param_handle(params)?)?;
+            Ok(json!({ "process_bits": t.process_bits.n(), "code_bits": t.code_bits().map(Bits::n) }))
+        }
+        "process_info" => {
+            let pid = param_u64(params, "pid")?;
+            let pid = i32::try_from(pid).map_err(|_| RpcError::invalid_params("pid out of range"))?;
+            let main_module = params.get("main_module").and_then(Value::as_str).map(str::to_string);
+            let (process_bits, code_bits) = crate::process::process_info(pid, main_module)?;
+            Ok(json!({ "process_bits": process_bits.n(), "code_bits": code_bits.map(Bits::n) }))
         }
         "detach" => {
             handles.detach(param_handle(params)?)?;

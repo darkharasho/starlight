@@ -1,4 +1,5 @@
 mod aob;
+mod arch;
 mod asm;
 mod cleanup;
 mod disasm;
