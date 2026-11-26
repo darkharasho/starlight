@@ -8,18 +8,28 @@
   "exports": {
     ".": "./index.json",
     "./schema": "./dist/schema.js",
-    "./index.json": "./index.json"
+    "./index.json": "./index.json",
+    "./community": "./dist/community.js",
+    "./slug": "./dist/slug.js"
   },
-  "files": ["index.json", "trainers", "dist", "src"],
+  "files": [
+    "index.json",
+    "trainers",
+    "dist",
+    "src",
+    "community"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@starlight/ct-importer": "workspace:*",
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
   }
 }

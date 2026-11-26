@@ -13,6 +13,8 @@ export const CatalogIndexEntrySchema = z.object({
   trainerUpdatedAt: z.string().optional(),
   /** Original forum URL — used for live fetching when trainerPath is absent. */
   trainerSource: z.string().url().optional(),
+  /** Added by the Pages build for a game that only has community cheats (no table). */
+  communityOnly: z.boolean().optional(),
 });
 
 export const CatalogIndexSchema = z.object({
