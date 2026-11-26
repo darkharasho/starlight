@@ -99,12 +99,99 @@ impl Gone {
     }
 }
 
+/// How a remote syscall is made: which instruction, which registers, which numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyscallAbi {
+    /// `syscall` from 64-bit code (cs 0x33).
+    X64,
+    /// `int 0x80` from 32-bit code (cs 0x23).
+    I386,
+}
+
+impl SyscallAbi {
+    pub fn for_bits(process_bits: crate::arch::Bits) -> SyscallAbi {
+        match process_bits {
+            crate::arch::Bits::B32 => SyscallAbi::I386,
+            crate::arch::Bits::B64 => SyscallAbi::X64,
+        }
+    }
+
+    /// True if a thread whose code segment is `cs` can run this ABI's instruction.
+    pub fn fits(self, cs: u64) -> bool {
+        match self {
+            SyscallAbi::X64 => cs == 0x33,
+            SyscallAbi::I386 => cs == 0x23,
+        }
+    }
+
+    pub fn site_bytes(self) -> [u8; 2] {
+        match self {
+            SyscallAbi::X64 => [0x0f, 0x05],
+            SyscallAbi::I386 => [0xcd, 0x80],
+        }
+    }
+
+    pub fn nr_mmap(self) -> i64 {
+        match self {
+            SyscallAbi::X64 => libc::SYS_mmap,
+            SyscallAbi::I386 => 192, // mmap2: offset in pages
+        }
+    }
+
+    pub fn nr_munmap(self) -> i64 {
+        match self {
+            SyscallAbi::X64 => libc::SYS_munmap,
+            SyscallAbi::I386 => 91,
+        }
+    }
+
+    /// The syscall's result from the thread's `rax` after the call.
+    pub fn result(self, rax: u64) -> i64 {
+        match self {
+            SyscallAbi::X64 => rax as i64,
+            SyscallAbi::I386 => rax as u32 as i32 as i64,
+        }
+    }
+
+    /// Point `r` at `site` with syscall `nr` and `args` in this ABI's registers.
+    fn load(self, r: &mut libc::user_regs_struct, site: u64, nr: i64, args: [u64; 6]) {
+        r.rip = site;
+        r.orig_rax = u64::MAX;
+        match self {
+            SyscallAbi::X64 => {
+                r.rax = nr as u64;
+                r.rdi = args[0];
+                r.rsi = args[1];
+                r.rdx = args[2];
+                r.r10 = args[3];
+                r.r8 = args[4];
+                r.r9 = args[5];
+            }
+            SyscallAbi::I386 => {
+                let lo = |v: u64| v & 0xFFFF_FFFF;
+                r.rax = lo(nr as u64);
+                r.rbx = lo(args[0]);
+                r.rcx = lo(args[1]);
+                r.rdx = lo(args[2]);
+                r.rsi = lo(args[3]);
+                r.rdi = lo(args[4]);
+                r.rbp = lo(args[5]);
+            }
+        }
+    }
+}
+
+/// The first thread of `cs_by_tid` (in preference order) whose code segment can run `abi`.
+pub fn pick_thread(cs_by_tid: &[(i32, u64)], abi: SyscallAbi) -> Option<i32> {
+    cs_by_tid.iter().find(|&&(_, cs)| abi.fits(cs)).map(|&(tid, _)| tid)
+}
+
 /// State shared between the `Tracer` handle and its thread.
 struct Shared {
     dead: AtomicBool,
     gone: Gone,
     subscribers: Mutex<Vec<Sender<Trap>>>,
-    syscall_site: Mutex<Option<u64>>,
+    syscall_site: Mutex<Option<(u64, SyscallAbi)>>,
 }
 
 pub struct Tracer {
@@ -241,12 +328,18 @@ impl Tracer {
         rx
     }
 
-    pub fn syscall_site(&self) -> Option<u64> {
+    /// The cached call site and its ABI.
+    pub fn call_site(&self) -> Option<(u64, SyscallAbi)> {
         *self.shared.syscall_site.lock().unwrap()
     }
 
+    pub fn set_call_site(&self, addr: u64, abi: SyscallAbi) {
+        *self.shared.syscall_site.lock().unwrap() = Some((addr, abi));
+    }
+
+    #[cfg(test)]
     pub fn set_syscall_site(&self, addr: u64) {
-        *self.shared.syscall_site.lock().unwrap() = Some(addr);
+        self.set_call_site(addr, SyscallAbi::X64);
     }
 
     fn gone_error(&self) -> RpcError {
@@ -1060,17 +1153,25 @@ impl Stopped<'_> {
 
     /// The thread to run a syscall on: one stopped by our interrupt (main thread first), so no
     /// signal has to be carried across it; a signal-stopped thread only if there is no other.
-    fn syscall_thread(&self) -> Result<i32, RpcError> {
+    /// Only threads whose code segment can run `abi`'s instruction qualify (in WoW64 a thread in
+    /// 32-bit game code can't run `syscall`); if none can, nothing is touched.
+    fn syscall_thread(&self, abi: SyscallAbi) -> Result<i32, RpcError> {
         let state = |tid: &i32| self.core.threads.get(tid).map(|t| t.state);
         let pid = self.core.pid;
         let mut order = vec![pid];
         order.extend(self.tids.iter().copied().filter(|&t| t != pid));
-        order
-            .iter()
-            .find(|t| state(t) == Some(State::Interrupted))
-            .or_else(|| order.iter().find(|t| state(t).is_some_and(State::can_run_code)))
-            .copied()
-            .ok_or_else(|| RpcError::ptrace_failed("no thread of the game can run a syscall right now"))
+        let interrupted = order.iter().filter(|t| state(t) == Some(State::Interrupted));
+        let others = order.iter().filter(|t| state(t).is_some_and(State::can_run_code) && state(t) != Some(State::Interrupted));
+        let mut cs_by_tid = vec![];
+        for &tid in interrupted.chain(others) {
+            if let Ok(r) = get_regs(tid) {
+                cs_by_tid.push((tid, r.cs));
+            }
+        }
+        if cs_by_tid.is_empty() {
+            return Err(RpcError::ptrace_failed("no thread of the game can run a syscall right now"));
+        }
+        pick_thread(&cs_by_tid, abi).ok_or_else(|| RpcError::ptrace_failed("no thread is running code that can make this call"))
     }
 
     /// Run syscall `nr` in the target (D6): on a thread stopped where code can run, point `rip`
@@ -1079,36 +1180,31 @@ impl Stopped<'_> {
     /// interrupted syscall of the game restarts as if nothing happened. Returns the raw result
     /// (`-errno` on failure).
     pub fn syscall(&mut self, nr: i64, args: [u64; 6]) -> Result<i64, RpcError> {
-        let tid = self.syscall_thread()?;
+        let (_, abi) = self.site()?;
+        let tid = self.syscall_thread(abi)?;
         self.syscall_on(tid, nr, args)
     }
 
+    /// The cached call site and its ABI.
+    pub fn site(&self) -> Result<(u64, SyscallAbi), RpcError> {
+        self.core.shared.syscall_site.lock().unwrap().ok_or_else(|| RpcError::internal_error("no syscall site found yet"))
+    }
+
     fn syscall_on(&mut self, tid: i32, nr: i64, args: [u64; 6]) -> Result<i64, RpcError> {
-        let site = self
-            .core
-            .shared
-            .syscall_site
-            .lock()
-            .unwrap()
-            .ok_or_else(|| RpcError::internal_error("no syscall site found yet"))?;
+        let (site, abi) = self.site()?;
         let prior = self.core.threads.get(&tid).map(|t| t.state).filter(|s| s.can_run_code());
         let prior = prior.ok_or_else(|| RpcError::invalid_params(format!("thread {tid} cannot run a syscall")))?;
         let saved = get_regs(tid).map_err(|e| ptrace_error("PTRACE_GETREGS", tid, e))?;
+        if !abi.fits(saved.cs) {
+            return Err(RpcError::ptrace_failed(format!("thread {tid} is running code that can't make this call")));
+        }
         let mut r = saved;
-        r.rip = site;
-        r.rax = nr as u64;
-        r.orig_rax = u64::MAX;
-        r.rdi = args[0];
-        r.rsi = args[1];
-        r.rdx = args[2];
-        r.r10 = args[3];
-        r.r8 = args[4];
-        r.r9 = args[5];
+        abi.load(&mut r, site, nr, args);
         set_regs(tid, &r).map_err(|e| ptrace_error("PTRACE_SETREGS", tid, e))?;
         match self.step_syscall(tid, site, saved, prior) {
             Step::Done(rax) => {
                 set_regs(tid, &saved).map_err(|e| ptrace_error("PTRACE_SETREGS", tid, e))?;
-                Ok(rax as i64)
+                Ok(abi.result(rax as u64))
             }
             Step::Failed(e) => {
                 if self.core.threads.contains_key(&tid) {
@@ -1164,6 +1260,27 @@ pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
+
+    #[test]
+    fn abi_fits_code_segment() {
+        assert!(SyscallAbi::X64.fits(0x33));
+        assert!(!SyscallAbi::X64.fits(0x23));
+        assert!(SyscallAbi::I386.fits(0x23));
+        assert!(!SyscallAbi::I386.fits(0x33));
+        assert_eq!(SyscallAbi::X64.site_bytes(), [0x0f, 0x05]);
+        assert_eq!(SyscallAbi::I386.site_bytes(), [0xcd, 0x80]);
+        assert_eq!((SyscallAbi::I386.nr_mmap(), SyscallAbi::I386.nr_munmap()), (192, 91));
+        assert_eq!((SyscallAbi::X64.nr_mmap(), SyscallAbi::X64.nr_munmap()), (libc::SYS_mmap, libc::SYS_munmap));
+    }
+
+    #[test]
+    fn abi_no_fitting_thread_refuses_without_touching_registers() {
+        // In WoW64, a thread in 32-bit game code can't run a 64-bit `syscall`.
+        assert_eq!(pick_thread(&[(10, 0x23), (11, 0x33)], SyscallAbi::X64), Some(11));
+        assert_eq!(pick_thread(&[(10, 0x23), (11, 0x23)], SyscallAbi::X64), None);
+        assert_eq!(pick_thread(&[(10, 0x23)], SyscallAbi::I386), Some(10));
+        assert_eq!(pick_thread(&[], SyscallAbi::I386), None);
+    }
 
     #[test]
     fn dr7_bits_follow_the_intel_layout() {
@@ -1650,7 +1767,7 @@ pub(crate) mod tests {
         // A signal that arrives while our syscall runs is queued, then delivered as it was sent.
         let queued = tr
             .with_stopped(move |s| {
-                assert_eq!(s.syscall_thread().unwrap(), pid, "the interrupted main thread runs syscalls");
+                assert_eq!(s.syscall_thread(SyscallAbi::X64).unwrap(), pid, "the interrupted main thread runs syscalls");
                 queue_usr2(pid, pid, 4242);
                 assert_eq!(s.syscall_on(pid, libc::SYS_getpid, [0; 6]).unwrap(), pid as i64);
                 s.core.threads[&pid].queued.len()
@@ -1673,7 +1790,7 @@ pub(crate) mod tests {
                 }
             }
             assert_eq!(s.core.threads[&pid].state, State::Signal(libc::SIGUSR2));
-            assert_ne!(s.syscall_thread().unwrap(), pid, "an interrupted thread is preferred");
+            assert_ne!(s.syscall_thread(SyscallAbi::X64).unwrap(), pid, "an interrupted thread is preferred");
             assert_eq!(s.syscall_on(pid, libc::SYS_getpid, [0; 6]).unwrap(), pid as i64);
         })
         .unwrap();

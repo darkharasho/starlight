@@ -12,9 +12,11 @@ pub fn remote(t: &Target) -> Result<(), RpcError> {
     remote_for(t.process_bits, t.code_bits())
 }
 
+/// Refused: unknown bitness, and WoW64 (a 64-bit process running 32-bit code) until it is
+/// verified live. 32-bit processes use `int 0x80`.
 fn remote_for(process_bits: Bits, code_bits: Option<Bits>) -> Result<(), RpcError> {
     let code = code_bits.ok_or_else(RpcError::target_not_ready)?;
-    if process_bits == Bits::B32 || code == Bits::B32 {
+    if process_bits == Bits::B64 && code == Bits::B32 {
         return Err(RpcError::unsupported_target(CODE_32));
     }
     Ok(())
@@ -45,7 +47,7 @@ mod tests {
 
     #[test]
     fn guard_refuses_32_bit_code_and_processes() {
-        assert_eq!(remote_for(Bits::B32, Some(Bits::B32)).unwrap_err().code, -32015);
+        assert!(remote_for(Bits::B32, Some(Bits::B32)).is_ok());
         assert_eq!(remote_for(Bits::B64, Some(Bits::B32)).unwrap_err().code, -32015);
         assert!(remote_for(Bits::B64, Some(Bits::B64)).is_ok());
         let e = speed_for(Some(Bits::B32)).unwrap_err();

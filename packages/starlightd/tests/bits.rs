@@ -74,14 +74,36 @@ fn alive_with_gold(c: &mut Client, h: &Value, t: &Target) {
     assert_eq!(r["bytes"], "d2040000");
 }
 
+fn hexv(v: &Value) -> u64 {
+    u64::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+}
+
 #[test]
-fn guard_alloc_on_i386_target_is_refused_and_target_lives() {
+fn alloc_on_i386_target_works() {
     let t = Target::spawn32(&[]);
     let d = Daemon::start();
     let mut c = d.client();
     let h = attach(&mut c, &t);
-    let e = c.call("alloc", json!({"handle": h, "size": 4096})).unwrap_err();
-    assert_eq!(e.0, -32015, "{e:?}");
+    let r = c.call("alloc", json!({"handle": h, "size": 4096})).unwrap();
+    let a = hexv(&r["address"]);
+    assert!(a < 0x1_0000_0000, "{a:#x}");
+    let at = format!("{a:#x}");
+    c.call("write", json!({"handle": h, "address": at, "bytes": "deadbeef"})).unwrap();
+    assert_eq!(c.call("read", json!({"handle": h, "address": at, "length": 4})).unwrap()["bytes"], "deadbeef");
+    c.call("free", json!({"handle": h, "address": at})).unwrap();
+    alive_with_gold(&mut c, &h, &t);
+}
+
+#[test]
+fn i386_alloc_twice_reuses_cached_site() {
+    let t = Target::spawn32(&[]);
+    let d = Daemon::start();
+    let mut c = d.client();
+    let h = attach(&mut c, &t);
+    let a = hexv(&c.call("alloc", json!({"handle": h, "size": 4096})).unwrap()["address"]);
+    let near = format!("{:#x}", hexv(&json!(t.addr("gold"))));
+    let b = hexv(&c.call("alloc", json!({"handle": h, "size": 8192, "near": near})).unwrap()["address"]);
+    assert!(a != b && b < 0x1_0000_0000);
     alive_with_gold(&mut c, &h, &t);
 }
 

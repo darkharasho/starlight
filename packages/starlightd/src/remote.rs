@@ -3,7 +3,8 @@ use crate::maps::{self, Region};
 use crate::mem;
 use crate::process::Target;
 use crate::rpc::RpcError;
-use crate::tracer::{Stopped, Tracer};
+use crate::arch::Bits;
+use crate::tracer::{Stopped, SyscallAbi, Tracer};
 
 const PAGE: u64 = 4096;
 /// Near allocations are aligned like Windows allocations.
@@ -12,6 +13,8 @@ const GRANULARITY: u64 = 0x10000;
 const MIN_ADDR: u64 = 0x10000;
 /// End of the x86-64 user address space (47-bit).
 const MAX_ADDR: u64 = 0x7fff_ffff_f000;
+/// Highest end for memory that 32-bit code must reach (just under 4 GiB).
+const MAX_ADDR_32: u64 = 0xFFFF_0000;
 /// The kernel keeps this much free below a stack so it can grow.
 const STACK_GUARD: u64 = 1 << 20;
 /// Gaps tried per near allocation.
@@ -39,29 +42,43 @@ fn is_elf(t: &Target, regions: &[Region], r: &Region) -> bool {
         .is_some_and(|m| m == b"\x7fELF")
 }
 
-/// Address of a `syscall` (`0f 05`) in an r-x, file-backed Linux mapping, libc first. Cached per
-/// tracer. Only executed, never written.
-pub fn syscall_site(t: &Target, tracer: &Tracer) -> Result<u64, RpcError> {
-    if let Some(a) = tracer.syscall_site() {
-        return Ok(a);
+/// The ABI remote calls use in `t`: `int 0x80` in a 32-bit process.
+pub fn abi_for(t: &Target) -> SyscallAbi {
+    SyscallAbi::for_bits(t.process_bits)
+}
+
+/// Address of the ABI's call instruction (`syscall` `0f 05`, or `int 0x80` `cd 80`), cached per
+/// tracer. i386 looks in `[vdso]` first (always mapped, even in freestanding programs), then in
+/// r-x Linux libraries, libc first; x86-64 in the libraries only. Only executed, never written.
+pub fn call_site(t: &Target, tracer: &Tracer, abi: SyscallAbi) -> Result<u64, RpcError> {
+    if let Some((a, cached)) = tracer.call_site() {
+        if cached == abi {
+            return Ok(a);
+        }
     }
     let regions = maps::read(t.pid).map_err(|e| RpcError::process_not_found(format!("cannot read maps of {}: {e}", t.pid)))?;
-    let mut code: Vec<&Region> = regions
+    let mut code: Vec<&Region> = vec![];
+    if abi == SyscallAbi::I386 {
+        code.extend(regions.iter().filter(|r| r.perms.read && r.perms.exec && r.path.as_deref() == Some("[vdso]")));
+    }
+    let mut libs: Vec<&Region> = regions
         .iter()
         .filter(|r| r.perms.read && r.perms.exec && !r.perms.write && r.path.as_deref().is_some_and(|p| p.starts_with('/')))
         .filter(|r| is_elf(t, &regions, r))
         .collect();
-    code.sort_by_key(|r| !is_libc(r)); // stable: libc first, then map order
+    libs.sort_by_key(|r| !is_libc(r)); // stable: libc first, then map order
+    code.extend(libs);
+    let want = abi.site_bytes();
     const CHUNK: u64 = 64 * 1024;
     for r in code {
         let mut at = r.start;
         while at < r.end {
-            // One byte of overlap so a `0f 05` across a chunk boundary is found.
+            // One byte of overlap so a site across a chunk boundary is found.
             let len = (r.end - at).min(CHUNK + 1);
             let Ok(buf) = mem::read_bytes(t, at, len as usize) else { break };
-            if let Some(i) = buf.windows(2).position(|w| w == [0x0f, 0x05]) {
+            if let Some(i) = buf.windows(2).position(|w| w == want) {
                 let site = at + i as u64;
-                tracer.set_syscall_site(site);
+                tracer.set_call_site(site, abi);
                 return Ok(site);
             }
             at += CHUNK;
@@ -70,9 +87,12 @@ pub fn syscall_site(t: &Target, tracer: &Tracer) -> Result<u64, RpcError> {
     Err(RpcError::ptrace_failed("no syscall instruction found in the game's code"))
 }
 
-fn syscall_result(r: i64, what: &str) -> Result<u64, RpcError> {
+/// A raw result (`-errno` on failure); i386 results are 32-bit addresses.
+fn syscall_result_abi(abi: SyscallAbi, r: i64, what: &str) -> Result<u64, RpcError> {
     if (-4095..0).contains(&r) {
         Err(RpcError::alloc_failed(format!("{what} failed: {}", std::io::Error::from_raw_os_error(-r as i32))))
+    } else if abi == SyscallAbi::I386 {
+        Ok(r as u32 as u64)
     } else {
         Ok(r as u64)
     }
@@ -85,22 +105,25 @@ pub fn mmap(stopped: &mut Stopped<'_>, len: u64, prot: i32, hint: Option<u64>) -
     if hint.is_some() {
         flags |= MAP_FIXED_NOREPLACE;
     }
-    let r = stopped.syscall(libc::SYS_mmap, [hint.unwrap_or(0), len, prot as u64, flags, u64::MAX, 0])?;
-    syscall_result(r, "mmap")
+    let (_, abi) = stopped.site()?;
+    // mmap2 (i386) takes its offset in pages; it is 0 here either way.
+    let r = stopped.syscall(abi.nr_mmap(), [hint.unwrap_or(0), len, prot as u64, flags, u64::MAX, 0])?;
+    syscall_result_abi(abi, r, "mmap")
 }
 
 pub fn munmap(stopped: &mut Stopped<'_>, addr: u64, len: u64) -> Result<(), RpcError> {
-    let r = stopped.syscall(libc::SYS_munmap, [addr, len, 0, 0, 0, 0])?;
-    syscall_result(r, "munmap").map(|_| ())
+    let (_, abi) = stopped.site()?;
+    let r = stopped.syscall(abi.nr_munmap(), [addr, len, 0, 0, 0, 0])?;
+    syscall_result_abi(abi, r, "munmap").map(|_| ())
 }
 
 /// 64 KiB-aligned addresses where `len` bytes fit in a true gap of `regions`, every byte within
-/// ±(2 GiB − `len`) of `near` (a little margin is kept), nearest first.
-fn near_candidates(regions: &[Region], near: u64, len: u64) -> Vec<u64> {
+/// ±(2 GiB − `len`) of `near` (a little margin is kept) and below `max_addr`, nearest first.
+fn near_candidates(regions: &[Region], near: u64, len: u64, max_addr: u64) -> Vec<u64> {
     let reach = (1u64 << 31).saturating_sub(len + GRANULARITY);
     let lo = near.saturating_sub(reach).max(MIN_ADDR);
-    let hi = near.saturating_add(reach).min(MAX_ADDR);
-    let mut regions: Vec<&Region> = regions.iter().filter(|r| r.start < MAX_ADDR).collect();
+    let hi = near.saturating_add(reach).min(max_addr);
+    let mut regions: Vec<&Region> = regions.iter().filter(|r| r.start < max_addr).collect();
     regions.sort_by_key(|r| r.start);
     let mut gaps = Vec::new();
     let mut prev_end = 0;
@@ -111,7 +134,7 @@ fn near_candidates(regions: &[Region], near: u64, len: u64) -> Vec<u64> {
         }
         prev_end = prev_end.max(r.end);
     }
-    gaps.push((prev_end, MAX_ADDR));
+    gaps.push((prev_end, max_addr));
     let mut out: Vec<u64> = gaps
         .into_iter()
         .filter_map(|(s, e)| {
@@ -134,14 +157,20 @@ pub fn alloc(t: &Target, size: u64, near: Option<u64>, prot: i32) -> Result<u64,
     }
     crate::guard::remote(t)?;
     let len = page_round(size);
+    // 32-bit code only reaches the low 4 GiB. A 32-bit process's kernel keeps every mapping
+    // there anyway; a 64-bit process running 32-bit code (WoW64) needs an explicit low gap.
+    let code32 = t.code_bits() == Some(Bits::B32);
+    let max_addr = if code32 { MAX_ADDR_32 } else { MAX_ADDR };
+    let near = if code32 && t.process_bits == Bits::B64 { Some(near.unwrap_or(MIN_ADDR)) } else { near };
+    let abi = abi_for(t);
     let tracer = t.tracer()?;
-    syscall_site(t, &tracer)?;
+    call_site(t, &tracer, abi)?;
     let pid = t.pid;
     tracer.with_stopped(move |s| {
         let Some(near) = near else { return mmap(s, len, prot, None) };
         // Read with the game stopped, so the gaps can't change under us.
         let regions = maps::read(pid).map_err(|e| RpcError::process_not_found(format!("cannot read maps of {pid}: {e}")))?;
-        for cand in near_candidates(&regions, near, len).into_iter().take(MAX_NEAR_TRIES) {
+        for cand in near_candidates(&regions, near, len, max_addr).into_iter().take(MAX_NEAR_TRIES) {
             match mmap(s, len, prot, Some(cand)) {
                 Ok(a) if a == cand => return Ok(a),
                 Ok(a) => {
@@ -153,7 +182,7 @@ pub fn alloc(t: &Target, size: u64, near: Option<u64>, prot: i32) -> Result<u64,
                 Err(e) => return Err(e),
             }
         }
-        Err(RpcError::alloc_failed(format!("no free gap within 2 GiB of {near:#x}")))
+        Err(RpcError::alloc_failed(format!("no free gap within 2 GiB of {near:#x}{}", if code32 { " below 4 GiB" } else { "" })))
     })?
 }
 
@@ -189,15 +218,16 @@ pub fn free(t: &Target, addr: u64, size: u64) -> Result<(), FreeError> {
     OWN.lock().unwrap().retain(|&(pid, s, e)| !(pid == t.pid && s < end && addr < e));
     let not_run = |error| FreeError { error, maybe_unmapped: false };
     crate::guard::remote(t).map_err(not_run)?;
+    let abi = abi_for(t);
     let tracer = t.tracer().map_err(not_run)?;
-    syscall_site(t, &tracer).map_err(not_run)?;
-    match tracer.with_stopped(move |s| s.syscall(libc::SYS_munmap, [addr, size, 0, 0, 0, 0])) {
+    call_site(t, &tracer, abi).map_err(not_run)?;
+    match tracer.with_stopped(move |s| s.syscall(abi.nr_munmap(), [addr, size, 0, 0, 0, 0])) {
         // The job never ran (the world could not be stopped), unless it panicked part-way.
         Err(e) => Err(FreeError { maybe_unmapped: e.code == -32603, error: e }),
         // The injection failed part-way: the munmap may have run.
         Ok(Err(e)) => Err(FreeError { error: e, maybe_unmapped: true }),
         // The kernel refused: nothing was unmapped.
-        Ok(Ok(r)) => syscall_result(r, "munmap").map(|_| ()).map_err(not_run),
+        Ok(Ok(r)) => syscall_result_abi(abi, r, "munmap").map(|_| ()).map_err(not_run),
     }
 }
 
@@ -231,7 +261,7 @@ mod tests {
             region(0x7f00_0000_0000, 0x7f00_0010_0000, Some("/usr/lib64/libc.so.6")),
         ];
         let near = 0x401234;
-        let c = near_candidates(&regions, near, 4096);
+        let c = near_candidates(&regions, near, 4096, MAX_ADDR);
         assert_eq!(c[0], 0x3f0000, "just below the image");
         assert_eq!(c[1], 0x10000000, "just above the reservation");
         for a in &c {
@@ -246,7 +276,7 @@ mod tests {
     fn near_candidates_stay_within_reach_of_high_addresses() {
         let near = 0x7f12_3456_7000;
         let regions = [region(near - 0x1000, near + 0x1000, Some("/x"))];
-        let c = near_candidates(&regions, near, 0x2000);
+        let c = near_candidates(&regions, near, 0x2000, MAX_ADDR);
         assert!(!c.is_empty());
         for a in c {
             assert!(a.abs_diff(near) < (1 << 31) - 0x2000 && a + 0x2000 <= MAX_ADDR);
@@ -257,10 +287,27 @@ mod tests {
     fn near_candidates_skip_the_stack_guard_and_full_space() {
         let near = 0x7ffd_0000_0000;
         let regions = [region(0x7ffc_ffff_0000, 0x7ffd_0010_0000, Some("[stack]"))];
-        let c = near_candidates(&regions, near, 4096);
+        let c = near_candidates(&regions, near, 4096, MAX_ADDR);
         assert!(c.iter().all(|&a| a + 4096 <= 0x7ffc_ffff_0000 - STACK_GUARD || a >= 0x7ffd_0010_0000));
         // Everything within reach is mapped: no candidates.
         let full = [region(0, MAX_ADDR, None)];
-        assert!(near_candidates(&full, near, 4096).is_empty());
+        assert!(near_candidates(&full, near, 4096, MAX_ADDR).is_empty());
+    }
+
+    #[test]
+    fn near_candidates_respect_max_addr() {
+        let regions = [region(0x400000, 0x405000, Some("/game")), region(0xF000_0000, 0xF010_0000, None)];
+        let c = near_candidates(&regions, 0xE000_0000, 0x10000, MAX_ADDR_32);
+        assert!(!c.is_empty());
+        for a in c {
+            assert!(a + 0x10000 <= MAX_ADDR_32, "{a:#x}");
+        }
+    }
+
+    #[test]
+    fn i386_results_are_sign_extended_eax() {
+        assert_eq!(SyscallAbi::I386.result(0xFFFF_FFF4), -12); // -ENOMEM
+        assert_eq!(syscall_result_abi(SyscallAbi::I386, SyscallAbi::I386.result(0xF7F0_0000), "mmap").unwrap(), 0xF7F0_0000);
+        assert_eq!(syscall_result_abi(SyscallAbi::X64, 0x7f00_0000_0000, "mmap").unwrap(), 0x7f00_0000_0000);
     }
 }
