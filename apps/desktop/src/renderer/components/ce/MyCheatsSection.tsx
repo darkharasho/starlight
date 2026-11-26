@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Share2, X } from 'lucide-react';
 import { useUserCheatsStore } from '../../stores/user-cheats-store.js';
+import { useShareStore } from '../../stores/share-store.js';
+import { ShareDialog } from './ShareDialog.js';
 import { userCheatsKey } from '../../../shared/game-key.js';
 import type { UserCheatView } from '../../../shared/ipc.js';
 
@@ -34,15 +36,23 @@ export function MyCheatsSection({ cacheKey, pid, attached }: { cacheKey: string;
       <div>
         {items.map((item) => (
           <CheatRow key={item.cheat.id} item={item} attached={attached && pid !== null}
-                    pending={pending.has(item.cheat.id)} error={errors[item.cheat.id]} />
+                    pending={pending.has(item.cheat.id)} error={errors[item.cheat.id]}
+                    onShare={() => void useShareStore.getState().open(key, item.cheat.id, livePid, item.cheat.name)} />
         ))}
       </div>
+      <ShareDialog />
     </section>
   );
 }
 
-function CheatRow({ item, attached, pending, error }: {
-  item: UserCheatView; attached: boolean; pending: boolean; error: string | undefined;
+/** Only the player's own cheats can be shared; table imports are their authors'. */
+function shareable(cheat: UserCheatView['cheat']): boolean {
+  const kind = 'provenance' in cheat ? cheat.provenance?.kind : undefined;
+  return kind === 'agent' || kind === 'manual';
+}
+
+function CheatRow({ item, attached, pending, error, onShare }: {
+  item: UserCheatView; attached: boolean; pending: boolean; error: string | undefined; onShare: () => void;
 }): JSX.Element {
   const { cheat } = item;
   const [removing, setRemoving] = useState(false);
@@ -97,6 +107,12 @@ function CheatRow({ item, attached, pending, error }: {
             item.active ? 'translate-x-[16px] bg-neon-cyan' : 'bg-muted'
           } ${pending ? 'animate-pulse-slow' : ''}`} />
         </button>
+        {shareable(cheat) && (
+          <button type="button" aria-label={`Share ${cheat.name}`} title="Share this cheat with other players" onClick={onShare}
+                  className="shrink-0 rounded-md px-1.5 text-[15px] leading-none text-muted/60 hover:text-neon-cyan focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-cyan">
+            <Share2 aria-hidden="true" className="size-3.5" />
+          </button>
+        )}
         <button type="button" aria-label={`Remove ${cheat.name}`} title="Remove this cheat" onClick={() => setRemoving(true)}
                 className="shrink-0 rounded-md px-1.5 text-[15px] leading-none text-muted/60 hover:text-neon-pink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-pink">
           <X aria-hidden="true" className="size-3.5" />
