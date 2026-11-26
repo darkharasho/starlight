@@ -77,7 +77,11 @@
 //!   - `push eax` is `push eax` (no widening); `pushf`/`popf` are `pushfd`/`popfd` and `pusha`/`popa`
 //!     are `pushad`/`popad`; size-less `push`/`pop`/`jmp`/`call` memory is `dword`;
 //!   - branches use rel32, which wraps around 4 GiB, so every 32-bit target is in range.
-//! - Not supported yet: x87, AVX registers, labels inside data items.
+//! - x87: `st`/`st(0)`–`st(7)` (also `st0`–`st7`), `tword ptr` for 80-bit memory, and CE's short
+//!   forms: operand-less `faddp`/`fsubp`/`fsubrp`/`fmulp`/`fdivp`/`fdivrp` are `st(1),st`, and a
+//!   lone `st(i)` (`fxch st(1)`) is `st(0),st(i)` when there's no one-operand form. `fstsw` is the
+//!   waiting form (`9B DF E0`); `fnstsw` isn't.
+//! - Not supported yet: AVX registers, labels inside data items.
 pub mod encode;
 pub mod parse;
 
@@ -170,6 +174,37 @@ mod tests {
         assert_eq!(&a.bytes[4..9], &[0xA1, v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8]);
         // A jump from the low 4 GiB to its top wraps, so it is always in range.
         assert_eq!(asm32("jmp 0xFFFF0000", 0x1000_0000).len(), 5);
+    }
+
+    #[test]
+    fn x87_instructions() {
+        let both = |src: &str, want: &[u8]| {
+            assert_eq!(asm32(src, 0x401000), want, "32: {src}");
+            assert_eq!(asm(src), want, "64: {src}");
+        };
+        assert_eq!(asm32("fld dword ptr [eax]", 0x401000), [0xD9, 0x00]);
+        assert_eq!(asm("fld qword ptr [rax]"), [0xDD, 0x00]);
+        assert_eq!(asm32("fstp dword ptr [ebx+4]", 0x401000), [0xD9, 0x5B, 0x04]);
+        assert_eq!(asm32("fild dword ptr [eax]", 0x401000), [0xDB, 0x00]);
+        assert_eq!(asm32("fistp dword ptr [eax]", 0x401000), [0xDB, 0x18]);
+        assert_eq!(asm32("fld tword ptr [eax]", 0x401000), [0xDB, 0x28]);
+        both("fadd st,st(1)", &[0xD8, 0xC1]);
+        both("fadd st(0),st(1)", &[0xD8, 0xC1]);
+        both("fadd st0,st1", &[0xD8, 0xC1]);
+        both("faddp", &[0xDE, 0xC1]);
+        both("fmulp", &[0xDE, 0xC9]);
+        assert_eq!(asm32("fmul dword ptr [eax]", 0x401000), [0xD8, 0x08]);
+        both("fxch st(1)", &[0xD9, 0xC9]);
+        both("fchs", &[0xD9, 0xE0]);
+        both("fabs", &[0xD9, 0xE1]);
+        both("fldz", &[0xD9, 0xEE]);
+        both("fld1", &[0xD9, 0xE8]);
+        both("fcomip st,st(1)", &[0xDF, 0xF1]);
+        both("fstsw ax", &[0x9B, 0xDF, 0xE0]);
+        both("fnstsw ax", &[0xDF, 0xE0]);
+        // 64-bit symbols stay RIP-relative.
+        let a = assemble("fld dword ptr [v]\nv: dd 0", 0x1000, Bits::B64, &no_syms).unwrap();
+        assert_eq!(&a.bytes[..6], &[0xD9, 0x05, 0x00, 0x00, 0x00, 0x00]);
     }
 
     #[test]

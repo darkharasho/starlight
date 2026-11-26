@@ -18,6 +18,8 @@ pub enum MemSize {
     Word,
     Dword,
     Qword,
+    /// 80-bit x87 extended precision.
+    Tword,
     Xmmword,
 }
 
@@ -28,6 +30,7 @@ impl MemSize {
             MemSize::Word => 2,
             MemSize::Dword => 4,
             MemSize::Qword => 8,
+            MemSize::Tword => 10,
             MemSize::Xmmword => 16,
         }
     }
@@ -316,6 +319,12 @@ impl Parser<'_> {
                 .collect::<PResult<Vec<_>>>()?
         };
         let mnemonic = alias(&lower, self.bits).unwrap_or(lower);
+        // CE's operand-less x87 pops mean `st(1),st`.
+        let operands = if operands.is_empty() && matches!(mnemonic.as_str(), "faddp" | "fsubp" | "fsubrp" | "fmulp" | "fdivp" | "fdivrp") {
+            vec![Operand::Reg(Register::ST1), Operand::Reg(Register::ST0)]
+        } else {
+            operands
+        };
         // CE assembles `push eax` / `pop r8d` as the full 64-bit register (in 64-bit code).
         let operands = if self.bits == Bits::B64 && matches!(mnemonic.as_str(), "push" | "pop") {
             operands
@@ -401,6 +410,7 @@ impl Parser<'_> {
         let kw = [
             ("xmmword", MemSize::Xmmword),
             ("qword", MemSize::Qword),
+            ("tword", MemSize::Tword),
             ("dword", MemSize::Dword),
             ("byte", MemSize::Byte),
             ("word", MemSize::Word),
@@ -732,6 +742,13 @@ pub fn register(lower: &str) -> Option<Register> {
                 m.insert(format!("{r:?}").to_ascii_lowercase(), r);
             }
         }
+        // x87 stack registers: `st` = `st(0)`, `st(i)`, and CE's `st0`–`st7`.
+        let st = [Register::ST0, Register::ST1, Register::ST2, Register::ST3, Register::ST4, Register::ST5, Register::ST6, Register::ST7];
+        for (i, r) in st.into_iter().enumerate() {
+            m.insert(format!("st{i}"), r);
+            m.insert(format!("st({i})"), r);
+        }
+        m.insert("st".into(), Register::ST0);
         // iced calls the low bytes of r8–r15 `r8l`; Intel syntax says `r8b`.
         for n in 8..16 {
             let r = m[&format!("r{n}l")];

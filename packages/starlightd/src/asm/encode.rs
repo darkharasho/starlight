@@ -334,6 +334,11 @@ fn instruction(
             expanded = [Operand::Reg(*r), Operand::Reg(*r), imm.clone()];
             &expanded[..]
         }
+        // x87 `fxch st(1)`, `fcomi st(2)`: iced spells the implicit `st(0)` out.
+        (_, [Operand::Reg(r)]) if r.is_st() && cands.iter().all(|c| c.op_code().op_count() != 1) => {
+            expanded = [Operand::Reg(Register::ST0), Operand::Reg(*r), Operand::Reg(Register::ST0)];
+            &expanded[..2]
+        }
         _ => operands,
     };
     // Resolve operand values once.
