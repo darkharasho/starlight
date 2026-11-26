@@ -73,6 +73,28 @@ describe('ct-runner', () => {
     expect(routeSummary(r)!.first!.copy).toBe("A script uses an instruction Starlight can't assemble yet.");
   });
 
+  it("routes with the game's bits", async () => {
+    const check = vi.fn(async (..._a: unknown[]) => ({ ok: true as const }));
+    const { d, lines } = deps({ check, codeBits: async () => 32 });
+    const r = await routeTable(fixture('native-ok.CT'), d);
+    expect(r).toMatchObject({ engine: 'native', bits: 32 });
+    expect(check).toHaveBeenCalled();
+    for (const c of check.mock.calls) expect(c[2]).toMatchObject({ bits: 32 });
+    expect(lines[0]).toMatch(/^\[ct-runner\] k#0: native \(32-bit, \d+ records\)$/);
+  });
+
+  it('unknown bits route at 64', async () => {
+    const check = vi.fn(async (..._a: unknown[]) => ({ ok: true as const }));
+    const { d, lines } = deps({ check, codeBits: async () => null });
+    const r = await routeTable(fixture('native-ok.CT'), d);
+    expect(r).toMatchObject({ engine: 'native', bits: 64 });
+    for (const c of check.mock.calls) expect(c[2]).toMatchObject({ bits: 64 });
+    expect(lines[0]).toMatch(/: native \(\d+ records\)$/);
+    // A failing bitness lookup is unknown too.
+    const bad = deps({ check, codeBits: async () => { throw new Error('gone'); } });
+    expect(await routeTable(fixture('native-ok.CT'), bad.d)).toMatchObject({ engine: 'native', bits: 64 });
+  });
+
   it('an unreachable engine routes CE', async () => {
     const { d, lines } = deps({ getClient: async () => { throw new Error('connect ENOENT'); } });
     const r = await routeTable(fixture('native-ok.CT'), d);

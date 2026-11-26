@@ -19,6 +19,8 @@ export interface RouteDecision {
   /** Records in the table (script-less headers aren't counted). */
   records: number;
   sha256: string;
+  /** The bitness scripts were checked at: the game's, or 64 while it isn't known. */
+  bits: 32 | 64;
 }
 
 export interface RouteDeps {
@@ -26,6 +28,8 @@ export interface RouteDeps {
   /** `preferences.nativeTables` (D22). */
   enabled: boolean;
   check?: typeof checkAssembles;
+  /** The game's code bitness (null while unknown); scripts are checked at it. */
+  codeBits?: () => Promise<32 | 64 | null>;
   log?(line: string): void;
   /** `<cacheKey>#<tableId>`. */
   label: string;
@@ -53,8 +57,8 @@ function countRecords(t: CompiledTable): number {
 }
 
 /** The D20 log line. */
-function logLine(label: string, d: RouteDecision): string {
-  if (d.engine === 'native') return `[ct-runner] ${label}: native (${d.records} records)`;
+function logLine(label: string, d: RouteDecision & { known?: boolean }): string {
+  if (d.engine === 'native') return `[ct-runner] ${label}: native (${d.known ? `${d.bits}-bit, ` : ''}${d.records} records)`;
   const parts = Object.entries(d.codes)
     .map(([code, n], i) => ({ code, n, i }))
     .sort((a, b) => b.n - a.n || a.i - b.i)
@@ -64,7 +68,7 @@ function logLine(label: string, d: RouteDecision): string {
 
 /** A route to Cheat Engine for a reason outside the table. */
 export function outsideRoute(code: string, detail: string, base: { compiled: CompiledTable | null; records: number; sha256: string }): RouteDecision {
-  return { engine: 'ce', compiled: base.compiled, codes: {}, first: { recordId: null, name: '', code, detail }, records: base.records, sha256: base.sha256 };
+  return { engine: 'ce', compiled: base.compiled, codes: {}, first: { recordId: null, name: '', code, detail }, records: base.records, sha256: base.sha256, bits: 64 };
 }
 
 /** The log line for a candidate Cheat Engine runs because it is already running (D17). */
@@ -72,11 +76,32 @@ export function ceRunningLine(label: string): string {
   return `[ct-runner] ${label}: ce (cheat engine already running)`;
 }
 
+/**
+ * Assembles every script record of `compiled` as `bits`-bit code (placeholder addresses).
+ * Returns the records that fail; throws when the engine can't be asked.
+ */
+export async function checkAllAssemble(
+  client: EngineClient,
+  compiled: CompiledTable,
+  bits: 32 | 64 | undefined,
+  check: typeof checkAssembles = checkAssembles,
+): Promise<Array<{ recordId: number; name: string; message: string }>> {
+  const known = Object.keys(compiled.registeredBy);
+  const failures: Array<{ recordId: number; name: string; message: string }> = [];
+  for (const r of compiled.records) {
+    if ((r.kind !== 'script' && r.kind !== 'header') || !r.script?.cheat) continue;
+    const res = await check(client, r.script.cheat, bits === undefined ? { known } : { known, bits });
+    if (!res.ok) failures.push({ recordId: r.id, name: r.name, message: res.message });
+  }
+  return failures;
+}
+
 export async function routeTable(ctPath: string, deps: RouteDeps): Promise<RouteDecision> {
   const bytes = await readFile(ctPath);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   const log = deps.log ?? ((line: string) => console.log(line));
-  const done = (d: RouteDecision): RouteDecision => { log(logLine(deps.label, d)); return d; };
+  let knownBits = false;
+  const done = (d: RouteDecision): RouteDecision => { log(logLine(deps.label, { ...d, known: knownBits })); return d; };
 
   if (!deps.enabled) {
     const records = (() => { try { return countRecords(compileTable(bytes.toString('utf8'))); } catch { return 0; } })();
@@ -90,7 +115,7 @@ export async function routeTable(ctPath: string, deps: RouteDeps): Promise<Route
     for (const r of compiled.reasons) codes[r.code] = (codes[r.code] ?? 0) + 1;
     const f = compiled.reasons[0] ?? null;
     return done({
-      engine: 'ce', compiled, codes, records, sha256,
+      engine: 'ce', compiled, codes, records, sha256, bits: 64,
       first: f ? { recordId: f.recordId, name: f.name, code: f.code, detail: f.detail } : null,
     });
   }
@@ -100,23 +125,22 @@ export async function routeTable(ctPath: string, deps: RouteDeps): Promise<Route
   const unavailable = () => done(outsideRoute(ROUTE_NO_ENGINE, 'engine unavailable', { compiled, records, sha256 }));
   let client: EngineClient;
   try { client = await deps.getClient(); } catch { return unavailable(); }
-  const check = deps.check ?? checkAssembles;
-  const known = Object.keys(compiled.registeredBy);
-  const failures: Array<{ recordId: number; name: string; message: string }> = [];
-  for (const r of compiled.records) {
-    if ((r.kind !== 'script' && r.kind !== 'header') || !r.script?.cheat) continue;
-    let res: Awaited<ReturnType<typeof checkAssembles>>;
-    try { res = await check(client, r.script.cheat, { known }); } catch { return unavailable(); }
-    if (!res.ok) failures.push({ recordId: r.id, name: r.name, message: res.message });
-  }
+  // Scripts are checked at the game's bitness; unknown (or no game) is 64.
+  const gameBits = deps.codeBits ? await deps.codeBits().catch(() => null) : null;
+  knownBits = gameBits !== null;
+  const bits: 32 | 64 = gameBits ?? 64;
+  let failures: Awaited<ReturnType<typeof checkAllAssemble>>;
+  try {
+    failures = await checkAllAssemble(client, compiled, deps.codeBits ? bits : undefined, deps.check ?? checkAssembles);
+  } catch { return unavailable(); }
   if (failures.length > 0) {
     const f = failures[0]!;
     return done({
-      engine: 'ce', compiled, codes: { 'asm:error': failures.length }, records, sha256,
+      engine: 'ce', compiled, codes: { 'asm:error': failures.length }, records, sha256, bits,
       first: { recordId: f.recordId, name: f.name, code: 'asm:error', detail: f.message },
     });
   }
-  return done({ engine: 'native', compiled, codes: {}, first: null, records, sha256 });
+  return done({ engine: 'native', compiled, codes: {}, first: null, records, sha256, bits });
 }
 
 /** What the renderer is told about a route (the first reason with its player copy). */

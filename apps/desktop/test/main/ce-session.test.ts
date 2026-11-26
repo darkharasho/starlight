@@ -1039,6 +1039,60 @@ const reply = (cmd) => {
       } finally { await t.close(); }
     });
 
+    /** A native route checked at 64 (bitness unknown then), with one script record to re-check. */
+    function routedAt64(n: ReturnType<typeof nativeOpts>, codeBits: 32 | 64 | null) {
+      const routeTableFn = vi.fn(async (ctPath: string, label: string) => {
+        const d = await n.route(ctPath, label);
+        const cheat = { enable: [], disable: [] };
+        if (d.compiled) (d.compiled as unknown as { records: unknown[] }).records = [{ id: 1, name: 'Master', kind: 'script', script: { cheat } }];
+        return { ...d, bits: 64 as const };
+      });
+      (n.engine.session as unknown as { codeBits: () => Promise<32 | 64 | null> }).codeBits = async () => codeBits;
+      return routeTableFn;
+    }
+
+    it('a table routed at 64 on a 32-bit game is re-checked and moves to CE when it fails', async () => {
+      await installFakeCe(join(dir, 'fake-ce-bits.log'));
+      const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER, enable: { 1: true } } });
+      try {
+        const n = nativeOpts(t, 'bits32');
+        const check = vi.fn(async (_c: unknown, _cheat: unknown, o: { bits?: number }) =>
+          o.bits === 32 ? { ok: false as const, step: 0, message: "eax-only: rax doesn't exist in 32-bit code" } : { ok: true as const });
+        const r = await startSession({ ...n.opts, routeTableFn: routedAt64(n, 32), checkAssemblesFn: check as never });
+        expect(check).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ bits: 32 }));
+        expect(r).toMatchObject({
+          mode: 'ce', engine: 'ce',
+          route: { engine: 'ce', codes: { 'asm:error': 1 }, first: { code: 'asm:error' } },
+        });
+        // No cheat ran natively: the backend never switched anything on (or never started).
+        expect(n.backend.sends.filter((c) => c.method === 'set_active')).toEqual([]);
+        expect(n.release).toHaveBeenCalledTimes(1);
+        expect(n.engine.detach).toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+
+    it('the same re-check passes and stays native', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER, enable: { 1: true } } });
+      try {
+        const n = nativeOpts(t, 'bits32ok');
+        const check = vi.fn(async () => ({ ok: true as const }));
+        const r = await startSession({ ...n.opts, routeTableFn: routedAt64(n, 32), checkAssemblesFn: check as never });
+        expect(check).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ bits: 32 }));
+        expect(r).toMatchObject({ mode: 'native', engine: 'starlightd' });
+      } finally { await t.close(); }
+    });
+
+    it('no re-check when the bits match the route', async () => {
+      const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER, enable: { 1: true } } });
+      try {
+        const n = nativeOpts(t, 'bits64');
+        const check = vi.fn(async () => ({ ok: true as const }));
+        const r = await startSession({ ...n.opts, routeTableFn: routedAt64(n, 64), checkAssemblesFn: check as never });
+        expect(check).not.toHaveBeenCalled();
+        expect(r).toMatchObject({ mode: 'native' });
+      } finally { await t.close(); }
+    });
+
     it('native sessions run prerequisites and the verdict through the native backend', async () => {
       const t = await serveTables({ 'game.CT': { route: 'native', records: MASTER, enable: { 1: true } } });
       try {

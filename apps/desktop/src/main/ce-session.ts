@@ -4,7 +4,7 @@ import { detectCeRuntime, type DetectResult } from './ce-runtime-detect.js';
 import { readPtraceScope, PTRACE_MESSAGE, PTRACE_LOCKED_MESSAGE, type CeServerHandle, type WineRunner } from './ce-native.js';
 import { launchCeBackend } from './ce-backend.js';
 import { createNativeBackend } from './native-backend.js';
-import { routeTable, routeSummary, outsideRoute, ceRunningLine, ROUTE_CE_RUNNING, type RouteDecision } from './ct-runner.js';
+import { routeTable, routeSummary, outsideRoute, ceRunningLine, checkAllAssemble, ROUTE_CE_RUNNING, type RouteDecision } from './ct-runner.js';
 import type { TableBackend } from './table-backend.js';
 import { downloadCtToDisk } from './ct-cache.js';
 import { referencedModules, waitForGameReady } from './game-ready.js';
@@ -16,7 +16,7 @@ import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
 import { createScannerHost, SCANNER_METHODS } from './scanner-host.js';
 import { getEngineClient } from './starlightd-host.js';
 import { listCtRecords, compileTable, reasonCopy, type CompiledTable } from '@starlight/ct-importer';
-import { attach, type Session } from '@starlight/engine';
+import { attach, processInfo, checkAssembles, type Session } from '@starlight/engine';
 import type { DetectedGame, DetectedProcess, RouteSummary, SessionMode } from '../shared/ipc.js';
 import { findPrerequisites, isJunk } from '../shared/cheat-list.js';
 import type { Holder } from './game-owner.js';
@@ -218,8 +218,10 @@ export interface StartSessionOpts {
   /** Decides whether a table runs natively or in Cheat Engine (default: ct-runner on starlightd). */
   routeTableFn?: ((ctPath: string, label: string) => Promise<RouteDecision>) | undefined;
   createNativeBackendFn?: typeof createNativeBackend | undefined;
-  /** Opens starlightd's session on the game for a native table. */
-  attachEngineFn?: ((pid: number) => Promise<Session>) | undefined;
+  /** Opens starlightd's session on the game for a native table (`mainModule`: the game's exe). */
+  attachEngineFn?: ((pid: number, mainModule?: string) => Promise<Session>) | undefined;
+  /** Assembles a cheat's scripts without a game (default: the engine's `checkAssembles`). */
+  checkAssemblesFn?: typeof checkAssembles | undefined;
   /** Registers the native table as a starlightd holder of the game. Returns the release. */
   holdTable?: ((pid: number) => () => void) | undefined;
   /** `preferences.nativeTables` (default true): off sends every table to Cheat Engine. */
@@ -336,8 +338,30 @@ async function endNativeOf(s: SessionState): Promise<void> {
   await clearTableHotkeys();
 }
 
-function defaultRouteFn(opts: StartSessionOpts): (ctPath: string, label: string) => Promise<RouteDecision> {
-  return (ctPath, label) => routeTable(ctPath, { getClient: getEngineClient, enabled: opts.nativeTables !== false, label });
+/** The game's exe name when it's a full Windows exe name (one that can decide the game's bitness). */
+function mainModuleOf(name: string | undefined): string | undefined {
+  return name && /\.exe$/i.test(name) ? name : undefined;
+}
+
+/**
+ * Routes a table, checking its scripts at the game's bitness. While the game is still loading
+ * its exe the bitness is unknown: wait for the table's modules once and ask again.
+ */
+function defaultRouteFn(opts: StartSessionOpts, pidOf: () => number | undefined): (ctPath: string, label: string) => Promise<RouteDecision> {
+  return (ctPath, label) => routeTable(ctPath, {
+    getClient: getEngineClient, enabled: opts.nativeTables !== false, label,
+    ...(opts.checkAssemblesFn ? { check: opts.checkAssemblesFn } : {}),
+    codeBits: async () => {
+      const pid = pidOf();
+      if (pid === undefined) return null;
+      const client = await getEngineClient();
+      const mainModule = mainModuleOf(opts.processName);
+      const first = await processInfo(client, pid, mainModule);
+      if (first.codeBits !== null) return first.codeBits;
+      await waitForModules(opts, pid, ctPath);
+      return (await processInfo(client, pid, mainModule)).codeBits;
+    },
+  });
 }
 
 export async function startSession(opts: StartSessionOpts): Promise<StartSessionResult> {
@@ -366,7 +390,7 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
 
   // Native or Cheat Engine (D13/D14). A table that can't be routed keeps
   // today's path.
-  const routeFn = opts.routeTableFn ?? defaultRouteFn(opts);
+  const routeFn = opts.routeTableFn ?? defaultRouteFn(opts, () => effectivePid);
   const routeOf = async (path: string | null, id: number | null): Promise<RouteDecision | null> => {
     if (!path) return null;
     return routeFn(path, `${opts.cacheKey}#${id ?? 0}`).catch((err) => {
@@ -409,11 +433,13 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
       });
     } catch (err) {
       if (!(err instanceof NativeStartError)) throw err;
-      // The table's Lua failed on starlightd: Cheat Engine runs it instead.
-      console.log(`[ct-runner] ${opts.cacheKey}#${tableId ?? 0}: Lua failed on the native engine, using Cheat Engine: ${err.message}`);
+      // The table's Lua failed on starlightd, or its scripts don't assemble for this game's
+      // bitness: Cheat Engine runs it instead.
+      const what = err.code === 'asm:error' ? "couldn't start on the native engine" : 'Lua failed on the native engine';
+      console.log(`[ct-runner] ${opts.cacheKey}#${tableId ?? 0}: ${what}, using Cheat Engine: ${err.message}`);
       route = {
-        engine: 'ce', codes: { 'lua:runtime': 1 },
-        first: { recordId: null, name: '', code: 'lua:runtime', detail: err.message, copy: reasonCopy('lua:runtime') },
+        engine: 'ce', codes: { [err.code]: err.count },
+        first: { recordId: err.recordId, name: err.recordName, code: err.code, detail: err.message, copy: reasonCopy(err.code) },
       };
     }
   }
@@ -559,8 +585,19 @@ export async function startSession(opts: StartSessionOpts): Promise<StartSession
   };
 }
 
-/** The native backend couldn't start the table (its Lua script failed); the session moves to Cheat Engine. */
-class NativeStartError extends Error {}
+/**
+ * The native backend couldn't start the table: its Lua script failed (`lua:runtime`), or its
+ * scripts don't assemble at the game's real bitness (`asm:error`). The session moves to Cheat Engine.
+ */
+class NativeStartError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'lua:runtime' | 'asm:error' = 'lua:runtime',
+    readonly count = 1,
+    readonly recordId: number | null = null,
+    readonly recordName = '',
+  ) { super(message); }
+}
 
 /** Lets a just-started game finish loading the modules the table points at. */
 async function waitForModules(opts: StartSessionOpts, pid: number, ctPath: string): Promise<void> {
@@ -593,7 +630,9 @@ async function startNativeSession(opts: StartSessionOpts, a: {
   const proton = await (opts.detectProtonFn ?? detectProton)({ pid });
 
   const sessionId = randomUUID();
-  const engineSession = await (opts.attachEngineFn ?? (async (p: number) => attach(await getEngineClient(), p)))(pid);
+  const mainModule = mainModuleOf(processName);
+  const attachFn = opts.attachEngineFn ?? (async (p: number, m?: string) => attach(await getEngineClient(), p, m ? { mainModule: m } : {}));
+  const engineSession = await (mainModule ? attachFn(pid, mainModule) : attachFn(pid));
   const release = (opts.holdTable ?? (() => () => {}))(pid);
   // Set once the session is active: a dropped starlightd connection ends it.
   let offDetached = (): void => {};
@@ -603,6 +642,29 @@ async function startNativeSession(opts: StartSessionOpts, a: {
     release();
     await engineSession.detach().catch(() => {});
   };
+
+  // The table was checked at the bitness known when it was routed (64 while unknown). Before
+  // anything of it runs, check it again at the game's real bitness if that differs.
+  try {
+    const bitsOf = async (): Promise<32 | 64 | null> =>
+      typeof engineSession.codeBits === 'function' ? engineSession.codeBits().catch(() => null) : null;
+    let bits = await bitsOf();
+    if (bits === null && typeof engineSession.codeBits === 'function') {
+      await waitForModules(opts, pid, ctPath);
+      bits = await bitsOf();
+    }
+    if (bits !== null && bits !== (a.decision.bits ?? 64)) {
+      const failures = await checkAllAssemble(engineSession.client, a.decision.compiled!, bits, opts.checkAssemblesFn ?? checkAssembles);
+      if (failures.length > 0) {
+        const f = failures[0]!;
+        throw new NativeStartError(f.message, 'asm:error', failures.length, f.recordId, f.name);
+      }
+      a.decision.bits = bits;
+    }
+  } catch (err) {
+    await endNative();
+    throw err;
+  }
 
   // Routes per path, so a table is compiled and assembled once per pick.
   const decisions = new Map<string, RouteDecision>([[ctPath, a.decision]]);
