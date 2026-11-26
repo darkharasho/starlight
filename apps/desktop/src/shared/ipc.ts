@@ -46,6 +46,8 @@ export const CHANNELS = {
   userCheatsRemove:      'starlight:userCheats:remove',
   userCheatsDisableAll:  'starlight:userCheats:disableAll',
   userCheatsGames:       'starlight:userCheats:games',
+  shareCheatPreview:     'starlight:share:preview',
+  shareCheatSend:        'starlight:share:send',
   // The agent (MCP) connection
   agentConnectInfo:  'starlight:agent:connectInfo',
   agentRotateToken:  'starlight:agent:rotateToken',
@@ -149,6 +151,15 @@ export interface UserCheatView {
   /** null when not attached to a game */
   verify: { status: 'ok' | 'needs-update' | 'unverified'; reasons: string[] } | null;
 }
+
+/** What Share would send, for the player to check first. */
+export type SharePreview =
+  | { ok: true; json: string; summary: string; flags: string[]; already: { url: string } | null }
+  | { ok: false; reason: string };
+export type ShareSent =
+  | { ok: true; url: string; state: 'open' | 'merged' | 'declined'; duplicate: boolean }
+  | { ok: false; reason: string };
+export interface ShareCheatRequest { key: string; id: string; pid: number | null; credit?: string }
 
 /** A game with cheats in the player's own library (it may not be in the catalog). */
 export interface UserCheatGame {
@@ -376,6 +387,10 @@ export interface StarlightApi {
   userCheatsDisableAll(req: { pid: number }): Promise<void>;
   /** Games with at least one cheat in the player's library. */
   userCheatsGames(): Promise<UserCheatGame[]>;
+  /** Builds what sharing this cheat would send. */
+  shareCheatPreview(req: ShareCheatRequest): Promise<SharePreview>;
+  /** Sends the cheat for review. */
+  shareCheatSend(req: ShareCheatRequest): Promise<ShareSent>;
   // The agent (MCP) connection
   /** The URL, token and copy-paste setup for Claude Code and Codex. */
   agentConnectInfo(): Promise<AgentConnectInfo>;

@@ -1,3 +1,4 @@
+import { userInfo } from 'node:os';
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from 'electron';
 import { guardStdio } from './stdio-guard.js';
 import { CHANNELS, type AttachRequest, type AttachResult, type LoadTrainerResult, type ToggleCheatRequest, type SetValueRequest, type IpcResult } from '../shared/ipc.js';
@@ -10,7 +11,7 @@ import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } fr
 import { LatchDetector } from './latch-detector.js';
 import { fetchCatalog, fetchTrainer, getCachedIndex } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
-import type { FetchTrainerRequest, CatalogIndexEntry, UserCheatGame } from '../shared/ipc.js';
+import type { FetchTrainerRequest, CatalogIndexEntry, UserCheatGame, ShareCheatRequest } from '../shared/ipc.js';
 import { withMyGames } from '../shared/my-games.js';
 import { getConfig, updateConfig, setOnCorrupt } from './user-config.js';
 import { resolveBoxart, serveArt } from './boxart-host.js';
@@ -20,6 +21,7 @@ import { grantPtraceCap, isPtraceBlocked, readPtraceScope } from './ce-native.js
 import { recordRoute } from './ct-runner.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd, engineOf, gameCodeBits } from './ce-session.js';
 import { createUserCheatsHost } from './user-cheats-host.js';
+import { createShareHost } from './share-host.js';
 import { listUserCheatGames, userCheatsDir } from './user-cheats.js';
 import { createGameOwner } from './game-owner.js';
 import { setGameOwner } from './game-owner-singleton.js';
@@ -46,7 +48,7 @@ import { libraryTools } from './agent/tools-library.js';
 import { createAgentSession } from './agent/session.js';
 import { checkAttachTarget, procTargetDeps } from './agent/target-guard.js';
 import { createBeforeQuit } from './quit.js';
-import { listModules as engineListModules } from '@starlight/engine';
+import { listModules as engineListModules, processInfo as engineProcessInfo } from '@starlight/engine';
 import { identifyGame } from './game-identity.js';
 import { detectAntiCheat } from './anti-cheat.js';
 import { createUpdater, type AutoUpdaterLike } from './updater.js';
@@ -103,6 +105,14 @@ const userCheatsHost = createUserCheatsHost({
   getClient: getEngineClient,
   owner: gameOwner,
   onChange: userCheatsChanged,
+});
+
+const shareHost = createShareHost({
+  dir: userCheatsDir(app.getPath('userData')),
+  userData: app.getPath('userData'),
+  appVersion: app.getVersion(),
+  username: userInfo().username,
+  liveBits: async (pid) => (await engineProcessInfo(await getEngineClient(), pid)).codeBits,
 });
 
 // --- The agent's MCP server (Claude Code / Codex) ---
@@ -661,6 +671,8 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.userCheatsRemove, (_evt, req: { key: string; id: string }) => userCheatsHost.remove(req.key, req.id));
   ipcMain.handle(CHANNELS.userCheatsDisableAll, (_evt, req: { pid: number }) => userCheatsHost.disableAll(req.pid));
   ipcMain.handle(CHANNELS.userCheatsGames, () => refreshMyGames());
+  ipcMain.handle(CHANNELS.shareCheatPreview, (_evt, req: ShareCheatRequest) => shareHost.preview(req));
+  ipcMain.handle(CHANNELS.shareCheatSend, (_evt, req: ShareCheatRequest) => shareHost.send(req));
 
   ipcMain.handle(CHANNELS.agentConnectInfo, () => agentConnectInfo());
   ipcMain.handle(CHANNELS.agentRotateToken, async () => {
