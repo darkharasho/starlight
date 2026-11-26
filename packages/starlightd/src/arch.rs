@@ -88,30 +88,54 @@ pub fn process_bits(pid: i32) -> std::io::Result<Bits> {
     elf_class_bits(&h).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "not an ELF executable"))
 }
 
+/// True for a Wine/Proton process: its executable is Wine's (`wine`, `wine64-preloader`, …) or
+/// Wine's Unix-side `ntdll.so` is mapped.
+fn is_wine_process(pid: i32, mods: &[modules::Module]) -> bool {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+    let exe_is_wine = exe
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("wine"));
+    exe_is_wine || mods.iter().any(|m| m.name == "ntdll.so")
+}
+
 /// The game code's bitness, from the modules mapped right now. `None` while it can't be told yet.
 pub fn detect_code_bits(t: &Target) -> Option<Bits> {
     let mods = modules::list(t).ok()?;
-    detect_from(&mods, t.main_module.as_deref(), t.process_bits, |m| {
+    let wine = is_wine_process(t.pid, &mods);
+    detect_from(&mods, t.main_module.as_deref(), wine, t.process_bits, |m| {
         mem::read_bytes(t, m.base, 0x1000).ok().as_deref().and_then(pe_magic).and_then(pe_bits)
     })
 }
 
 /// `detect_code_bits` over a module list; `bits_of` reads one PE module's header.
+///
+/// - The named `main_module`, when it is mapped.
+/// - Else the first `.exe` that isn't one of Wine's own programs. A Windows process maps only its
+///   own exe, so this is the game's even when the client's name for it doesn't match (renamed
+///   exes, launchers).
+/// - Else, for a Wine process, unknown: its exe isn't mapped yet, and the Linux process's bitness
+///   says nothing about the game's (WoW64 runs 32-bit code in a 64-bit process).
+/// - Else (a native Linux process) the process's own bitness.
 pub fn detect_from(
     mods: &[modules::Module],
     main_module: Option<&str>,
+    is_wine: bool,
     process_bits: Bits,
     bits_of: impl Fn(&modules::Module) -> Option<Bits>,
 ) -> Option<Bits> {
     let pe: Vec<&modules::Module> = mods.iter().filter(|m| m.kind == Kind::Pe).collect();
-    if let Some(name) = main_module {
-        return pe.iter().find(|m| m.name.eq_ignore_ascii_case(name)).and_then(|m| bits_of(m));
+    if let Some(m) = main_module.and_then(|name| pe.iter().find(|m| m.name.eq_ignore_ascii_case(name))) {
+        return bits_of(m);
     }
-    if pe.is_empty() {
-        return Some(process_bits);
+    if let Some(exe) = pe.iter().find(|m| m.name.to_ascii_lowercase().ends_with(".exe") && !is_wine_program(&m.name)) {
+        return bits_of(exe);
     }
-    let exe = pe.iter().find(|m| m.name.to_ascii_lowercase().ends_with(".exe") && !is_wine_program(&m.name))?;
-    bits_of(exe)
+    if is_wine || !pe.is_empty() {
+        return None;
+    }
+    Some(process_bits)
 }
 
 #[cfg(test)]
@@ -152,28 +176,44 @@ mod tests {
     #[test]
     fn detect_skips_wine_programs_and_uses_the_game_exe() {
         let mods = vec![m("libc.so.6", Kind::Elf), m("start.exe", Kind::Pe), m("ntdll.dll", Kind::Pe), m("Game.exe", Kind::Pe)];
-        let got = detect_from(&mods, None, Bits::B64, |m| Some(if m.name == "Game.exe" { Bits::B32 } else { Bits::B64 }));
+        let got = detect_from(&mods, None, true, Bits::B64, |m| Some(if m.name == "Game.exe" { Bits::B32 } else { Bits::B64 }));
         assert_eq!(got, Some(Bits::B32));
     }
 
     #[test]
     fn detect_is_unknown_while_only_wine_pe_modules_are_mapped() {
         let mods = vec![m("start.exe", Kind::Pe), m("ntdll.dll", Kind::Pe)];
-        assert_eq!(detect_from(&mods, None, Bits::B64, |_| Some(Bits::B64)), None);
+        assert_eq!(detect_from(&mods, None, true, Bits::B64, |_| Some(Bits::B64)), None);
+    }
+
+    #[test]
+    fn final_wine_without_an_exe_is_unknown() {
+        // A WoW64 game before ntdll.dll and its exe are mapped: never guess the process's bits.
+        let mods = vec![m("wine64-preloader", Kind::Elf), m("ntdll.so", Kind::Elf)];
+        assert_eq!(detect_from(&mods, None, true, Bits::B64, |_| None), None);
+        assert_eq!(detect_from(&[], None, true, Bits::B32, |_| None), None);
+    }
+
+    #[test]
+    fn final_named_exe_missing_falls_back_to_the_process_exe() {
+        // A name that never matches (a renamed exe) must not keep the bitness unknown forever.
+        let mods = vec![m("start.exe", Kind::Pe), m("Game-Win64-Shipping.exe", Kind::Pe)];
+        assert_eq!(detect_from(&mods, Some("Game.exe"), true, Bits::B64, |_| Some(Bits::B64)), Some(Bits::B64));
     }
 
     #[test]
     fn detect_without_pe_modules_is_process_bits() {
         let mods = vec![m("target32", Kind::Elf)];
-        assert_eq!(detect_from(&mods, None, Bits::B32, |_| None), Some(Bits::B32));
+        assert_eq!(detect_from(&mods, None, false, Bits::B32, |_| None), Some(Bits::B32));
     }
 
     #[test]
-    fn detect_uses_the_named_main_module_or_waits_for_it() {
+    fn detect_uses_the_named_main_module_first() {
         let mods = vec![m("a.exe", Kind::Pe), m("w32.EXE", Kind::Pe)];
         let bits = |m: &Module| Some(if m.name == "w32.EXE" { Bits::B32 } else { Bits::B64 });
-        assert_eq!(detect_from(&mods, Some("w32.exe"), Bits::B64, bits), Some(Bits::B32));
-        assert_eq!(detect_from(&mods, Some("later.exe"), Bits::B64, bits), None);
+        assert_eq!(detect_from(&mods, Some("w32.exe"), true, Bits::B64, bits), Some(Bits::B32));
+        // Before any exe is mapped, a Wine process waits.
+        assert_eq!(detect_from(&[m("ntdll.dll", Kind::Pe)], Some("w32.exe"), true, Bits::B64, bits), None);
     }
 
     #[test]

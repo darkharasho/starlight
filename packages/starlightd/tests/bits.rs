@@ -25,13 +25,38 @@ fn attach_i386_target() {
     assert_eq!(facts(&r), (json!(32), json!(32)));
 }
 
+/// Our 64-bit target, mapping a file named `ntdll.so` so it looks like a Wine process whose game
+/// exe isn't mapped yet.
+fn spawn_wine_like() -> Target {
+    let dir = std::env::temp_dir().join(format!("starlightd-bits-{}-{}", std::process::id(), rand_suffix()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let so = dir.join("ntdll.so");
+    std::fs::write(&so, vec![0u8; 4096]).unwrap();
+    Target::spawn(&["--map", so.to_str().unwrap()])
+}
+
+fn rand_suffix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
 #[test]
-fn attach_waits_for_a_named_main_module() {
+fn attach_waits_in_a_wine_process_without_its_exe() {
+    let t = spawn_wine_like();
+    let d = Daemon::start();
+    let mut c = d.client();
+    let r = c.call("attach", json!({"pid": t.pid})).unwrap();
+    assert_eq!(facts(&r), (json!(64), Value::Null));
+    let r = c.call("attach", json!({"pid": t.pid, "main_module": "game.exe"})).unwrap();
+    assert_eq!(facts(&r), (json!(64), Value::Null));
+}
+
+#[test]
+fn a_native_process_with_an_unmatched_main_module_is_its_own_bitness() {
     let t = Target::spawn(&[]);
     let d = Daemon::start();
     let mut c = d.client();
     let r = c.call("attach", json!({"pid": t.pid, "main_module": "game.exe"})).unwrap();
-    assert_eq!(facts(&r), (json!(64), Value::Null));
+    assert_eq!(facts(&r), (json!(64), json!(64)));
 }
 
 #[test]
@@ -131,11 +156,11 @@ fn guard_alloc_on_64_bit_target_unchanged() {
 
 #[test]
 fn guard_unknown_code_bits_is_not_ready() {
-    // A 64-bit process whose named game exe isn't mapped: bitness unknown.
-    let t = Target::spawn(&[]);
+    // A Wine-like 64-bit process whose game exe isn't mapped: bitness unknown.
+    let t = spawn_wine_like();
     let d = Daemon::start();
     let mut c = d.client();
-    let h = c.call("attach", json!({"pid": t.pid, "main_module": "game.exe"})).unwrap()["handle"].clone();
+    let h = c.call("attach", json!({"pid": t.pid})).unwrap()["handle"].clone();
     let not_ready = (-32016, "The game is still starting; try again in a moment.".to_string());
     assert_eq!(c.call("alloc", json!({"handle": h, "size": 4096})).unwrap_err(), not_ready);
     assert_eq!(c.call("speed_get", json!({"handle": h})).unwrap_err(), not_ready);
