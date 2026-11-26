@@ -1,4 +1,5 @@
 //! CE-style assembly text → statements (see the module doc in `asm` for the accepted syntax).
+use crate::arch::Bits;
 use super::AsmError;
 use iced_x86::Register;
 use std::collections::{HashMap, HashSet};
@@ -83,10 +84,10 @@ pub struct Stmt {
 
 /// Parse `source`. `is_symbol` tells whether a name is a supplied symbol, which decides whether a
 /// hex-looking identifier like `ab` is a number or a symbol (D2).
-pub fn parse(source: &str, is_symbol: &dyn Fn(&str) -> bool) -> Result<Vec<Stmt>, AsmError> {
+pub fn parse(source: &str, is_symbol: &dyn Fn(&str) -> bool, bits: Bits) -> Result<Vec<Stmt>, AsmError> {
     let lines = anonymous_labels(strip_comments(source)?)?;
     let labels = defined_labels(&lines);
-    let p = Parser { labels: &labels, is_symbol };
+    let p = Parser { labels: &labels, is_symbol, bits };
     let mut out = vec![];
     for (i, text) in lines.iter().enumerate() {
         let line = i + 1;
@@ -224,11 +225,30 @@ fn is_ident_char(c: char) -> bool {
 struct Parser<'a> {
     labels: &'a HashSet<String>,
     is_symbol: &'a dyn Fn(&str) -> bool,
+    bits: Bits,
 }
 
 type PResult<T> = Result<T, String>;
 
 impl Parser<'_> {
+    /// `r`, unless it only exists in 64-bit code and this is 32-bit code.
+    fn exists(&self, r: Register, text: &str) -> PResult<Register> {
+        if self.bits == Bits::B32 && only_in_64_bit(r) {
+            return Err(format!("{} doesn't exist in 32-bit code", text.trim().to_ascii_lowercase()));
+        }
+        Ok(r)
+    }
+
+    /// A base or index register: 64-bit in 64-bit code, 32-bit in 32-bit code.
+    fn address_reg(&self, r: Register, text: &str) -> PResult<Register> {
+        let r = self.exists(r, text)?;
+        match self.bits {
+            Bits::B64 => gpr64(r, text),
+            Bits::B32 if r.is_gpr32() => Ok(r),
+            Bits::B32 => Err(format!("{text} is not a 32-bit address register")),
+        }
+    }
+
     fn statement(&self, mut s: &str, line: usize, out: &mut Vec<Stmt>) -> PResult<()> {
         if let Some((name, rest)) = split_label(s) {
             out.push(Stmt { line, kind: Line::Label(name.to_string()) });
@@ -295,9 +315,9 @@ impl Parser<'_> {
                 .map(|o| self.operand(o.trim()))
                 .collect::<PResult<Vec<_>>>()?
         };
-        let mnemonic = alias(&lower).unwrap_or(lower);
-        // CE assembles `push eax` / `pop r8d` as the full 64-bit register.
-        let operands = if matches!(mnemonic.as_str(), "push" | "pop") {
+        let mnemonic = alias(&lower, self.bits).unwrap_or(lower);
+        // CE assembles `push eax` / `pop r8d` as the full 64-bit register (in 64-bit code).
+        let operands = if self.bits == Bits::B64 && matches!(mnemonic.as_str(), "push" | "pop") {
             operands
                 .into_iter()
                 .map(|o| match o {
@@ -411,7 +431,7 @@ impl Parser<'_> {
             return Err(format!("expected a memory operand in {s:?}"));
         }
         if let Some(r) = register(&lower) {
-            return Ok(Operand::Reg(r));
+            return Ok(Operand::Reg(self.exists(r, s)?));
         }
         if let Some(v) = cast_value(s)? {
             return Ok(Operand::Imm(Expr::Num(v)));
@@ -444,12 +464,12 @@ impl Parser<'_> {
                 if neg || index.is_some() || !matches!(f, 1 | 2 | 4 | 8) {
                     return Err(format!("bad index {term:?}"));
                 }
-                index = Some(gpr64(r, term)?);
+                index = Some(self.address_reg(r, term)?);
                 scale = f as u8;
                 continue;
             }
             if let Some(r) = register(&lower) {
-                let r = gpr64(r, term)?;
+                let r = self.address_reg(r, term)?;
                 if neg {
                     return Err(format!("can't subtract register {term}"));
                 }
@@ -686,6 +706,19 @@ fn gpr64(r: Register, text: &str) -> PResult<Register> {
     }
 }
 
+/// Registers 32-bit code has no encoding for: 64-bit GPRs, r8–r15 at any width, spl/bpl/sil/dil,
+/// xmm8–xmm15.
+fn only_in_64_bit(r: Register) -> bool {
+    if r.is_gpr64() {
+        return true;
+    }
+    if r.is_gpr() {
+        let full = r.full_register();
+        return full.number() >= 8 || matches!(r, Register::SPL | Register::BPL | Register::SIL | Register::DIL);
+    }
+    r.is_xmm() && r.number() >= 8
+}
+
 /// Registers the assembler accepts, by lowercase name.
 pub fn register(lower: &str) -> Option<Register> {
     static MAP: OnceLock<HashMap<String, Register>> = OnceLock::new();
@@ -711,11 +744,16 @@ pub fn register(lower: &str) -> Option<Register> {
 }
 
 /// CE / Intel alternative mnemonics → iced's name.
-fn alias(m: &str) -> Option<String> {
-    match m {
-        "retn" => return Some("ret".into()),
-        "pushf" => return Some("pushfq".into()),
-        "popf" => return Some("popfq".into()),
+fn alias(m: &str, bits: Bits) -> Option<String> {
+    match (m, bits) {
+        ("retn", _) => return Some("ret".into()),
+        ("pushf", Bits::B64) => return Some("pushfq".into()),
+        ("popf", Bits::B64) => return Some("popfq".into()),
+        ("pushf", Bits::B32) => return Some("pushfd".into()),
+        ("popf", Bits::B32) => return Some("popfd".into()),
+        // In 32-bit code these are the 32-bit forms (`60`/`61`), as in CE and MASM.
+        ("pusha", Bits::B32) => return Some("pushad".into()),
+        ("popa", Bits::B32) => return Some("popad".into()),
         _ => {}
     }
     let (head, cc) = ["cmov", "set", "j"].iter().find_map(|h| m.strip_prefix(h).map(|cc| (*h, cc)))?;

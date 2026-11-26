@@ -373,7 +373,7 @@ impl Collector {
         let address = disasm::instruction_before(&self.t, rip);
         let text = address
             .and_then(|s| disasm::read_code(&self.t, s, (rip - s) as usize).ok().map(|b| (s, b)))
-            .and_then(|(s, b)| disasm::decode(&b, s, 1).into_iter().next())
+            .and_then(|(s, b)| disasm::decode(&b, s, 1, disasm::bits_of(&self.t)).into_iter().next())
             .map_or_else(|| "??".to_string(), |i| i.text);
         // Without a start, the module is named after `next` (the same code region).
         let at = address.unwrap_or(rip);

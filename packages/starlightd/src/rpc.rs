@@ -338,7 +338,7 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
             let count = count as usize;
             let bytes = disasm::read_code(&t, addr, count * disasm::MAX_INSN_LEN)?;
             let sym = disasm::Symbolizer::new(&modules::list(&t)?);
-            let instructions: Vec<Value> = disasm::decode(&bytes, addr, count)
+            let instructions: Vec<Value> = disasm::decode(&bytes, addr, count, disasm::bits_of(&t))
                 .into_iter()
                 .map(|i| {
                     let mut v = json!({
@@ -385,14 +385,30 @@ fn dispatch(state: &ConnState, method: &str, params: &Value) -> Result<Value, Rp
                 }
                 Some(_) => return Err(RpcError::invalid_params("symbols must be an object")),
             }
-            let mods = match params.get("handle") {
-                None | Some(Value::Null) => vec![],
-                Some(_) => modules::list(&*handles.get(param_handle(params)?)?)?,
+            let target = match params.get("handle") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(handles.get(param_handle(params)?)?),
+            };
+            // Explicit bits, else the game's (an error while unknown), else 64.
+            let bits = match params.get("bits") {
+                None | Some(Value::Null) => match &target {
+                    Some(t) => t.require_code_bits()?,
+                    None => Bits::B64,
+                },
+                Some(v) => match v.as_u64() {
+                    Some(32) => Bits::B32,
+                    Some(64) => Bits::B64,
+                    _ => return Err(RpcError::invalid_params("bits must be 32 or 64")),
+                },
+            };
+            let mods = match &target {
+                None => vec![],
+                Some(t) => modules::list(t)?,
             };
             let resolve = |name: &str| {
                 syms.get(&name.to_ascii_lowercase()).copied().or_else(|| modules::find(&mods, name).map(|m| m.base))
             };
-            let a = asm::assemble(source, addr, &resolve).map_err(|e| RpcError::assemble_failed(e.to_string()))?;
+            let a = asm::assemble(source, addr, bits, &resolve).map_err(|e| RpcError::assemble_failed(e.to_string()))?;
             let labels: serde_json::Map<String, Value> =
                 a.labels.iter().map(|(k, v)| (k.clone(), Value::String(format!("{v:#x}")))).collect();
             Ok(json!({ "bytes": to_hex(&a.bytes), "length": a.bytes.len(), "labels": labels }))

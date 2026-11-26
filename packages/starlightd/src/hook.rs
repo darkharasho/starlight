@@ -100,7 +100,7 @@ fn layout(page: u64, func: u64, instrs: &[Instruction], body: &dyn Fn(u64) -> St
     let mut off = ALIGN;
     for _ in 0..8 {
         let src = body(page + off);
-        let a = asm::assemble(&src, page, &|_| None).map_err(|e| HookError::Rpc(RpcError::assemble_failed(e.to_string())))?;
+        let a = asm::assemble(&src, page, asm::Bits::B64, &|_| None).map_err(|e| HookError::Rpc(RpcError::assemble_failed(e.to_string())))?;
         let need = a.bytes.len() as u64;
         if need <= off {
             let tramp = relocate(instrs, page + off, func + len).map_err(HookError::Skipped)?;

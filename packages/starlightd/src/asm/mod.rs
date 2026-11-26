@@ -1,7 +1,7 @@
-//! Cheat Engine-style Intel-syntax x86-64 assembler built on iced-x86 (MIT).
+//! Cheat Engine-style Intel-syntax x86 assembler (64- and 32-bit) built on iced-x86 (MIT).
 //!
-//! `assemble(source, address, resolve)` turns CE-style assembly text into machine code for
-//! `address`. It reads back everything `disasm` prints, so `assemble(disassemble(x))`
+//! `assemble(source, address, bits, resolve)` turns CE-style assembly text into machine code for
+//! `address`, as `bits`-bit code. It reads back everything `disasm` prints, so `assemble(disassemble(x))`
 //! round-trips. M4's Auto Assembler compiler extends the subset below.
 //!
 //! # Accepted subset
@@ -68,9 +68,20 @@
 //!   `90`s.
 //! - A displacement may be written from `-80000000` to `FFFFFFFF`; anything else is an error
 //!   (`displacement out of range`).
+//! - 32-bit code (`Bits::B32`), where it differs from the rules above:
+//!   - candidates are the 32-bit-mode `Code`s; there is no RIP-relative addressing, so `[label]`,
+//!     `[symbol]` and `[number]` are all absolute `disp32` (or the shorter `moffs` accumulator form:
+//!     `mov eax,[404000]` = `A1 00 40 40 00`);
+//!   - address registers are 32-bit; 64-bit GPRs, `r8`–`r15` at any width, `spl`/`bpl`/`sil`/`dil`
+//!     and `xmm8`–`xmm15` are errors ("`rax` doesn't exist in 32-bit code");
+//!   - `push eax` is `push eax` (no widening); `pushf`/`popf` are `pushfd`/`popfd` and `pusha`/`popa`
+//!     are `pushad`/`popad`; size-less `push`/`pop`/`jmp`/`call` memory is `dword`;
+//!   - branches use rel32, which wraps around 4 GiB, so every 32-bit target is in range.
 //! - Not supported yet: x87, AVX registers, labels inside data items.
 pub mod encode;
 pub mod parse;
+
+pub use crate::arch::Bits;
 
 use std::collections::BTreeMap;
 
@@ -101,9 +112,9 @@ impl std::fmt::Display for AsmError {
 }
 
 /// Assemble `source` for `address`. `resolve` names addresses for symbols that aren't labels.
-pub fn assemble(source: &str, address: u64, resolve: &dyn Fn(&str) -> Option<u64>) -> Result<Assembled, AsmError> {
-    let stmts = parse::parse(source, &|name| resolve(name).is_some())?;
-    encode::encode(&stmts, address, resolve)
+pub fn assemble(source: &str, address: u64, bits: Bits, resolve: &dyn Fn(&str) -> Option<u64>) -> Result<Assembled, AsmError> {
+    let stmts = parse::parse(source, &|name| resolve(name).is_some(), bits)?;
+    encode::encode(&stmts, address, bits, resolve)
 }
 
 #[cfg(test)]
@@ -116,7 +127,7 @@ mod tests {
     }
 
     fn asm_at(src: &str, address: u64) -> Vec<u8> {
-        match assemble(src, address, &no_syms) {
+        match assemble(src, address, Bits::B64, &no_syms) {
             Ok(a) => a.bytes,
             Err(e) => panic!("{src:?}: {e}"),
         }
@@ -124,6 +135,50 @@ mod tests {
 
     fn asm(src: &str) -> Vec<u8> {
         asm_at(src, 0x1000)
+    }
+
+    fn asm32(src: &str, address: u64) -> Vec<u8> {
+        match assemble(src, address, Bits::B32, &|n| (n == "symbol").then_some(0x0050_0000)) {
+            Ok(a) => a.bytes,
+            Err(e) => panic!("{src:?}: {e}"),
+        }
+    }
+
+    #[test]
+    fn bits32_encodings() {
+        assert_eq!(asm32("mov eax,[0x404000]", 0x401000), [0xA1, 0x00, 0x40, 0x40, 0x00]);
+        assert_eq!(asm32("mov ecx,[ebx+0x10]", 0x401000), [0x8B, 0x4B, 0x10]);
+        assert_eq!(asm32("push eax", 0x401000), [0x50]);
+        assert_eq!(asm32("push 0x12345678", 0x401000), [0x68, 0x78, 0x56, 0x34, 0x12]);
+        assert_eq!(asm32("pushad", 0x401000), [0x60]);
+        assert_eq!(asm32("popad", 0x401000), [0x61]);
+        assert_eq!(asm32("pushfd", 0x401000), [0x9C]);
+        assert_eq!(asm32("pusha\npopa\npushf\npopf", 0x401000), [0x60, 0x61, 0x9C, 0x9D]);
+        assert_eq!(asm32("jmp 0x401000", 0x402000), [0xE9, 0xFB, 0xEF, 0xFF, 0xFF]);
+        assert_eq!(asm32("mov [symbol],eax", 0x401000), [0xA3, 0x00, 0x00, 0x50, 0x00]);
+        assert_eq!(asm32("dq 1", 0x401000).len(), 8);
+        assert_eq!(asm32("ret", 0x401000), [0xC3]);
+        assert_eq!(asm32("call [eax]", 0x401000), [0xFF, 0x10]);
+        assert_eq!(asm32("rep movsd", 0x401000), [0xF3, 0xA5]);
+    }
+
+    #[test]
+    fn bits32_labels_and_branches() {
+        let a = assemble("a:\n jmp a\n jmp b\n mov eax,[v]\nb: ret\nv: dd 7", 0x401000, Bits::B32, &no_syms).unwrap();
+        assert_eq!(&a.bytes[..4], &[0xEB, 0xFE, 0xEB, 0x05]);
+        let v = a.labels["v"];
+        assert_eq!(&a.bytes[4..9], &[0xA1, v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8]);
+        // A jump from the low 4 GiB to its top wraps, so it is always in range.
+        assert_eq!(asm32("jmp 0xFFFF0000", 0x1000_0000).len(), 5);
+    }
+
+    #[test]
+    fn bits32_rejects_64_bit_registers() {
+        for src in ["mov rax,1", "mov r8d,1", "mov eax,[rax]", "mov sil,1", "movd xmm8,eax", "push r9"] {
+            let e = assemble(src, 0x401000, Bits::B32, &no_syms).unwrap_err();
+            assert!(e.message.contains("doesn't exist in 32-bit code"), "{src}: {e}");
+        }
+        assert!(assemble("stosq", 0x401000, Bits::B32, &no_syms).is_err());
     }
 
     #[test]
@@ -147,7 +202,7 @@ mod tests {
         assert_eq!(asm("lea rax,[rsp+AB]"), [0x48, 0x8D, 0x84, 0x24, 0xAB, 0, 0, 0]);
         // Size given by a register operand; an unresolvable size is an error.
         assert_eq!(asm("movzx eax,byte ptr [rdi]"), [0x0F, 0xB6, 0x07]);
-        assert!(assemble("movzx eax,[rdi]", 0x1000, &no_syms).is_err());
+        assert!(assemble("movzx eax,[rdi]", 0x1000, Bits::B64, &no_syms).is_err());
     }
 
     #[test]
@@ -161,13 +216,13 @@ mod tests {
         assert_eq!(asm("pop [rax]"), [0x8F, 0x00]);
         // No immediate and several possible sizes: the size must be written.
         for src in ["inc [rax]", "cvtsi2sd xmm0,[rax]", "not [rcx]"] {
-            let e = assemble(src, 0x1000, &no_syms).unwrap_err();
+            let e = assemble(src, 0x1000, Bits::B64, &no_syms).unwrap_err();
             assert!(e.message.contains("size"), "{src}: {e}");
         }
         assert_eq!(asm("inc dword ptr [rax]"), [0xFF, 0x00]);
         assert_eq!(asm("cvtsi2sd xmm0,qword ptr [rax]"), [0xF2, 0x48, 0x0F, 0x2A, 0x00]);
         // An immediate that only a qword form could take is an error, not a silent qword.
-        assert!(assemble("mov [rax],FFFFFFFF80000000", 0x1000, &no_syms).is_err());
+        assert!(assemble("mov [rax],FFFFFFFF80000000", 0x1000, Bits::B64, &no_syms).is_err());
         assert_eq!(asm("mov qword ptr [rax],FFFFFFFF80000000"), [0x48, 0xC7, 0x00, 0x00, 0x00, 0x00, 0x80]);
     }
 
@@ -184,15 +239,15 @@ mod tests {
 
     #[test]
     fn prefixes_need_an_instruction_that_takes_them() {
-        assert!(assemble("lock mov eax,ecx", 0x1000, &no_syms).is_err());
-        assert!(assemble("lock add eax,1", 0x1000, &no_syms).is_err());
-        assert!(assemble("rep add eax,ecx", 0x1000, &no_syms).is_err());
+        assert!(assemble("lock mov eax,ecx", 0x1000, Bits::B64, &no_syms).is_err());
+        assert!(assemble("lock add eax,1", 0x1000, Bits::B64, &no_syms).is_err());
+        assert!(assemble("rep add eax,ecx", 0x1000, Bits::B64, &no_syms).is_err());
         assert_eq!(asm("lock add dword ptr [rax],1"), [0xF0, 0x83, 0x00, 0x01]);
     }
 
     #[test]
     fn labels_and_short_branches() {
-        let a = assemble("a:\n jmp a", 0x1000, &no_syms).unwrap();
+        let a = assemble("a:\n jmp a", 0x1000, Bits::B64, &no_syms).unwrap();
         assert_eq!(a.bytes, [0xEB, 0xFE]);
         assert_eq!(a.labels["a"], 0x1000);
         // Forward label past a long body goes near.
@@ -201,7 +256,7 @@ mod tests {
         assert_eq!(&b[..5], &[0xE9, 200, 0, 0, 0]);
         assert_eq!(b.len(), 5 + 200 + 1);
         // Label prefixing an instruction, and a trailing label.
-        let c = assemble("start: nop\njne start\nend:", 0x2000, &no_syms).unwrap();
+        let c = assemble("start: nop\njne start\nend:", 0x2000, Bits::B64, &no_syms).unwrap();
         assert_eq!(c.bytes, [0x90, 0x75, 0xFD]);
         assert_eq!(c.labels["start"], 0x2000);
         assert_eq!(c.labels["end"], 0x2003);
@@ -209,14 +264,14 @@ mod tests {
 
     #[test]
     fn rip_relative_label_data() {
-        let a = assemble("mov rax,[v]\nret\nv:\ndq 1122334455667788", 0x1000, &no_syms).unwrap();
+        let a = assemble("mov rax,[v]\nret\nv:\ndq 1122334455667788", 0x1000, Bits::B64, &no_syms).unwrap();
         assert_eq!(
             a.bytes,
             [0x48, 0x8B, 0x05, 0x01, 0, 0, 0, 0xC3, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
         );
         assert_eq!(a.labels["v"], 0x1008);
         // A label used as an immediate gets its final address.
-        let b = assemble("mov rax,v\nret\nv:\ndq 0", 0x1000, &no_syms).unwrap();
+        let b = assemble("mov rax,v\nret\nv:\ndq 0", 0x1000, Bits::B64, &no_syms).unwrap();
         assert_eq!(&b.bytes[..7], &[0x48, 0xC7, 0xC0, 0x08, 0x10, 0, 0]);
     }
 
@@ -228,14 +283,14 @@ mod tests {
             "ab" => Some(0x140000500),
             _ => None,
         };
-        let a = assemble("jmp game.exe+10", 0x140000000, &r).unwrap();
+        let a = assemble("jmp game.exe+10", 0x140000000, Bits::B64, &r).unwrap();
         assert_eq!(a.bytes, [0xEB, 0x0E]);
-        let a = assemble("mov eax,[\"Module Name.dll\"+8]", 0x140100000, &r).unwrap();
+        let a = assemble("mov eax,[\"Module Name.dll\"+8]", 0x140100000, Bits::B64, &r).unwrap();
         assert_eq!(a.bytes, [0x8B, 0x05, 0x02, 0, 0, 0]);
         // `ab` is a symbol here, so it isn't the number 0xAB.
-        let a = assemble("mov rax,ab-500", 0x1000, &r).unwrap();
+        let a = assemble("mov rax,ab-500", 0x1000, Bits::B64, &r).unwrap();
         assert_eq!(a.bytes, [0x48, 0xB8, 0, 0, 0, 0x40, 0x01, 0, 0, 0]);
-        let e = assemble("jmp nowhere", 0x1000, &r).unwrap_err();
+        let e = assemble("jmp nowhere", 0x1000, Bits::B64, &r).unwrap_err();
         assert!(e.message.contains("nowhere"), "{e}");
     }
 
@@ -267,7 +322,7 @@ mod tests {
     #[test]
     fn align_pads_to_the_boundary() {
         // 3 bytes, then cc up to 0x1010, then the dd.
-        let a = assemble("mov eax,ebx\nnop\nalign 10 cc\nv:\ndd 1", 0x1000, &no_syms).unwrap();
+        let a = assemble("mov eax,ebx\nnop\nalign 10 cc\nv:\ndd 1", 0x1000, Bits::B64, &no_syms).unwrap();
         let mut want = vec![0x89, 0xD8, 0x90];
         want.extend([0xCC; 13]);
         want.extend([1, 0, 0, 0]);
@@ -275,8 +330,8 @@ mod tests {
         // Default fill is nop; already aligned is no padding.
         assert_eq!(asm("align 4\nret"), [0xC3]);
         // No labels at all still pads from the real line address.
-        assert_eq!(assemble("ret\nalign 4\nret", 0x2000, &no_syms).unwrap().bytes, [0xC3, 0x90, 0x90, 0x90, 0xC3]);
-        assert!(assemble("align 0", 0, &no_syms).is_err());
+        assert_eq!(assemble("ret\nalign 4\nret", 0x2000, Bits::B64, &no_syms).unwrap().bytes, [0xC3, 0x90, 0x90, 0x90, 0xC3]);
+        assert!(assemble("align 0", 0, Bits::B64, &no_syms).is_err());
     }
 
     #[test]
@@ -311,7 +366,7 @@ mod tests {
         assert_eq!(asm("db 1 2,3"), [1, 2, 3]);
         assert_eq!(asm("dw 1234 #10"), [0x34, 0x12, 0x0A, 0x00]);
         assert_eq!(asm("dd -1"), [0xFF; 4]);
-        assert!(assemble("db 100", 0, &no_syms).is_err());
+        assert!(assemble("db 100", 0, Bits::B64, &no_syms).is_err());
     }
 
     #[test]
@@ -320,38 +375,38 @@ mod tests {
         assert_eq!(asm(src), [0x90, 0x90, 0x90]);
         assert_eq!(asm("// nothing but a comment\n"), Vec::<u8>::new());
         assert_eq!(asm("s: ; empty body"), Vec::<u8>::new());
-        let e = assemble("{ a\nb }\nbogus", 0, &no_syms).unwrap_err();
+        let e = assemble("{ a\nb }\nbogus", 0, Bits::B64, &no_syms).unwrap_err();
         assert_eq!(e.line, 3);
     }
 
     #[test]
     fn errors_carry_line_numbers() {
-        let e = assemble("nop\nmov eax,\n", 0x1000, &no_syms).unwrap_err();
+        let e = assemble("nop\nmov eax,\n", 0x1000, Bits::B64, &no_syms).unwrap_err();
         assert_eq!(e.line, 2);
-        let e = assemble("nop\nnop\nfrobnicate eax", 0x1000, &no_syms).unwrap_err();
+        let e = assemble("nop\nnop\nfrobnicate eax", 0x1000, Bits::B64, &no_syms).unwrap_err();
         assert_eq!(e.line, 3);
         assert!(e.message.contains("frobnicate"), "{e}");
-        let e = assemble("nop\nmov eax,rcx", 0x1000, &no_syms).unwrap_err();
+        let e = assemble("nop\nmov eax,rcx", 0x1000, Bits::B64, &no_syms).unwrap_err();
         assert_eq!(e.line, 2);
         assert_eq!(e.to_string().split(':').next(), Some("line 2"));
-        let e = assemble("a:\na:", 0x1000, &no_syms).unwrap_err();
+        let e = assemble("a:\na:", 0x1000, Bits::B64, &no_syms).unwrap_err();
         assert_eq!(e.line, 2);
     }
 
     #[test]
     fn out_of_range_branch_is_error() {
-        let e = assemble("nop\njmp 7FFF00000000", 0x1000, &no_syms).unwrap_err();
+        let e = assemble("nop\njmp 7FFF00000000", 0x1000, Bits::B64, &no_syms).unwrap_err();
         assert_eq!(e.line, 2);
-        assert!(assemble("je 7FFF00000000", 0x1000, &no_syms).is_err());
-        assert!(assemble("call 7FFF00000000", 0x1000, &no_syms).is_err());
+        assert!(assemble("je 7FFF00000000", 0x1000, Bits::B64, &no_syms).is_err());
+        assert!(assemble("call 7FFF00000000", 0x1000, Bits::B64, &no_syms).is_err());
         let far = |n: &str| (n == "far").then_some(0x7FFF00000000u64);
-        assert!(assemble("mov eax,[far]", 0x1000, &far).is_err());
+        assert!(assemble("mov eax,[far]", 0x1000, Bits::B64, &far).is_err());
         // In range: a near jump.
         assert_eq!(asm_at("jmp 7FFF00000000", 0x7FFEF0000000), [0xE9, 0xFB, 0xFF, 0xFF, 0x0F]);
     }
 
     fn asm_err(src: &str) -> String {
-        match assemble(src, 0x1000, &no_syms) {
+        match assemble(src, 0x1000, Bits::B64, &no_syms) {
             Ok(a) => panic!("{src:?} assembled to {:02X?}", a.bytes),
             Err(e) => e.to_string(),
         }
@@ -404,7 +459,7 @@ mod tests {
         assert_eq!(asm("rep ret"), [0xF3, 0xC3]);
         assert_eq!(asm("repz ret"), [0xF3, 0xC3]);
         assert_eq!(asm("rep retn"), [0xF3, 0xC3]);
-        assert!(assemble("rep ret 8", 0x1000, &no_syms).is_err());
+        assert!(assemble("rep ret 8", 0x1000, Bits::B64, &no_syms).is_err());
     }
 
     #[test]
@@ -536,15 +591,15 @@ mod tests {
     fn round_trips_disassembly_corpus() {
         let ip = 0x401000;
         for (bytes, exact) in CORPUS {
-            let d = disasm::decode(bytes, ip, 1);
+            let d = disasm::decode(bytes, ip, 1, Bits::B64);
             assert_eq!(d.len(), 1, "{bytes:02X?}");
             assert_eq!(d[0].length, bytes.len(), "{bytes:02X?} decodes as more than one instruction");
             let text = &d[0].text;
-            let out = match assemble(text, ip, &no_syms) {
+            let out = match assemble(text, ip, Bits::B64, &no_syms) {
                 Ok(a) => a.bytes,
                 Err(e) => panic!("{text:?} ({bytes:02X?}): {e}"),
             };
-            let again = disasm::decode(&out, ip, 1);
+            let again = disasm::decode(&out, ip, 1, Bits::B64);
             assert_eq!(&again[0].text, text, "{bytes:02X?} → {out:02X?}");
             if *exact {
                 assert_eq!(&out[..], *bytes, "{text}");
@@ -562,7 +617,7 @@ mod tests {
         assert_eq!(asm("cmp [rcx+54],( float )200"), asm("cmp [rcx+54],43480000"));
         assert_eq!(asm("push (float)100"), [0x68, 0x00, 0x00, 0xC8, 0x42]);
         assert_eq!(asm("db (int)242"), [0xF2]);
-        assert!(assemble("mov eax,(float)abc", 0x1000, &no_syms).is_err());
+        assert!(assemble("mov eax,(float)abc", 0x1000, Bits::B64, &no_syms).is_err());
     }
 
     #[test]
@@ -571,7 +626,7 @@ mod tests {
         assert_eq!(asm("CMP BYTE[RDI+C0],2"), asm("cmp byte ptr [rdi+C0],2"));
         assert_eq!(asm("ADD dword[rdi+00000E08],#100"), asm("add dword ptr [rdi+E08],#100"));
         // A symbol that merely starts with a keyword is still a symbol.
-        let r = assemble("mov rax,[wordcount]", 0x1000, &|n| (n == "wordcount").then_some(0x2000));
+        let r = assemble("mov rax,[wordcount]", 0x1000, Bits::B64, &|n| (n == "wordcount").then_some(0x2000));
         assert_eq!(r.unwrap().bytes, asm_at("mov rax,[2000]", 0x1000));
     }
 
@@ -584,6 +639,6 @@ mod tests {
         // Like CE, @f is the next label of any kind.
         let named = "cmp eax,1\njge @f\nmov eax,2\ncode:\nret";
         assert_eq!(asm(named), [0x83, 0xF8, 0x01, 0x7D, 0x05, 0xB8, 0x02, 0, 0, 0, 0xC3]);
-        assert!(assemble("jmp @f\nret", 0x1000, &no_syms).is_err());
+        assert!(assemble("jmp @f\nret", 0x1000, Bits::B64, &no_syms).is_err());
     }
 }

@@ -94,7 +94,7 @@ pub fn build(t: &Target, address: u64, max_len: usize) -> Result<Signature, RpcE
     let looks_like_address = |v: u64| regions.iter().any(|r| v >= r.start && v < r.end);
 
     let code = disasm::read_code(t, address, max_len + disasm::MAX_INSN_LEN)?;
-    let insns: Vec<Insn> = disasm::decode(&code, address, max_len + disasm::MAX_INSN_LEN);
+    let insns: Vec<Insn> = disasm::decode(&code, address, max_len + disasm::MAX_INSN_LEN, crate::arch::Bits::B64);
     let mut parts: Vec<Option<u8>> = vec![];
     let mut cands = Candidates::default();
     for insn in &insns {

@@ -1,5 +1,6 @@
 //! x86-64 disassembly in Cheat Engine's text style (uppercase hex, no prefix, RIP-relative
 //! operands shown as absolute addresses), so the assembler can parse the text back.
+use crate::arch::Bits;
 use crate::mem;
 use crate::modules::Module;
 use crate::process::Target;
@@ -66,11 +67,16 @@ pub fn formatter() -> IntelFormatter {
     f
 }
 
+/// The bitness to decode `t`'s code at: its game code's, or 64 while that isn't known.
+pub fn bits_of(t: &Target) -> Bits {
+    t.code_bits().unwrap_or(Bits::B64)
+}
+
 /// Decode up to `count` instructions from `bytes`, which start at `ip`. Undecodable bytes become
 /// `db XX`. A final instruction cut off by the end of `bytes` is dropped, not reported as `db`.
-pub fn decode(bytes: &[u8], ip: u64, count: usize) -> Vec<Insn> {
+pub fn decode(bytes: &[u8], ip: u64, count: usize, bits: Bits) -> Vec<Insn> {
     let mut fmt = formatter();
-    let mut dec = Decoder::with_ip(64, bytes, ip, DecoderOptions::NONE);
+    let mut dec = Decoder::with_ip(bits.n(), bytes, ip, DecoderOptions::NONE);
     let mut out = Vec::new();
     while out.len() < count && dec.can_decode() {
         let pos = dec.position();
@@ -99,7 +105,7 @@ pub fn decode(bytes: &[u8], ip: u64, count: usize) -> Vec<Insn> {
             ins.flow_control(),
             FlowControl::Call | FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch
         ) && ins.op_count() > 0
-            && ins.op0_kind() == OpKind::NearBranch64
+            && matches!(ins.op0_kind(), OpKind::NearBranch64 | OpKind::NearBranch32)
         {
             Some(ins.near_branch_target())
         } else {
@@ -201,7 +207,7 @@ mod tests {
     use super::*;
 
     fn text(bytes: &[u8], ip: u64) -> String {
-        decode(bytes, ip, 1)[0].text.clone()
+        decode(bytes, ip, 1, Bits::B64)[0].text.clone()
     }
 
     #[test]
@@ -214,17 +220,17 @@ mod tests {
 
     #[test]
     fn branch_target_is_absolute_without_size() {
-        let d = decode(&[0xE8, 0x0B, 0x00, 0x00, 0x00], 0x400000, 1);
+        let d = decode(&[0xE8, 0x0B, 0x00, 0x00, 0x00], 0x400000, 1, Bits::B64);
         assert_eq!(d[0].text, "call 400010");
         assert_eq!(d[0].target, Some(0x400010));
-        let d = decode(&[0x8B, 0x05, 0x10, 0, 0, 0], 0x1000, 1);
+        let d = decode(&[0x8B, 0x05, 0x10, 0, 0, 0], 0x1000, 1, Bits::B64);
         assert_eq!(d[0].target, Some(0x1016));
-        assert_eq!(decode(&[0x90], 0, 1)[0].target, None);
+        assert_eq!(decode(&[0x90], 0, 1, Bits::B64)[0].target, None);
     }
 
     #[test]
     fn bad_byte_is_db() {
-        let d = decode(&[0x06, 0x90], 0x2000, 2);
+        let d = decode(&[0x06, 0x90], 0x2000, 2, Bits::B64);
         assert_eq!(d[0].text, "db 06");
         assert_eq!(d[0].length, 1);
         assert_eq!(d[0].address, 0x2000);
@@ -234,7 +240,7 @@ mod tests {
 
     #[test]
     fn truncated_tail_is_dropped() {
-        let d = decode(&[0x90, 0x8B, 0x05, 0x10], 0, 5);
+        let d = decode(&[0x90, 0x8B, 0x05, 0x10], 0, 5, Bits::B64);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].text, "nop");
     }

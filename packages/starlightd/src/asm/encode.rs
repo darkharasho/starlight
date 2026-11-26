@@ -10,6 +10,7 @@
 //! pass; passes repeat until every label address is stable.
 use super::parse::{DataItem, Expr, Line, MemSize, Operand, Prefix, Stmt};
 use super::{AsmError, Assembled};
+use crate::arch::Bits;
 use iced_x86::{
     BlockEncoder, BlockEncoderOptions, Code, Decoder, DecoderOptions, Encoder, Instruction, InstructionBlock,
     MemorySize, OpCodeOperandKind as K, OpKind, Register,
@@ -19,30 +20,42 @@ use std::sync::OnceLock;
 
 const PLACEHOLDER_BASE: u64 = 0xFFFF_F000_0000_0000;
 const PLACEHOLDER_STEP: u64 = 0x20;
+/// 32-bit code has no kernel half to borrow: placeholders live in the never-mapped first 64 KiB
+/// (below `vm.mmap_min_addr`), where no real branch target is.
+const PLACEHOLDER_BASE_32: u64 = 0x1000;
+const PLACEHOLDER_STEP_32: u64 = 4;
+const PLACEHOLDER_END_32: u64 = 0x10000;
 const MAX_PASSES: usize = 16;
 const TWO_GIB: i128 = 1 << 31;
 /// Slack for "within rel32 range" checks made before the final layout is known.
 const RANGE_SLACK: i128 = 0x1000;
 
-fn placeholder(entry: usize) -> u64 {
-    PLACEHOLDER_BASE + entry as u64 * PLACEHOLDER_STEP
+fn placeholder(entry: usize, bits: Bits) -> u64 {
+    match bits {
+        Bits::B64 => PLACEHOLDER_BASE + entry as u64 * PLACEHOLDER_STEP,
+        Bits::B32 => PLACEHOLDER_BASE_32 + entry as u64 * PLACEHOLDER_STEP_32,
+    }
 }
 
-/// Every 64-bit-mode instruction `Code`, by lowercase mnemonic.
-fn codes(mnemonic: &str) -> Option<&'static [Code]> {
-    static MAP: OnceLock<HashMap<String, Vec<Code>>> = OnceLock::new();
-    MAP.get_or_init(|| {
+/// Every instruction `Code` valid in `bits`-bit mode, by lowercase mnemonic.
+fn codes(mnemonic: &str, bits: Bits) -> Option<&'static [Code]> {
+    static MAP64: OnceLock<HashMap<String, Vec<Code>>> = OnceLock::new();
+    static MAP32: OnceLock<HashMap<String, Vec<Code>>> = OnceLock::new();
+    let build = |mode: fn(&iced_x86::OpCodeInfo) -> bool| {
         let mut m: HashMap<String, Vec<Code>> = HashMap::new();
         for code in Code::values() {
             let oc = code.op_code();
-            if oc.is_instruction() && oc.mode64() {
+            if oc.is_instruction() && mode(oc) {
                 m.entry(format!("{:?}", code.mnemonic()).to_ascii_lowercase()).or_default().push(code);
             }
         }
         m
-    })
-    .get(mnemonic)
-    .map(Vec::as_slice)
+    };
+    let map = match bits {
+        Bits::B64 => MAP64.get_or_init(|| build(|oc| oc.mode64())),
+        Bits::B32 => MAP32.get_or_init(|| build(|oc| oc.mode32())),
+    };
+    map.get(mnemonic).map(Vec::as_slice)
 }
 
 /// A resolved value: its number, and the block entry it names when it's a bare in-block label.
@@ -55,6 +68,7 @@ struct Val {
 
 struct Env<'a> {
     address: u64,
+    bits: Bits,
     resolve: &'a dyn Fn(&str) -> Option<u64>,
     /// Lowercase label → (estimated address, block entry it labels; `None` = end of the block).
     labels: HashMap<String, (u64, Option<usize>)>,
@@ -94,7 +108,7 @@ enum Body<'a> {
     Pad(Vec<u8>),
 }
 
-pub fn encode(stmts: &[Stmt], address: u64, resolve: &dyn Fn(&str) -> Option<u64>) -> Result<Assembled, AsmError> {
+pub fn encode(stmts: &[Stmt], address: u64, bits: Bits, resolve: &dyn Fn(&str) -> Option<u64>) -> Result<Assembled, AsmError> {
     // Label names (case-insensitive) → defining statement; duplicates are errors.
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     for s in stmts {
@@ -109,7 +123,7 @@ pub fn encode(stmts: &[Stmt], address: u64, resolve: &dyn Fn(&str) -> Option<u64
     // `align` pads from each line's address, so those must settle too.
     let has_align = stmts.iter().any(|s| matches!(s.kind, Line::Align { .. }));
     for _ in 0..MAX_PASSES {
-        let out = pass(stmts, address, resolve, &est, &item_ips)?;
+        let out = pass(stmts, address, bits, resolve, &est, &item_ips)?;
         let stable = out.labels == est && (!has_align || out.item_ips == item_ips);
         est = out.labels;
         item_ips = out.item_ips;
@@ -130,6 +144,7 @@ struct PassOut {
 fn pass(
     stmts: &[Stmt],
     address: u64,
+    bits: Bits,
     resolve: &dyn Fn(&str) -> Option<u64>,
     est: &HashMap<String, u64>,
     item_ips: &[u64],
@@ -162,7 +177,10 @@ fn pass(
         first_entry.push(entries);
         entries += n;
     }
-    let mut env = Env { address, resolve, labels: HashMap::new() };
+    if bits == Bits::B32 && placeholder(entries, bits) >= PLACEHOLDER_END_32 {
+        return Err(AsmError::new(stmts.last().map_or(1, |s| s.line), "too many instructions for one 32-bit block"));
+    }
+    let mut env = Env { address, bits, resolve, labels: HashMap::new() };
     for (name, &addr) in est {
         let entry = label_entry.get(name).copied().filter(|&e| e < entries);
         env.labels.insert(name.clone(), (addr, entry));
@@ -177,7 +195,7 @@ fn pass(
         match &it.body {
             Body::Insn { prefixes, mnemonic, operands } => {
                 let (mut ins, check) = instruction(&env, prefixes, mnemonic, operands, ip).map_err(err)?;
-                ins.set_ip(placeholder(block.len()));
+                ins.set_ip(placeholder(block.len(), bits));
                 if let Some(c) = check {
                     checks.push((block.len(), c));
                 }
@@ -187,7 +205,7 @@ fn pass(
             Body::Pad(bytes) => {
                 for chunk in bytes.chunks(16) {
                     let mut ins = Instruction::with_declare_byte(chunk).map_err(|e| err(e.to_string()))?;
-                    ins.set_ip(placeholder(block.len()));
+                    ins.set_ip(placeholder(block.len(), bits));
                     block.push(ins);
                     entry_item.push(i);
                 }
@@ -195,7 +213,7 @@ fn pass(
             Body::Data(width, d) => {
                 for chunk in data_bytes(&env, d, *width).map_err(err)?.chunks(16) {
                     let mut ins = Instruction::with_declare_byte(chunk).map_err(|e| err(e.to_string()))?;
-                    ins.set_ip(placeholder(block.len()));
+                    ins.set_ip(placeholder(block.len(), bits));
                     block.push(ins);
                     entry_item.push(i);
                 }
@@ -204,14 +222,14 @@ fn pass(
     }
 
     let res = BlockEncoder::encode(
-        64,
+        bits.n(),
         InstructionBlock::new(&block, address),
         BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS,
     )
     .map_err(|e| {
         let msg = e.to_string();
         let line = (0..block.len())
-            .find(|&b| msg.contains(&format!("0x{:X}", placeholder(b))))
+            .find(|&b| msg.contains(&format!("0x{:X}", placeholder(b, bits))))
             .map_or(items.first().map_or(1, |it| it.line), |b| items[entry_item[b]].line);
         AsmError::new(line, msg)
     })?;
@@ -223,10 +241,12 @@ fn pass(
         let off = offs[b];
         let ok = off != u32::MAX && {
             let at = address + off as u64;
-            let mut dec = Decoder::with_ip(64, &bytes[off as usize..], at, DecoderOptions::NONE);
+            let mut dec = Decoder::with_ip(bits.n(), &bytes[off as usize..], at, DecoderOptions::NONE);
             let d = dec.decode();
             match check {
-                Check::Branch(t) => d.op_count() > 0 && d.op0_kind() == OpKind::NearBranch64 && d.near_branch_target() == t,
+                Check::Branch(t) => {
+                    d.op_count() > 0 && matches!(d.op0_kind(), OpKind::NearBranch64 | OpKind::NearBranch32) && d.near_branch_target() == t
+                }
                 Check::RipMem(t) => d.is_ip_rel_memory_operand() && d.ip_rel_memory_address() == t,
             }
         };
@@ -280,6 +300,8 @@ enum Addr {
     Rip { target: u64, entry: Option<usize> },
     /// A 64-bit absolute address that only the `moffs` forms can encode.
     Moffs(u64),
+    /// 32-bit code: an absolute 32-bit address, as a plain `disp32` or a `moffs` (whichever is shorter).
+    Abs32(u64),
 }
 
 /// Pick the shortest encoding of one instruction at `ip`. Returns the instruction (label
@@ -291,8 +313,9 @@ fn instruction(
     operands: &[Operand],
     ip: u64,
 ) -> Result<(Instruction, Option<Check>), String> {
-    let cands = codes(mnemonic).ok_or_else(|| format!("unknown instruction {mnemonic}"))?;
-    if let Some(r) = string_instruction(prefixes, mnemonic, operands) {
+    let bits = env.bits;
+    let cands = codes(mnemonic, bits).ok_or_else(|| format!("unknown instruction {mnemonic}"))?;
+    if let Some(r) = string_instruction(prefixes, mnemonic, operands, bits) {
         return Ok((r?, None));
     }
     // `rep ret` (F3 C3) is the only prefixed `ret`.
@@ -300,7 +323,7 @@ fn instruction(
         if prefixes.iter().any(|p| !matches!(p, Prefix::Rep | Prefix::Repe)) {
             return Err("prefix not allowed on ret with these operands".into());
         }
-        let mut ins = Instruction::with(Code::Retnq);
+        let mut ins = Instruction::with(if bits == Bits::B64 { Code::Retnq } else { Code::Retnd });
         ins.set_has_repe_prefix(true);
         return Ok((ins, None));
     }
@@ -340,7 +363,7 @@ fn instruction(
         || operands.iter().any(|o| matches!(o, Operand::Reg(r) if r.is_gpr16()));
     let near_branch = matches!(mnemonic, "jmp" | "call");
 
-    let mut enc = Encoder::new(64);
+    let mut enc = Encoder::new(bits.n());
     let mut found: Vec<(usize, Instruction)> = vec![];
     // Memory sizes of every candidate the register and memory operands fit (whatever the immediate).
     let mut sizes: Vec<usize> = vec![];
@@ -423,7 +446,7 @@ fn instruction(
     sizes.dedup();
     if mem_size == Some(None) && sizes.len() > 1 {
         let default = if near_branch || matches!(mnemonic, "push" | "pop") {
-            8
+            bits.ptr_size()
         } else if has_imm || mnemonic == "nop" {
             4
         } else {
@@ -442,12 +465,12 @@ fn instruction(
             _ => format!("invalid operands for {mnemonic}"),
         });
     };
-    finish(ins, operands, &vals, &addrs, ip)
+    finish(ins, operands, &vals, &addrs, ip, bits)
 }
 
 /// The string instructions (`movsb`, `rep stosq`, …) with no operands or the memory operands the
 /// disassembler prints. `None` when the mnemonic or operands aren't a string form (`movsd xmm0,xmm1`).
-fn string_instruction(prefixes: &[Prefix], mnemonic: &str, operands: &[Operand]) -> Option<Result<Instruction, String>> {
+fn string_instruction(prefixes: &[Prefix], mnemonic: &str, operands: &[Operand], bits: Bits) -> Option<Result<Instruction, String>> {
     use iced_x86::RepPrefixKind as R;
     let (op, suffix) = mnemonic.split_at(mnemonic.len().checked_sub(1)?);
     let width = match suffix {
@@ -458,13 +481,21 @@ fn string_instruction(prefixes: &[Prefix], mnemonic: &str, operands: &[Operand])
         _ => return None,
     };
     // Memory operands, in the order the disassembler prints them.
+    let (di, si) = match bits {
+        Bits::B64 => (Register::RDI, Register::RSI),
+        Bits::B32 => (Register::EDI, Register::ESI),
+    };
     let want: &[Register] = match op {
-        "movs" => &[Register::RDI, Register::RSI],
-        "cmps" => &[Register::RSI, Register::RDI],
-        "stos" | "scas" => &[Register::RDI],
-        "lods" => &[Register::RSI],
+        "movs" => &[di, si],
+        "cmps" => &[si, di],
+        "stos" | "scas" => &[di],
+        "lods" => &[si],
         _ => return None,
     };
+    if bits == Bits::B32 && width == MemSize::Qword {
+        return Some(Err(format!("{mnemonic} doesn't exist in 32-bit code")));
+    }
+    let b = bits.n();
     let shaped = operands.len() == want.len()
         && operands.iter().zip(want).all(|(o, w)| {
             matches!(o, Operand::Mem { size, seg: None, base: Some(b), index: None, disp: Expr::Num(0), .. }
@@ -482,26 +513,26 @@ fn string_instruction(prefixes: &[Prefix], mnemonic: &str, operands: &[Operand])
         _ => return Some(Err(format!("prefix not allowed on {mnemonic} with these operands"))),
     };
     let ins = match (op, width) {
-        ("movs", MemSize::Byte) => Instruction::with_movsb(64, Register::None, rep),
-        ("movs", MemSize::Word) => Instruction::with_movsw(64, Register::None, rep),
-        ("movs", MemSize::Dword) => Instruction::with_movsd(64, Register::None, rep),
-        ("movs", _) => Instruction::with_movsq(64, Register::None, rep),
-        ("cmps", MemSize::Byte) => Instruction::with_cmpsb(64, Register::None, rep),
-        ("cmps", MemSize::Word) => Instruction::with_cmpsw(64, Register::None, rep),
-        ("cmps", MemSize::Dword) => Instruction::with_cmpsd(64, Register::None, rep),
-        ("cmps", _) => Instruction::with_cmpsq(64, Register::None, rep),
-        ("stos", MemSize::Byte) => Instruction::with_stosb(64, rep),
-        ("stos", MemSize::Word) => Instruction::with_stosw(64, rep),
-        ("stos", MemSize::Dword) => Instruction::with_stosd(64, rep),
-        ("stos", _) => Instruction::with_stosq(64, rep),
-        ("lods", MemSize::Byte) => Instruction::with_lodsb(64, Register::None, rep),
-        ("lods", MemSize::Word) => Instruction::with_lodsw(64, Register::None, rep),
-        ("lods", MemSize::Dword) => Instruction::with_lodsd(64, Register::None, rep),
-        ("lods", _) => Instruction::with_lodsq(64, Register::None, rep),
-        ("scas", MemSize::Byte) => Instruction::with_scasb(64, rep),
-        ("scas", MemSize::Word) => Instruction::with_scasw(64, rep),
-        ("scas", MemSize::Dword) => Instruction::with_scasd(64, rep),
-        _ => Instruction::with_scasq(64, rep),
+        ("movs", MemSize::Byte) => Instruction::with_movsb(b, Register::None, rep),
+        ("movs", MemSize::Word) => Instruction::with_movsw(b, Register::None, rep),
+        ("movs", MemSize::Dword) => Instruction::with_movsd(b, Register::None, rep),
+        ("movs", _) => Instruction::with_movsq(b, Register::None, rep),
+        ("cmps", MemSize::Byte) => Instruction::with_cmpsb(b, Register::None, rep),
+        ("cmps", MemSize::Word) => Instruction::with_cmpsw(b, Register::None, rep),
+        ("cmps", MemSize::Dword) => Instruction::with_cmpsd(b, Register::None, rep),
+        ("cmps", _) => Instruction::with_cmpsq(b, Register::None, rep),
+        ("stos", MemSize::Byte) => Instruction::with_stosb(b, rep),
+        ("stos", MemSize::Word) => Instruction::with_stosw(b, rep),
+        ("stos", MemSize::Dword) => Instruction::with_stosd(b, rep),
+        ("stos", _) => Instruction::with_stosq(b, rep),
+        ("lods", MemSize::Byte) => Instruction::with_lodsb(b, Register::None, rep),
+        ("lods", MemSize::Word) => Instruction::with_lodsw(b, Register::None, rep),
+        ("lods", MemSize::Dword) => Instruction::with_lodsd(b, Register::None, rep),
+        ("lods", _) => Instruction::with_lodsq(b, Register::None, rep),
+        ("scas", MemSize::Byte) => Instruction::with_scasb(b, rep),
+        ("scas", MemSize::Word) => Instruction::with_scasw(b, rep),
+        ("scas", MemSize::Dword) => Instruction::with_scasd(b, rep),
+        _ => Instruction::with_scasq(b, rep),
     };
     Some(ins.map_err(|e| e.to_string()))
 }
@@ -513,14 +544,23 @@ fn finish(
     vals: &[Option<Val>],
     addrs: &[Option<Addr>],
     ip: u64,
+    bits: Bits,
 ) -> Result<(Instruction, Option<Check>), String> {
     let mut check = None;
     for i in 0..operands.len() {
         let kind = ins.op_kind(i as u32);
+        if kind == OpKind::NearBranch32 {
+            // rel32 wraps around the 4 GiB space: every 32-bit target is in range.
+            let v = vals[i].unwrap();
+            match v.entry {
+                Some(e) => ins.set_near_branch32(placeholder(e, bits) as u32),
+                None => check = Some(Check::Branch(v.value as u64 & 0xFFFF_FFFF)),
+            }
+        }
         if kind == OpKind::NearBranch64 {
             let v = vals[i].unwrap();
             match v.entry {
-                Some(e) => ins.set_near_branch64(placeholder(e)),
+                Some(e) => ins.set_near_branch64(placeholder(e, bits)),
                 None => {
                     if !near(ip, v.value) {
                         return Err("branch target is out of rel32 range".into());
@@ -531,7 +571,7 @@ fn finish(
         }
         if let Some(Addr::Rip { target, entry }) = addrs[i] {
             match entry {
-                Some(e) => ins.set_memory_displacement64(placeholder(e)),
+                Some(e) => ins.set_memory_displacement64(placeholder(e, bits)),
                 None => check = Some(Check::RipMem(target)),
             }
         }
@@ -566,9 +606,16 @@ fn mem_addr(
             base: base.unwrap_or(Register::None),
             index: index.unwrap_or(Register::None),
             scale: scale as u32,
-            disp: d32 as i64 as u64,
+            disp: if env.bits == Bits::B32 { d32 as u32 as u64 } else { d32 as i64 as u64 },
             displ_size: if d32 == 0 { 0 } else { 1 },
         });
+    }
+    if env.bits == Bits::B32 {
+        // No RIP-relative addressing: labels, symbols and numbers are all absolute.
+        if !(-TWO_GIB..TWO_GIB << 1).contains(&v.value) {
+            return Err("address out of range for 32-bit code".into());
+        }
+        return Ok(Addr::Abs32(v.value as u64 & 0xFFFF_FFFF));
     }
     if !(i64::MIN as i128..=u64::MAX as i128).contains(&v.value) {
         return Err("address out of range".into());
@@ -657,6 +704,13 @@ fn set_mem(ins: &mut Instruction, i: u32, kind: K, addr: Addr, seg: Option<Regis
             ins.set_memory_displacement64(target);
             ins.set_memory_displ_size(8);
         }
+        Addr::Abs32(target) => {
+            ins.set_memory_base(Register::None);
+            ins.set_memory_index(Register::None);
+            ins.set_memory_index_scale(1);
+            ins.set_memory_displacement64(target);
+            ins.set_memory_displ_size(4);
+        }
         Addr::Moffs(target) => {
             if !moffs {
                 return false;
@@ -686,6 +740,11 @@ fn set_imm(ins: &mut Instruction, i: u32, kind: K, v: Val) -> bool {
     // The second immediate of `enter`/`extrq`-style instructions uses its own slot.
     let second = i > 0 && matches!(ins.op_kind(i - 1), OpKind::Immediate8 | OpKind::Immediate16);
     match kind {
+        K::br32_1 | K::br32_4 => {
+            let Some(t) = trunc(n, 32) else { return false };
+            ins.set_op_kind(i, OpKind::NearBranch32);
+            ins.set_near_branch32(t as u32);
+        }
         K::br64_1 | K::br64_4 => {
             let Some(t) = trunc(n, 64) else { return false };
             ins.set_op_kind(i, OpKind::NearBranch64);

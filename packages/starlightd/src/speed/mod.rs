@@ -393,7 +393,7 @@ impl Speeds {
         }
         let page = remote::alloc_own(t, PAGE, None, RWX)?;
         let src = tpl::hook_source(tg.kind, tg.abi, state, tg.slot, original);
-        let code = asm::assemble(&src, page, &|_| None).map_err(|err| RpcError::assemble_failed(err.to_string()))?;
+        let code = asm::assemble(&src, page, asm::Bits::B64, &|_| None).map_err(|err| RpcError::assemble_failed(err.to_string()))?;
         mem::write_bytes(t, page, &code.bytes)?;
         let hook = page.to_le_bytes();
         let mut failure = None;
@@ -554,7 +554,7 @@ fn state_image(page: u64) -> Result<Vec<u8>, RpcError> {
     let mut img = vec![0u8; STATE_PAGE_SIZE as usize];
     img[tpl::OFF_MAGIC as usize..][..8].copy_from_slice(&MAGIC);
     for (off, src) in tpl::shared_routines(page) {
-        let a = asm::assemble(&src, page + off, &|_| None).map_err(|e| RpcError::assemble_failed(e.to_string()))?;
+        let a = asm::assemble(&src, page + off, asm::Bits::B64, &|_| None).map_err(|e| RpcError::assemble_failed(e.to_string()))?;
         if a.bytes.len() as u64 > tpl::ROUTINE_MAX {
             return Err(RpcError::internal_error(format!("speed routine at {off:#x} is too large")));
         }

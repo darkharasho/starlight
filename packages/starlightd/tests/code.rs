@@ -479,3 +479,19 @@ fn patch_rejects_bad_params() {
     // Unmapped memory: nothing to patch.
     assert_eq!(patch(&mut c, &h, 0x10, "90").unwrap_err().0, -32004);
 }
+
+#[test]
+fn assemble_bits_32() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let r = c.call("assemble", json!({"address": "0x401000", "source": "pushad", "bits": 32})).unwrap();
+    assert_eq!(r["bytes"], "60");
+    // Without bits or a handle it is 64-bit, where pushad doesn't exist.
+    assert!(c.call("assemble", json!({"address": "0x401000", "source": "pushad"})).is_err());
+    assert_eq!(c.call("assemble", json!({"address": "0x1", "source": "nop", "bits": 16})).unwrap_err().0, -32602);
+    // With a handle on a 32-bit game, its bitness.
+    let t = Target::spawn32(&[]);
+    let h = attach(&mut c, &t);
+    let r = c.call("assemble", json!({"handle": h, "address": "0x401000", "source": "push eax"})).unwrap();
+    assert_eq!(r["bytes"], "50");
+}

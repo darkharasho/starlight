@@ -1046,7 +1046,7 @@ mod tests {
     #[test]
     fn shared_routines_assemble_and_fit() {
         for (off, src) in shared_routines(STATE) {
-            let a = asm::assemble(&src, STATE + off, &|_| None).unwrap_or_else(|e| panic!("routine at {off:#x}: {e}\n{src}"));
+            let a = asm::assemble(&src, STATE + off, asm::Bits::B64, &|_| None).unwrap_or_else(|e| panic!("routine at {off:#x}: {e}\n{src}"));
             assert!(a.bytes.len() as u64 <= ROUTINE_MAX, "routine at {off:#x} is {} bytes", a.bytes.len());
             let ins: Vec<_> = Decoder::with_ip(64, &a.bytes, STATE + off, DecoderOptions::NONE).iter().collect();
             let m: Vec<Mnemonic> = ins.iter().map(|i| i.mnemonic()).collect();
@@ -1071,7 +1071,7 @@ mod tests {
         for kind in KINDS {
             for abi in [Abi::Win64, Abi::Sysv] {
                 let src = hook_source(kind, abi, STATE, 9, page + 0x800);
-                let a = asm::assemble(&src, page, &|_| None).unwrap_or_else(|e| panic!("{kind:?}/{abi:?}: {e}\n{src}"));
+                let a = asm::assemble(&src, page, asm::Bits::B64, &|_| None).unwrap_or_else(|e| panic!("{kind:?}/{abi:?}: {e}\n{src}"));
                 assert!(a.bytes.len() < 0x400, "{kind:?}/{abi:?} is {} bytes", a.bytes.len());
                 let ins: Vec<_> = Decoder::with_ip(64, &a.bytes, page, DecoderOptions::NONE).iter().collect();
                 // The thread key comes from the ABI's thread pointer (D13).
@@ -1090,7 +1090,7 @@ mod tests {
         // rsp % 16 == 8 at entry. Pushes and pops must balance before `ret`.
         let page = 0x7f00_0000_0000u64;
         for (what, _, src) in all_hooks(page) {
-            let a = asm::assemble(&src, page, &|_| None).unwrap();
+            let a = asm::assemble(&src, page, asm::Bits::B64, &|_| None).unwrap();
             let mut depth: i64 = 8;
             for i in Decoder::with_ip(64, &a.bytes, page, DecoderOptions::NONE).iter() {
                 match i.mnemonic() {
@@ -1116,7 +1116,7 @@ mod tests {
         let page = 0x7f00_0000_0000u64;
         for kind in WAIT_KINDS {
             let src = wait_hook_source(kind, STATE, 0, page + 0x800, VDSO);
-            let a = asm::assemble(&src, page, &|_| None).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{src}"));
+            let a = asm::assemble(&src, page, asm::Bits::B64, &|_| None).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{src}"));
             assert!(a.bytes.len() < 0x400, "{kind:?} is {} bytes", a.bytes.len());
             let ins: Vec<_> = Decoder::with_ip(64, &a.bytes, page, DecoderOptions::NONE).iter().collect();
             // The thread key is the SysV thread pointer (D13).
@@ -1140,7 +1140,7 @@ mod tests {
         let page = 0x7f00_0000_0000u64;
         let vdso = 0x7ffd_1234_5000u64;
         let src = hook_source(Kind::GettimeofdayGot, Abi::Sysv, STATE, 8, vdso);
-        let a = asm::assemble(&src, page, &|_| None).unwrap();
+        let a = asm::assemble(&src, page, asm::Bits::B64, &|_| None).unwrap();
         let ptr = a.labels["h_original"];
         let at = (ptr - page) as usize;
         assert_eq!(a.bytes[at..at + 8], vdso.to_le_bytes());
@@ -1363,7 +1363,7 @@ mod tests {
             );
             let hook_src = wait_hook_source(kind, st.0, 0, orig, vdso);
             for (at, src) in [(orig, orig_src), (vdso, vdso_src), (hook, hook_src)] {
-                let a = asm::assemble(&src, at, &|_| None).unwrap_or_else(|e| panic!("{e}\n{src}"));
+                let a = asm::assemble(&src, at, asm::Bits::B64, &|_| None).unwrap_or_else(|e| panic!("{e}\n{src}"));
                 unsafe { std::ptr::copy_nonoverlapping(a.bytes.as_ptr(), at as *mut u8, a.bytes.len()) };
             }
             LocalWait { page, hook, seen, now }
@@ -1751,7 +1751,7 @@ mod tests {
             let orig_src = format!("mov rax, {value:#x}\nmov rax, qword ptr [rax]\nxor ecx, ecx\nxor edx, edx\nxor r8d, r8d\nxor r9d, r9d\nxor r10d, r10d\nxor r11d, r11d\nxorps xmm0, xmm0\nxorps xmm5, xmm5\nret\n");
             let hook_src = hook_source(Kind::Tick64, Abi::Win64, st.0, 11, orig);
             for (at, src) in [(orig, orig_src), (hook, hook_src)] {
-                let a = asm::assemble(&src, at, &|_| None).unwrap_or_else(|e| panic!("{e}\n{src}"));
+                let a = asm::assemble(&src, at, asm::Bits::B64, &|_| None).unwrap_or_else(|e| panic!("{e}\n{src}"));
                 unsafe { std::ptr::copy_nonoverlapping(a.bytes.as_ptr(), at as *mut u8, a.bytes.len()) };
             }
             LocalHook { page, hook, value }
