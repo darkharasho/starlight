@@ -270,6 +270,42 @@ describe('compileAaScript', () => {
     });
   });
 
+  it('labels belong to their section: [DISABLE] writes back through a label enable placed and registered', () => {
+    const script = [
+      '[ENABLE]',
+      'aobscanmodule(hook_AOB,game.exe,8B 44 24 04 8B 48 10 0F B6 11)',
+      'alloc(newmem,$100,game.exe)',
+      'label(hook)',
+      'label(back)',
+      'registersymbol(hook)',
+      'newmem:',
+      '  jmp back',
+      'hook_AOB+7:',
+      'hook:',
+      '  jmp newmem',
+      'back:',
+      '[DISABLE]',
+      'hook:',
+      '  db 0F B6 11',
+      'unregistersymbol(hook)',
+      'dealloc(newmem)',
+    ].join('\n');
+    const r = compileAaScript(script, O);
+    if (!r.ok) throw new Error(`${r.code} ${r.line}: ${r.detail}`);
+    expect(r.cheat!.disable).toEqual([
+      { op: 'writeBytes', at: 'hook', bytes: '0fb611' },
+      { op: 'unregisterSymbol', name: 'hook' },
+    ]);
+    expect(r.registers).toEqual(['hook']);
+    expect(r.uses).toEqual([]);
+    // A label enable declared but never registered isn't known when disabling.
+    const unregistered = script.replace('registersymbol(hook)', '').replace('unregistersymbol(hook)', '');
+    expect(fail(compileAaScript(unregistered, O))).toMatchObject({ ok: false, code: 'aa:disable-write', detail: 'hook:' });
+    // Nor is one placed in the alloc'd cave: enable never patched game code there.
+    const inCave = script.replace('newmem:\n  jmp back', 'newmem:\nhook:\n  jmp back').replace('hook_AOB+7:\nhook:\n', 'hook_AOB+7:\n');
+    expect(fail(compileAaScript(inCave, O))).toMatchObject({ ok: false, code: 'aa:disable-write', detail: 'hook:' });
+  });
+
   it('a pointer origin is aa:pointer-origin', () => {
     const r = fail(compileAaScript('[ENABLE]\n[pBase+10]:\n  db 90\n', O));
     expect(r).toEqual({ ok: false, code: 'aa:pointer-origin', detail: '[pBase+10]:', line: 2 });

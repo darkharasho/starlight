@@ -249,12 +249,20 @@ function substitute(text: string, defines: Map<string, string>): string {
 const nameList = (args: string[]) => args.flatMap((a) => a.split(/\s+/)).filter(Boolean);
 
 /** Every valid name declared by a `label(…)` statement anywhere in the script (lowercased). */
-function declaredLabels(lines: string[]): Set<string> {
-  const out = new Set<string>();
+/**
+ * label() declarations per section. CE assembles [ENABLE] and [DISABLE] as two scripts (each with
+ * the lines before [ENABLE]), so a label declared in one section isn't a label in the other.
+ */
+function declaredLabels(lines: string[]): Record<Section, Set<string>> {
+  const out: Record<Section, Set<string>> = { pre: new Set(), enable: new Set(), disable: new Set() };
+  let section: Section = 'pre';
   for (const l of lines) {
-    const m = l.replace(/\{\$[^}]*\}/g, '').trim().match(/^label\s*\((.*)\)$/i);
+    const t = l.replace(/\{\$[^}]*\}/g, '').trim();
+    const sec = t.match(/^\[(enable|disable)\]$/i);
+    if (sec) { section = sec[1]!.toLowerCase() as Section; continue; }
+    const m = t.match(/^label\s*\((.*)\)$/i);
     if (!m) continue;
-    for (const a of nameList(splitArgs(m[1]!))) if (IDENT.test(a)) out.add(a.toLowerCase());
+    for (const a of nameList(splitArgs(m[1]!))) if (IDENT.test(a)) out[section].add(a.toLowerCase());
   }
   return out;
 }
@@ -271,7 +279,12 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
   let sawDisable = false;
   const defines = new Map<string, string>();
   // CE collects label() declarations in a first pass, so a label may be declared after its use.
-  const labels = declaredLabels(lines);
+  const declared = declaredLabels(lines);
+  /** Every label, for reading operands; `isLabel` is the current section's. */
+  const labels = new Set([...declared.pre, ...declared.enable, ...declared.disable]);
+  const isLabel = (name: string) => declared.pre.has(name) || (section !== 'pre' && declared[section].has(name));
+  /** Labels placed inside an enable segment, with the segment's origin: where enable wrote. */
+  const placedInEnable = new Map<string, string>();
   const allocs: Alloc[] = [];
   const aobs: Aob[] = [];
   const asserts: Assert[] = [];
@@ -379,7 +392,7 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
           break;
         }
         case 'label':
-          for (const a of nameList(args)) { needIdent(a, line, statement); labels.add(a.toLowerCase()); }
+          for (const a of nameList(args)) { needIdent(a, line, statement); labels.add(a.toLowerCase()); declared[section].add(a.toLowerCase()); }
           break;
         case 'registersymbol':
           enableOnly();
@@ -429,7 +442,7 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
     if (text.endsWith(':')) {
       const body = text.slice(0, -1).trim();
       // `@@:` is an anonymous label (for @f/@b): it stays in the source.
-      if (body !== '@@' && !labels.has(body.toLowerCase())) {
+      if (body !== '@@' && !isLabel(body.toLowerCase())) {
         const origin = parseOrigin(body, line, text);
         if (section === 'pre') throw new AaError('aa:parse', text, line);
         current = { origin, line, text, lines: [], lineNos: [] };
@@ -439,8 +452,9 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
     } else {
       // `origin: code` on one line isn't supported
       const inline = text.match(/^([A-Za-z_][\w.]*(?:[+-][0-9a-f]+)?|"[^"]+"[+-][0-9a-f]+):\s*\S/i);
-      if (inline && !labels.has(inline[1]!.toLowerCase())) throw new AaError('aa:parse', text, line);
+      if (inline && !isLabel(inline[1]!.toLowerCase())) throw new AaError('aa:parse', text, line);
     }
+    if (section === 'enable' && current && text.endsWith(':')) placedInEnable.set(text.slice(0, -1).trim().toLowerCase(), current.origin.base ?? '');
 
     // instruction / data line. A `nop` with no origin can't patch anything: link-only
     // records put one after their {$lua} block.
@@ -497,7 +511,13 @@ function compile(script: string, o: { id: string; name: string }): AaResult {
   const disable: StarlightPatchStep[] = [];
   for (const s of disableSegs) {
     if (!s.lines.length) continue;
-    if (!enableOrigins.has(norm(s.origin.at))) throw new AaError('aa:disable-write', s.text, s.line);
+    // Back where enable wrote: one of its origins, or a label it placed in a patch and registered.
+    const base = s.origin.kind === 'name' ? lc(s.origin.base ?? '') : '';
+    // (Not in an alloc'd cave: that is Starlight's memory, not game code enable patched.)
+    const seg = placedInEnable.get(base);
+    const throughLabel = norm(s.origin.at) === base && seg !== undefined && !allocNames.has(lc(seg))
+      && registered.some((r) => lc(r.name) === base);
+    if (!enableOrigins.has(norm(s.origin.at)) && !throughLabel) throw new AaError('aa:disable-write', s.text, s.line);
     const bytes = dbBytes(s);
     disable.push(bytes !== null
       ? { op: 'writeBytes', at: s.origin.at, bytes }
