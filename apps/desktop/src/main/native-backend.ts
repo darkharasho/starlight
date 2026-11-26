@@ -105,12 +105,18 @@ function luaPart(code: string, section: 'enable' | 'disable'): string | null {
   }).join('\n');
 }
 
+/** A big-endian value's bytes in little-endian order (and back: the swap is its own inverse). */
+function littleEndian(r: ValueRecord, buf: Buffer): Buffer {
+  return Buffer.from(buf.subarray(0, sizeOf(r))).reverse();
+}
+
 function readUnsigned(buf: Buffer, size: number): bigint {
   return size === 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUIntLE(0, size));
 }
 
 /** A value as numbers: BigInt for integer types (signed per the record), number for floats. */
 function numberOf(r: ValueRecord, buf: Buffer): bigint | number {
+  if (r.bigEndian) return numberOf({ ...r, bigEndian: false }, littleEndian(r, buf));
   if (isBits(r)) return (leValue(buf.subarray(0, sizeOf(r))) & bitMask(r).bits) >> BigInt(r.bitStart ?? 0);
   if (r.valueType === 'float') return buf.readFloatLE(0);
   if (r.valueType === 'double') return buf.readDoubleLE(0);
@@ -120,6 +126,7 @@ function numberOf(r: ValueRecord, buf: Buffer): bigint | number {
 
 /** D23 display: decimal, uppercase hex for ShowAsHex, signed for ShowAsSigned, spaced hex for byte arrays. */
 function display(r: ValueRecord, buf: Buffer): string {
+  if (r.bigEndian) return display({ ...r, bigEndian: false }, littleEndian(r, buf));
   if (r.valueType === 'bytes') return [...buf].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
   if (r.valueType === 'string') {
     const nul = buf.indexOf(0);
@@ -169,6 +176,7 @@ function parseNumber(r: ValueRecord, text: string): bigint | number {
  * value is shifted into place: `writeValue` merges it with the bits around it.
  */
 function encodeNumber(r: ValueRecord, v: bigint | number): Buffer {
+  if (r.bigEndian) return littleEndian(r, encodeNumber({ ...r, bigEndian: false }, v));
   const size = sizeOf(r);
   if (isBits(r)) {
     const n = BigInt.asUintN(r.bitLength ?? 1, typeof v === 'bigint' ? v : BigInt(Math.trunc(v)));

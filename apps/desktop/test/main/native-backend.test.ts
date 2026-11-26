@@ -112,6 +112,8 @@ const VALUES = compileTable(`<?xml version="1.0" encoding="utf-8"?>
   <CheatEntry><ID>2</ID><Description>"Bytes"</Description><VariableType>Array of byte</VariableType><ByteLength>3</ByteLength><Address>"target"+200</Address></CheatEntry>
   <CheatEntry><ID>3</ID><Description>"Delta"</Description><ShowAsSigned>1</ShowAsSigned><VariableType>Byte</VariableType><Address>"target"+300</Address></CheatEntry>
   <CheatEntry><ID>4</ID><Description>"Name"</Description><VariableType>String</VariableType><Length>4</Length><Unicode>1</Unicode><Address>"target"+400</Address></CheatEntry>
+  <CheatEntry><ID>6</ID><Description>"BE"</Description><VariableType>Custom</VariableType><CustomType>4 Byte Big Endian</CustomType><Address>"target"+600</Address></CheatEntry>
+  <CheatEntry><ID>7</ID><Description>"BEF"</Description><VariableType>Custom</VariableType><CustomType>Float Big Endian</CustomType><Address>"target"+700</Address></CheatEntry>
   <CheatEntry><ID>5</ID><Description>"Bits"</Description><VariableType>Binary</VariableType><BitStart>4</BitStart><BitLength>3</BitLength><Address>"target"+500</Address></CheatEntry>
 </CheatEntries></CheatTable>`);
 
@@ -228,6 +230,20 @@ describe('native table backend', () => {
     // An active byte array freezes raw bytes.
     expect(await b.send({ method: 'set_active', params: { id: 2, active: true } })).toEqual({ ok: true, active: true });
     expect(g.freezes.at(-1)).toEqual({ address: '0x400200', bytes: '9090c3', cancelled: false });
+  });
+
+  it('big-endian custom types read and write most significant byte first', async () => {
+    const g = fakeGame();
+    g.mem.set('0x400600', Buffer.from('000001f4', 'hex'));
+    g.mem.set('0x400700', Buffer.from('3fc00000', 'hex')); // 1.5
+    const { b } = backendFor(VALUES, g);
+    const { records } = await b.send({ method: 'list_records' }) as { records: Array<{ id: number; value: string }> };
+    expect(records.find((r) => r.id === 6)!.value).toBe('500');
+    expect(records.find((r) => r.id === 7)!.value).toBe('1.5');
+    expect(await b.send({ method: 'set_value', params: { id: 6, value: '999' } })).toEqual({ ok: true, value: '999' });
+    expect(g.writes.at(-1)).toEqual({ address: '0x400600', bytes: '000003e7' });
+    expect(await b.send({ method: 'set_value', params: { id: 7, value: '2' } })).toEqual({ ok: true, value: '2' });
+    expect(g.writes.at(-1)).toEqual({ address: '0x400700', bytes: '40000000' });
   });
 
   it('a Unicode String reads and writes UTF-16', async () => {

@@ -208,11 +208,18 @@ dealloc(newmem)`;
     expect(byId(t.records, 4)).toMatchObject({ kind: 'value', valueType: 'string', length: 16 });
   });
 
-  it('custom types are value:type with the type name', () => {
+  it("CE's built-in big-endian custom types compile; other custom types are value:type with the type name", () => {
     const t = compileTable(table('custom-type.CT'));
-    expect(byId(t.records, 1)).toMatchObject({ kind: 'unsupported', code: 'value:type', detail: 'Custom: 4 Byte Big Endian' });
+    expect(byId(t.records, 1)).toMatchObject({ kind: 'value', valueType: 'uint32', bigEndian: true });
     expect(byId(t.records, 7)).toMatchObject({ kind: 'unsupported', code: 'addr:expression', detail: '[[pPlayer]+8]*2+foo' });
-    expect(t.reasons.map((r) => r.code).sort()).toEqual(['addr:expression', 'value:type']);
+    expect(t.reasons.map((r) => r.code).sort()).toEqual(['addr:expression']);
+    const custom = (name: string, signed = '') => compileTable(ct(
+      `<CheatEntry><ID>1</ID><Description>"C"</Description>${signed}<VariableType>Custom</VariableType><CustomType>${name}</CustomType><Address>"target"+10</Address></CheatEntry>`,
+    )).records[0];
+    expect(custom('2 Byte Big Endian')).toMatchObject({ kind: 'value', valueType: 'uint16', bigEndian: true });
+    expect(custom('2 Byte Big Endian', '<ShowAsSigned>1</ShowAsSigned>')).toMatchObject({ valueType: 'int16', bigEndian: true });
+    expect(custom('Float Big Endian')).toMatchObject({ kind: 'value', valueType: 'float', bigEndian: true });
+    expect(custom('RE2_Hrs')).toMatchObject({ kind: 'unsupported', code: 'value:type', detail: 'Custom: RE2_Hrs' });
     for (const r of t.reasons) expect(REASON_CODES).toContain(r.code);
   });
 

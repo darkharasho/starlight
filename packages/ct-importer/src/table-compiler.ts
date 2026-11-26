@@ -45,6 +45,8 @@ export type CompiledRecord = { id: number; name: string; depth: number; opts?: s
       /** Bit fields: the first bit (0 = lowest bit of the first byte) and how many bits. */
       bitStart?: number;
       bitLength?: number;
+      /** CE's built-in "… Big Endian" custom types: the value's bytes are stored most significant first. */
+      bigEndian?: boolean;
       address: StarlightAddress;
       showAsHex: boolean;
       showAsSigned: boolean;
@@ -120,7 +122,14 @@ function parseDropdown(src: string): { value: string; label: string }[] {
   return out;
 }
 
-type ValueKind = { valueType: CompiledValueType; length?: number; bitStart?: number; bitLength?: number } | { unsupported: string };
+type ValueKind =
+  | { valueType: CompiledValueType; length?: number; bitStart?: number; bitLength?: number; bigEndian?: boolean }
+  | { unsupported: string };
+
+/** CE's built-in custom types (Lua-free); a table's own custom types are code CE runs. */
+const BIG_ENDIAN: Record<string, [StarlightValueType, StarlightValueType]> = {
+  '2 byte big endian': ['uint16', 'int16'], '4 byte big endian': ['uint32', 'int32'], 'float big endian': ['float', 'float'],
+};
 
 /** CE variable type -> value type (R26: 2/4/8-byte types are unsigned unless ShowAsSigned=1). */
 function valueKind(e: CtEntry, signed: boolean): ValueKind {
@@ -153,6 +162,8 @@ function valueKind(e: CtEntry, signed: boolean): ValueKind {
   }
   if (lower === 'custom') {
     const name = text(e['CustomType']).trim();
+    const be = BIG_ENDIAN[name.toLowerCase()];
+    if (be) return { valueType: signed ? be[1] : be[0], bigEndian: true };
     return { unsupported: name ? `Custom: ${name}` : vt };
   }
   const mapped = mapCtType(vt);
@@ -228,6 +239,7 @@ export function compileTable(xml: string): CompiledTable {
             ...base, kind: 'value', valueType: vk.valueType,
             ...(vk.length !== undefined ? { length: vk.length } : {}),
             ...(vk.bitStart !== undefined ? { bitStart: vk.bitStart, bitLength: vk.bitLength! } : {}),
+            ...(vk.bigEndian ? { bigEndian: true } : {}),
             address: own, showAsHex, showAsSigned,
           };
         }
