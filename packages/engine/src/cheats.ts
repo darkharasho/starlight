@@ -711,12 +711,13 @@ const MODULE_TOKEN = /"([^"]+)"|\b([A-Za-z_][\w.]*\.(?:exe|dll|so(?:\.[\w.]*)?))
  * `0x10000000 + i·0x10000`; aob names, `site`, `known` names (the table's registered symbols)
  * and module names at `0x11000000 + j·0x100000`; labels go through the same layout as a real run.
  * Every name is matched lowercased (R16). `step` is the failing step's index in `enable`, or
- * `enable.length + k` for the k-th `disable` step.
+ * `enable.length + k` for the k-th `disable` step. `bits` assembles as that bitness's code
+ * (the daemon's default, 64, without it).
  */
 export async function checkAssembles(
   c: EngineClient,
   cheat: StarlightPatchCheat,
-  o: { known?: string[] } = {},
+  o: { known?: string[]; bits?: 32 | 64 } = {},
 ): Promise<{ ok: true } | { ok: false; step: number; message: string }> {
   const names = new Map<string, string>();
   cheat.enable.filter((st) => st.op === 'alloc').forEach((st, i) => {
@@ -752,7 +753,7 @@ export async function checkAssembles(
       return BigInt(known.get(k) ?? place(k));
     }));
   const asm = async (at: string, source: string, symbols: Record<string, string>) =>
-    assemble(c, { address: at, source, symbols: { ...Object.fromEntries(names), ...symbols } });
+    assemble(c, { address: at, source, symbols: { ...Object.fromEntries(names), ...symbols }, ...(o.bits !== undefined ? { bits: o.bits } : {}) });
 
   let labels: Map<string, string>;
   try {

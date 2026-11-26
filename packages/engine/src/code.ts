@@ -30,7 +30,7 @@ export async function makeSignature(
  */
 export async function assemble(
   s: Session | EngineClient,
-  o: { address: string; source: string; symbols?: Record<string, string> },
+  o: { address: string; source: string; symbols?: Record<string, string>; bits?: 32 | 64 },
 ): Promise<{ bytes: Buffer; labels: Record<string, string> }> {
   const client = 'client' in s ? s.client : s;
   const r = await client.call<{ bytes: string; labels: Record<string, string> }>('assemble', {
@@ -38,6 +38,7 @@ export async function assemble(
     address: o.address,
     source: o.source,
     ...(o.symbols !== undefined ? { symbols: o.symbols } : {}),
+    ...(o.bits !== undefined ? { bits: o.bits } : {}),
   });
   return { bytes: Buffer.from(r.bytes, 'hex'), labels: r.labels };
 }

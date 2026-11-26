@@ -304,7 +304,7 @@ describe('compiled Auto Assembler cheats', () => {
     const mixed = compile(template(t, site).replace('  jmp return', '  jmp RETURN').replace('  jmp newmem', '  jmp NewMem'));
     expect(await checkAssembles(engine.client, mixed)).toEqual({ ok: true });
 
-    const bad = compile(template(t, site, { cave: ['  fld st(0)'] }));
+    const bad = compile(template(t, site, { cave: ['  vaddps ymm0,ymm1,ymm2'] }));
     expect(bad.enable[2]!.op).toBe('assemble');
     const r = await checkAssembles(engine.client, bad);
     expect(r.ok).toBe(false);
