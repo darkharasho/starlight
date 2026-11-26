@@ -145,3 +145,18 @@ export async function fetchTrainer(trainerPath: string): Promise<StarlightTraine
   const cacheDir = join(app.getPath('userData'), 'catalog-cache');
   return fetchTrainerFrom(PROD_CATALOG_BASE, trainerPath, cacheDir);
 }
+
+/** The table for a catalog entry, or null when it has none (a community-only game, or no source). */
+export async function trainerForEntry(
+  entry: { id: string; name: string; processName: string[]; platform: CatalogIndex['games'][number]['platform']; trainerPath?: string | undefined; trainerSource?: string | undefined; communityOnly?: boolean | undefined },
+  deps: {
+    fetchTrainer(trainerPath: string): Promise<StarlightTrainer>;
+    fetchTrainerLive(source: string, game: { id: string; name: string; processName: string[]; platform: CatalogIndex['games'][number]['platform'] }): Promise<StarlightTrainer>;
+  },
+): Promise<StarlightTrainer | null> {
+  if (entry.trainerPath) return await deps.fetchTrainer(entry.trainerPath);
+  if (entry.trainerSource && !entry.communityOnly) {
+    return await deps.fetchTrainerLive(entry.trainerSource, { id: entry.id, name: entry.name, processName: entry.processName, platform: entry.platform });
+  }
+  return null;
+}

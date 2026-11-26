@@ -9,7 +9,7 @@ import { syncCheatState, unregisterAll as unregisterHotkeys, registerForTrainer 
 import { scanAll as scanLibrary } from './library-host.js';
 import { processHost, setWindowVisible, setEngineAttached, setOnProcessList } from './process-host-singleton.js';
 import { LatchDetector } from './latch-detector.js';
-import { fetchCatalog, fetchTrainer, getCachedIndex } from './catalog-host.js';
+import { fetchCatalog, fetchTrainer, getCachedIndex, trainerForEntry } from './catalog-host.js';
 import { fetchTrainerLive } from './trainer-live-fetch.js';
 import type { FetchTrainerRequest, CatalogIndexEntry, UserCheatGame, ShareCheatRequest } from '../shared/ipc.js';
 import { withMyGames } from '../shared/my-games.js';
@@ -22,7 +22,8 @@ import { recordRoute } from './ct-runner.js';
 import { startSession as ceStartSession, endSession as ceEndSession, setActive as ceSetActive, callSession as ceCallSession, retryTables as ceRetryTables, getActiveSession as ceGetActiveSession, ceSessionFor, releaseToStarlightd, engineOf, gameCodeBits } from './ce-session.js';
 import { createUserCheatsHost } from './user-cheats-host.js';
 import { createShareHost } from './share-host.js';
-import { listUserCheatGames, userCheatsDir } from './user-cheats.js';
+import { createCommunityHost, communityAppId, isCommunityKey, saveCommunityCheat, type CommunityContext } from './community-host.js';
+import { listUserCheatGames, loadUserTrainer, userCheatsDir } from './user-cheats.js';
 import { createGameOwner } from './game-owner.js';
 import { setGameOwner } from './game-owner-singleton.js';
 import { cleanCeError } from './ce-session.js';
@@ -100,11 +101,26 @@ const gameOwner = createGameOwner({
 });
 setGameOwner(gameOwner);
 
+const communityHost = createCommunityHost({ cacheDir: join(app.getPath('userData'), 'catalog-cache') });
+
+/** The running game's platform, build and bitness, so only community cheats that fit it show. */
+async function communityContext(pid: number | null): Promise<CommunityContext> {
+  if (pid === null) return { platform: null, bits: null, buildId: null };
+  const id = await identifyGame(pid, { catalogIndex: () => catalogIndex, detectedGames: () => lastDetectedGames }, { hash: false }).catch(() => null);
+  const bits = await engineProcessInfo(await getEngineClient(), pid).then((r) => r.codeBits, () => null);
+  return { platform: id ? (id.proton ? 'windows' : 'linux') : null, bits, buildId: id?.buildId ?? null };
+}
+
 const userCheatsHost = createUserCheatsHost({
   dir: userCheatsDir(app.getPath('userData')),
   getClient: getEngineClient,
   owner: gameOwner,
   onChange: userCheatsChanged,
+  loadTrainer: async (key, pid) => {
+    if (isCommunityKey(key)) return communityHost.trainer(communityAppId(key), await communityContext(pid));
+    const trainer = await loadUserTrainer(userCheatsDir(app.getPath('userData')), key);
+    return trainer ? { trainer } : null;
+  },
 });
 
 const shareHost = createShareHost({
@@ -203,13 +219,7 @@ const agentTools: ToolDef<any>[] = [
     catalogTrainerFor: async (game) => {
       const entry = game.catalogId ? (getCachedIndex()?.games ?? []).find((g) => g.id === game.catalogId) : undefined;
       if (!entry) return null;
-      if (entry.trainerPath) return await fetchTrainer(entry.trainerPath);
-      if (entry.trainerSource) {
-        return await fetchTrainerLive(entry.trainerSource, {
-          id: entry.id, name: entry.name, processName: entry.processName, platform: entry.platform,
-        });
-      }
-      return null;
+      return await trainerForEntry(entry, { fetchTrainer, fetchTrainerLive: (src, game) => fetchTrainerLive(src, game) });
     },
   }),
 ];
@@ -673,6 +683,11 @@ app.whenReady().then(async () => {
   ipcMain.handle(CHANNELS.userCheatsGames, () => refreshMyGames());
   ipcMain.handle(CHANNELS.shareCheatPreview, (_evt, req: ShareCheatRequest) => shareHost.preview(req));
   ipcMain.handle(CHANNELS.shareCheatSend, (_evt, req: ShareCheatRequest) => shareHost.send(req));
+  ipcMain.handle(CHANNELS.communityCheatsSave, async (_evt, req: { key: string; id: string; userKey: string; exeName?: string }) => {
+    const r = await saveCommunityCheat({ dir: userCheatsDir(app.getPath('userData')), community: communityHost }, req);
+    if (r.ok) userCheatsChanged(req.userKey);
+    return r;
+  });
 
   ipcMain.handle(CHANNELS.agentConnectInfo, () => agentConnectInfo());
   ipcMain.handle(CHANNELS.agentRotateToken, async () => {

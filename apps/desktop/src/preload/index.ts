@@ -37,6 +37,7 @@ const api: StarlightApi = {
   userCheatsGames:      () => ipcRenderer.invoke(CHANNELS.userCheatsGames),
   shareCheatPreview:    (req) => ipcRenderer.invoke(CHANNELS.shareCheatPreview, req),
   shareCheatSend:       (req) => ipcRenderer.invoke(CHANNELS.shareCheatSend, req),
+  communityCheatsSave:  (req) => ipcRenderer.invoke(CHANNELS.communityCheatsSave, req),
   agentConnectInfo:     () => ipcRenderer.invoke(CHANNELS.agentConnectInfo),
   agentRotateToken:     () => ipcRenderer.invoke(CHANNELS.agentRotateToken),
   agentGetState:        () => ipcRenderer.invoke(CHANNELS.agentGetState),

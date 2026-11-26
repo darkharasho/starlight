@@ -2,7 +2,7 @@ import {
   attach as engineAttach, enableCheat as engineEnableCheat, verifyCheat as engineVerifyCheat,
   NeedsUpdateError, type EngineClient, type RunningCheat, type Session,
 } from '@starlight/engine';
-import { isPatchCheat, isValueCheat, type StarlightCheat } from '@starlight/ct-importer';
+import { isPatchCheat, isValueCheat, type StarlightCheat, type StarlightTrainer } from '@starlight/ct-importer';
 import type { IpcResult, SetActiveResult, UserCheatView } from '../shared/ipc.js';
 import type { GameOwner } from './game-owner.js';
 import { detectAntiCheat, antiCheatMessage } from './anti-cheat.js';
@@ -26,7 +26,11 @@ export interface UserCheatsHostDeps {
   verifyCheat?: typeof engineVerifyCheat;
   detectAntiCheatFn?: typeof detectAntiCheat;
   onChange?(key: string): void;
+  /** Where a key's cheats come from; defaults to the player's library. Community keys load community cheats. */
+  loadTrainer?(key: string, pid: number | null): Promise<{ trainer: StarlightTrainer; meta?: Map<string, NonNullable<UserCheatView['community']>> } | null>;
 }
+
+const COMMUNITY_KEY = /^community-\d+$/;
 
 export const CLOSE_CE_MESSAGE = 'This will close the current Cheat Engine table — continue?';
 
@@ -49,6 +53,10 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
   const enable = deps.enableCheat ?? engineEnableCheat;
   const verify = deps.verifyCheat ?? engineVerifyCheat;
   const antiCheat = deps.detectAntiCheatFn ?? detectAntiCheat;
+  const load: NonNullable<UserCheatsHostDeps['loadTrainer']> = deps.loadTrainer ?? (async (key: string) => {
+    const trainer = await loadUserTrainer(deps.dir, key);
+    return trainer ? { trainer } : null;
+  });
   const states = new Map<number, PidState>();
   let ended = false;
 
@@ -113,7 +121,7 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
   }
 
   async function findCheat(key: string, id: string): Promise<StarlightCheat | null> {
-    const t = await loadUserTrainer(deps.dir, key);
+    const t = (await load(key, null))?.trainer;
     for (const c of t?.categories ?? []) {
       const hit = c.cheats.find((x) => x.id === id);
       if (hit) return hit;
@@ -201,8 +209,9 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
 
   return {
     async list(key, pid) {
-      const t = await loadUserTrainer(deps.dir, key);
-      if (!t) return [];
+      const loaded = await load(key, pid);
+      if (!loaded) return [];
+      const t = loaded.trainer;
       const cheats = t.categories.flatMap((c) => c.cheats);
       const verifyAll = async (session: Session | null): Promise<Map<string, UserCheatView['verify']>> => {
         const out = new Map<string, UserCheatView['verify']>();
@@ -236,7 +245,11 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
       const st = pid !== null ? states.get(pid) : undefined;
       return cheats.map((cheat) => {
         const e = st?.entries.get(entryKey(key, cheat.id));
-        return { cheat, active: !!e, ...(e?.value !== undefined ? { value: e.value } : {}), verify: results.get(cheat.id) ?? null };
+        const community = loaded.meta?.get(cheat.id);
+        return {
+          cheat, active: !!e, ...(e?.value !== undefined ? { value: e.value } : {}), verify: results.get(cheat.id) ?? null,
+          ...(community ? { community } : {}),
+        };
       });
     },
 
@@ -250,6 +263,7 @@ export function createUserCheatsHost(deps: UserCheatsHostDeps): UserCheatsHost {
     },
 
     async remove(key, id) {
+      if (COMMUNITY_KEY.test(key)) return { ok: false, error: "Community cheats can't be deleted here." };
       for (const [pid, st] of [...states]) {
         const ek = entryKey(key, id);
         if (!st.entries.has(ek)) continue;

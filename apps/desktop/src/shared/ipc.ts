@@ -48,6 +48,7 @@ export const CHANNELS = {
   userCheatsGames:       'starlight:userCheats:games',
   shareCheatPreview:     'starlight:share:preview',
   shareCheatSend:        'starlight:share:send',
+  communityCheatsSave:   'starlight:community:save',
   // The agent (MCP) connection
   agentConnectInfo:  'starlight:agent:connectInfo',
   agentRotateToken:  'starlight:agent:rotateToken',
@@ -150,6 +151,8 @@ export interface UserCheatView {
   value?: number;
   /** null when not attached to a game */
   verify: { status: 'ok' | 'needs-update' | 'unverified'; reasons: string[] } | null;
+  /** Set for community cheats: who made it, for which build and setup, and whether a newer version is shown. */
+  community?: { credit: string | null; buildId: string | null; platform: 'linux' | 'windows'; bits: 32 | 64; older: boolean };
 }
 
 /** What Share would send, for the player to check first. */
@@ -391,6 +394,8 @@ export interface StarlightApi {
   shareCheatPreview(req: ShareCheatRequest): Promise<SharePreview>;
   /** Sends the cheat for review. */
   shareCheatSend(req: ShareCheatRequest): Promise<ShareSent>;
+  /** Copies a community cheat into the player's own library. */
+  communityCheatsSave(req: { key: string; id: string; userKey: string; exeName?: string }): Promise<IpcResult>;
   // The agent (MCP) connection
   /** The URL, token and copy-paste setup for Claude Code and Codex. */
   agentConnectInfo(): Promise<AgentConnectInfo>;

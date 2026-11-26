@@ -77,7 +77,7 @@ export async function matchGameToProcess(game: MatchableGame, deps: MatchDeps): 
   return null;
 }
 
-export interface CatalogEntry { id: string; name: string; steamAppId: number | null; trainerSource?: string | undefined }
+export interface CatalogEntry { id: string; name: string; steamAppId: number | null; trainerSource?: string | undefined; communityOnly?: boolean | undefined }
 
 export interface IdentifyDeps {
   catalogIndex: Map<string, CatalogEntry>;
@@ -103,8 +103,8 @@ export async function identifyProcess(proc: DetectedProcess, deps: IdentifyDeps)
 export function buildCatalogIndex(entries: CatalogEntry[]): Map<string, CatalogEntry> {
   const idx = new Map<string, CatalogEntry>();
   for (const e of entries) {
-    // Catalog games with a table, and games the player has their own cheats for.
-    if (!e.trainerSource && !isMyGameEntry(e)) continue;
+    // Catalog games with a table or community cheats, and games the player has their own cheats for.
+    if (!e.trainerSource && !e.communityOnly && !isMyGameEntry(e)) continue;
     const key = normalizeName(e.name);
     if (key.length < 3) continue;
     if (!idx.has(key)) idx.set(key, e);
